@@ -2,18 +2,12 @@
 
 import React, { useState } from 'react';
 
-type Tab = 'chat' | 'portfolio' | 'vault';
+type Tab = 'chat' | 'portfolio';
 
 interface MobileNavProps {
   activeTab?: Tab;
   onTabChange?: (tab: Tab) => void;
 }
-
-const tabs: { id: Tab; label: string; icon: string }[] = [
-  { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'portfolio', label: 'Portfolio', icon: '📊' },
-  { id: 'vault', label: 'Vault', icon: '🏦' },
-];
 
 export default function MobileNav({ activeTab: controlledTab, onTabChange }: MobileNavProps) {
   const [internalTab, setInternalTab] = useState<Tab>('chat');
@@ -26,36 +20,68 @@ export default function MobileNav({ activeTab: controlledTab, onTabChange }: Mob
 
   return (
     <nav
-      className="md:hidden fixed bottom-0 left-0 right-0 z-50 h-16 flex items-center justify-around border-t"
+      className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around border-t"
       style={{
-        backgroundColor: 'rgba(10, 10, 15, 0.95)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        borderColor: 'var(--border-subtle, rgba(255,255,255,0.04))',
+        height: '60px',
+        backgroundColor: '#FFFFFF',
+        borderColor: 'rgba(0, 0, 0, 0.08)',
       }}
     >
-      {tabs.map((tab) => {
-        const isActive = activeTab === tab.id;
-        return (
-          <button
-            key={tab.id}
-            onClick={() => handleTabChange(tab.id)}
-            className="flex flex-col items-center gap-1 px-4 py-2 transition-colors"
-          >
-            <span className="text-lg">{tab.icon}</span>
-            <span
-              className="text-xs font-medium"
-              style={{
-                color: isActive
-                  ? 'var(--accent-purple, #9382ff)'
-                  : 'var(--text-tertiary, rgba(255,255,255,0.30))',
-              }}
-            >
-              {tab.label}
-            </span>
-          </button>
-        );
-      })}
+      {/* Chat Tab */}
+      <button
+        onClick={() => handleTabChange('chat')}
+        className="flex flex-col items-center gap-1 px-6 py-2 transition-colors"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={activeTab === 'chat' ? '#6B5CE7' : '#999999'}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+        <span
+          className="text-xs font-medium"
+          style={{
+            color: activeTab === 'chat' ? '#6B5CE7' : '#999999',
+          }}
+        >
+          Chat
+        </span>
+      </button>
+
+      {/* Portfolio Tab */}
+      <button
+        onClick={() => handleTabChange('portfolio')}
+        className="flex flex-col items-center gap-1 px-6 py-2 transition-colors"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={activeTab === 'portfolio' ? '#6B5CE7' : '#999999'}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M18 20V10" />
+          <path d="M12 20V4" />
+          <path d="M6 20v-6" />
+        </svg>
+        <span
+          className="text-xs font-medium"
+          style={{
+            color: activeTab === 'portfolio' ? '#6B5CE7' : '#999999',
+          }}
+        >
+          Portfolio
+        </span>
+      </button>
     </nav>
   );
 }

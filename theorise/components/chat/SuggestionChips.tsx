@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 
 interface SuggestionChipsProps {
@@ -5,12 +7,12 @@ interface SuggestionChipsProps {
 }
 
 const suggestions = [
-  'Iran escalation',
-  'AI infrastructure boom',
-  'Fed holds rates',
-  'Crypto bull run',
-  'Recession incoming',
-  'China Taiwan tensions',
+  'What if oil prices spike?',
+  'AI is changing everything',
+  'Will the Fed cut rates?',
+  'Is crypto going up?',
+  'Recession worries',
+  'China-Taiwan tensions',
 ];
 
 export default function SuggestionChips({ onSelect }: SuggestionChipsProps) {
@@ -20,20 +22,22 @@ export default function SuggestionChips({ onSelect }: SuggestionChipsProps) {
         <button
           key={suggestion}
           onClick={() => onSelect(suggestion)}
-          className="font-mono text-xs rounded-lg transition-all duration-200"
+          className="text-sm rounded-full transition-all duration-200"
           style={{
-            padding: '5px 12px',
-            backgroundColor: 'var(--bg-surface, rgba(255,255,255,0.02))',
-            border: '1px solid var(--border-subtle, rgba(255,255,255,0.04))',
-            color: 'var(--text-tertiary, rgba(255,255,255,0.30))',
+            padding: '6px 14px',
+            backgroundColor: '#F3F3EE',
+            border: '1px solid rgba(0, 0, 0, 0.06)',
+            color: '#666666',
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.borderColor = 'rgba(147, 130, 255, 0.4)';
-            e.currentTarget.style.color = 'var(--text-secondary, rgba(255,255,255,0.55))';
+            e.currentTarget.style.borderColor = 'rgba(107, 92, 231, 0.35)';
+            e.currentTarget.style.color = '#1a1a1a';
+            e.currentTarget.style.backgroundColor = '#F7F7F5';
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--border-subtle, rgba(255,255,255,0.04))';
-            e.currentTarget.style.color = 'var(--text-tertiary, rgba(255,255,255,0.30))';
+            e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.06)';
+            e.currentTarget.style.color = '#666666';
+            e.currentTarget.style.backgroundColor = '#F3F3EE';
           }}
         >
           {suggestion}
