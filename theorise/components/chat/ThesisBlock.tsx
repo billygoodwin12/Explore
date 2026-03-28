@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 
 interface CausalChainStep {
@@ -12,10 +14,12 @@ interface ThesisBlockProps {
   causalChain: (string | CausalChainStep)[];
 }
 
-function formatStep(step: string | CausalChainStep): string {
+function formatStepLabel(step: string | CausalChainStep): string {
   if (typeof step === 'string') return step;
-  return `${step.from} → ${step.to} (${step.mechanism})`;
+  return `${step.from} \u2192 ${step.to}`;
 }
+
+const dotColors = ['#6B5CE7', '#8B7CF0', '#A99CF5', '#C4B8FA', '#D9D0FC'];
 
 export default function ThesisBlock({
   thesisSummary,
@@ -23,64 +27,73 @@ export default function ThesisBlock({
 }: ThesisBlockProps) {
   return (
     <div
-      className="rounded-xl p-4 my-3"
+      className="rounded-xl p-5 my-3"
       style={{
-        backgroundColor: 'rgba(147, 130, 255, 0.05)',
-        border: '1px solid rgba(147, 130, 255, 0.12)',
+        backgroundColor: '#FFFFFF',
+        border: '1px solid rgba(0, 0, 0, 0.06)',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
       }}
     >
       {/* Header */}
       <div className="mb-3">
         <span
-          className="text-xs uppercase tracking-widest font-bold"
-          style={{ color: 'var(--accent-purple, #9382ff)' }}
+          className="text-xs font-semibold tracking-wide"
+          style={{ color: '#6B5CE7' }}
         >
-          Thesis Map
+          How we see it
         </span>
       </div>
 
       {/* Summary */}
       <p
-        className="text-sm mb-4 leading-relaxed"
-        style={{ color: 'var(--text-primary, rgba(255,255,255,0.92))' }}
+        className="mb-4 leading-relaxed"
+        style={{ fontSize: '14px', color: '#1a1a1a', lineHeight: 1.65 }}
       >
         {thesisSummary}
       </p>
 
-      {/* Causal Chain */}
+      {/* Causal Chain — vertical timeline */}
       {causalChain.length > 0 && (
-        <div className="space-y-2">
-          {causalChain.map((step, index) => (
-            <div key={index} className="flex items-start gap-2">
-              <span
-                className="font-mono text-xs font-bold shrink-0 mt-0.5 w-5 h-5 rounded flex items-center justify-center"
-                style={{
-                  backgroundColor: 'rgba(147, 130, 255, 0.12)',
-                  color: 'var(--accent-purple, #9382ff)',
-                }}
-              >
-                {index + 1}
-              </span>
-              <div className="flex items-start gap-2 min-w-0">
+        <div className="relative pl-5">
+          {/* Connecting line */}
+          <div
+            className="absolute left-[7px] top-[6px]"
+            style={{
+              width: '2px',
+              height: 'calc(100% - 12px)',
+              backgroundColor: 'rgba(107, 92, 231, 0.15)',
+              borderRadius: '1px',
+            }}
+          />
+
+          <div className="space-y-4">
+            {causalChain.map((step, index) => (
+              <div key={index} className="relative flex items-start gap-3">
+                {/* Dot */}
+                <div
+                  className="absolute shrink-0 rounded-full"
+                  style={{
+                    width: '10px',
+                    height: '10px',
+                    left: '-17px',
+                    top: '5px',
+                    backgroundColor:
+                      dotColors[index % dotColors.length],
+                    border: '2px solid #FFFFFF',
+                    boxShadow: '0 0 0 1px rgba(107, 92, 231, 0.20)',
+                  }}
+                />
+
+                {/* Label */}
                 <span
                   className="text-sm leading-relaxed"
-                  style={{
-                    color: 'var(--text-secondary, rgba(255,255,255,0.55))',
-                  }}
+                  style={{ color: '#444444' }}
                 >
-                  {formatStep(step)}
+                  {formatStepLabel(step)}
                 </span>
               </div>
-              {index < causalChain.length - 1 && (
-                <span
-                  className="text-xs shrink-0 mt-0.5"
-                  style={{ color: 'var(--accent-purple, #9382ff)' }}
-                >
-                  &rarr;
-                </span>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>

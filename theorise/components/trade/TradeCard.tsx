@@ -15,7 +15,7 @@ interface TradeCardProps {
   status?: 'idle' | 'executing' | 'filled';
 }
 
-const leverageOptions = [1, 2, 3, 5, 10, 20];
+const leverageOptions = [1, 2, 3, 5, 10];
 
 export default function TradeCard({
   recommendation,
@@ -41,23 +41,17 @@ export default function TradeCard({
     return price.toFixed(4);
   };
 
-  const change24hColor =
-    marketData.change24h >= 0
-      ? 'var(--accent-green, #34d399)'
-      : 'var(--accent-red, #f87171)';
+  const change24hColor = marketData.change24h >= 0 ? '#16a34a' : '#dc2626';
 
   return (
     <div
       className="rounded-xl transition-all duration-200 overflow-hidden"
       style={{
-        backgroundColor: isFilled
-          ? 'rgba(52, 211, 153, 0.04)'
-          : 'var(--bg-surface, rgba(255,255,255,0.02))',
+        backgroundColor: isFilled ? 'rgba(34, 197, 94, 0.04)' : '#FFFFFF',
         border: `1px solid ${
-          isFilled
-            ? 'rgba(52, 211, 153, 0.20)'
-            : 'var(--border-subtle, rgba(255,255,255,0.04))'
+          isFilled ? 'rgba(34, 197, 94, 0.20)' : 'rgba(0, 0, 0, 0.08)'
         }`,
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
       }}
     >
       {/* Collapsed View */}
@@ -67,33 +61,27 @@ export default function TradeCard({
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            {/* Top row: venue, symbol, direction */}
+            {/* Top row: venue + direction */}
             <div className="flex items-center gap-2 mb-2 flex-wrap">
               <VenueTag venue={recommendation.venue} />
-              <span
-                className="font-mono text-xs"
-                style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
-              >
-                {recommendation.symbol}
-              </span>
               <DirectionBadge direction={recommendation.direction} />
               {isFilled && (
                 <span
-                  className="text-xs font-bold px-2 py-0.5 rounded"
+                  className="text-xs font-semibold px-2.5 py-0.5 rounded-full"
                   style={{
-                    backgroundColor: 'rgba(52, 211, 153, 0.15)',
-                    color: 'var(--accent-green, #34d399)',
+                    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+                    color: '#16a34a',
                   }}
                 >
-                  FILLED &#10003;
+                  Filled ✓
                 </span>
               )}
             </div>
 
             {/* Instrument name */}
             <h3
-              className="text-lg font-semibold mb-1"
-              style={{ color: 'var(--text-primary, rgba(255,255,255,0.92))' }}
+              className="font-semibold mb-1"
+              style={{ fontSize: '15px', color: '#1a1a1a' }}
             >
               {recommendation.name}
             </h3>
@@ -101,42 +89,24 @@ export default function TradeCard({
             {/* Rationale */}
             <p
               className="text-sm line-clamp-2"
-              style={{ color: 'var(--text-secondary, rgba(255,255,255,0.55))' }}
+              style={{ color: '#666666', lineHeight: 1.5 }}
             >
               {recommendation.rationale}
             </p>
           </div>
 
           {/* Right side: price + confidence */}
-          <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
             <span
-              className="text-xl font-bold font-mono"
-              style={{ color: 'var(--text-primary, rgba(255,255,255,0.92))' }}
+              className="text-lg font-bold font-mono"
+              style={{ color: '#1a1a1a' }}
             >
               ${formatPrice(marketData.price)}
             </span>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-xs" style={{ color: change24hColor }}>
-                {marketData.change24h >= 0 ? '+' : ''}
-                {marketData.change24h.toFixed(2)}%
-              </span>
-            </div>
-            {marketData.fundingRate !== undefined && isPerp && (
-              <span
-                className="font-mono text-xs"
-                style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
-              >
-                Funding: {(marketData.fundingRate * 100).toFixed(4)}%
-              </span>
-            )}
-            {!isPerp && (
-              <span
-                className="font-mono text-xs"
-                style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
-              >
-                Vol: ${(marketData.volume24h / 1000).toFixed(0)}K
-              </span>
-            )}
+            <span className="font-mono text-xs" style={{ color: change24hColor }}>
+              {marketData.change24h >= 0 ? '+' : ''}
+              {marketData.change24h.toFixed(2)}%
+            </span>
             <ConfidenceBar confidence={recommendation.conviction} />
           </div>
         </div>
@@ -153,16 +123,16 @@ export default function TradeCard({
             className="overflow-hidden"
           >
             <div
-              className="px-4 pb-4 pt-2 border-t"
-              style={{ borderColor: 'var(--border-subtle, rgba(255,255,255,0.04))' }}
+              className="px-4 pb-4 pt-3 border-t"
+              style={{ borderColor: 'rgba(0, 0, 0, 0.06)' }}
             >
               {/* Size Input */}
               <div className="mb-3">
                 <label
                   className="text-xs font-medium mb-1.5 block"
-                  style={{ color: 'var(--text-secondary, rgba(255,255,255,0.55))' }}
+                  style={{ color: '#666666' }}
                 >
-                  Size (USDC)
+                  Amount (USD)
                 </label>
                 <input
                   type="number"
@@ -171,48 +141,46 @@ export default function TradeCard({
                   placeholder="100"
                   className="w-full font-mono text-sm px-3 py-2.5 rounded-lg outline-none transition-colors"
                   style={{
-                    backgroundColor: 'rgba(255,255,255,0.03)',
-                    border: '1px solid var(--border-default, rgba(255,255,255,0.08))',
-                    color: 'var(--text-primary, rgba(255,255,255,0.92))',
+                    backgroundColor: '#F3F3EE',
+                    border: '1px solid rgba(0, 0, 0, 0.08)',
+                    color: '#1a1a1a',
                   }}
                   onFocus={(e) => {
-                    e.currentTarget.style.borderColor = 'rgba(147, 130, 255, 0.4)';
+                    e.currentTarget.style.borderColor = 'rgba(107, 92, 231, 0.4)';
                   }}
                   onBlur={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--border-default, rgba(255,255,255,0.08))';
+                    e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.08)';
                   }}
                 />
               </div>
 
-              {/* Leverage Selector (perps only) */}
+              {/* Leverage Selector (futures only) */}
               {isPerp && (
                 <div className="mb-4">
                   <label
                     className="text-xs font-medium mb-1.5 block"
-                    style={{ color: 'var(--text-secondary, rgba(255,255,255,0.55))' }}
+                    style={{ color: '#666666' }}
                   >
-                    Leverage
+                    Multiplier
                   </label>
                   <div className="flex gap-2">
                     {leverageOptions.map((lev) => (
                       <button
                         key={lev}
                         onClick={() => setLeverage(lev)}
-                        className="flex-1 py-1.5 rounded-md text-xs font-bold font-mono transition-all"
+                        className="flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all"
                         style={{
                           backgroundColor:
                             leverage === lev
-                              ? 'rgba(147, 130, 255, 0.15)'
-                              : 'rgba(255,255,255,0.03)',
+                              ? 'rgba(107, 92, 231, 0.08)'
+                              : '#F3F3EE',
                           border: `1px solid ${
                             leverage === lev
-                              ? 'rgba(147, 130, 255, 0.3)'
-                              : 'var(--border-subtle, rgba(255,255,255,0.04))'
+                              ? 'rgba(107, 92, 231, 0.25)'
+                              : 'rgba(0, 0, 0, 0.06)'
                           }`,
                           color:
-                            leverage === lev
-                              ? 'var(--accent-purple, #9382ff)'
-                              : 'var(--text-secondary, rgba(255,255,255,0.55))',
+                            leverage === lev ? '#6B5CE7' : '#666666',
                         }}
                       >
                         {lev}x
@@ -236,20 +204,14 @@ export default function TradeCard({
       {isFilled && (
         <div
           className="px-4 pb-4 pt-2 border-t"
-          style={{ borderColor: 'rgba(52, 211, 153, 0.10)' }}
+          style={{ borderColor: 'rgba(34, 197, 94, 0.10)' }}
         >
           <div className="flex items-center gap-4">
-            <span
-              className="text-xs font-mono"
-              style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
-            >
-              Fill: ${formatPrice(marketData.price)}
+            <span className="text-xs font-mono" style={{ color: '#999999' }}>
+              Filled at ${formatPrice(marketData.price)}
             </span>
-            <span
-              className="text-xs font-mono"
-              style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
-            >
-              Size: ${sizeUsdc} USDC
+            <span className="text-xs font-mono" style={{ color: '#999999' }}>
+              ${sizeUsdc} USD
             </span>
           </div>
         </div>

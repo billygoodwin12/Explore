@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { Position } from '@/lib/venues/types';
 import PositionRow from './PositionRow';
 import PLChart from './PLChart';
-import FundingTracker from './FundingTracker';
 
 interface PortfolioPanelProps {
   isOpen: boolean;
@@ -16,7 +15,7 @@ const mockPositions: Position[] = [
   {
     venue: 'hyperliquid',
     symbol: 'ETH-PERP',
-    name: 'Ethereum Perpetual',
+    name: 'Ethereum',
     direction: 'LONG',
     size: 500,
     entryPrice: 3245.5,
@@ -28,7 +27,7 @@ const mockPositions: Position[] = [
   {
     venue: 'hyperliquid',
     symbol: 'BTC-PERP',
-    name: 'Bitcoin Perpetual',
+    name: 'Bitcoin',
     direction: 'SHORT',
     size: 1000,
     entryPrice: 67450.0,
@@ -39,8 +38,8 @@ const mockPositions: Position[] = [
   },
   {
     venue: 'polymarket',
-    symbol: 'IRAN-ESC',
-    name: 'Iran Escalation > 50%',
+    symbol: 'FED-CUT',
+    name: 'Fed cuts rates by June',
     direction: 'BUY_YES',
     size: 250,
     entryPrice: 0.62,
@@ -60,112 +59,63 @@ export default function PortfolioPanel({ isOpen, onClose }: PortfolioPanelProps)
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Overlay */}
           <motion.div
             className="fixed inset-0 z-[60]"
-            style={{ backgroundColor: 'rgba(0, 0, 0, 0.50)' }}
+            style={{ backgroundColor: 'rgba(0, 0, 0, 0.15)' }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
           />
 
-          {/* Panel */}
           <motion.aside
             className="fixed top-0 right-0 bottom-0 z-[70] w-[420px] max-w-full overflow-y-auto"
             style={{
-              backgroundColor: 'var(--bg-secondary, #0f0f17)',
-              borderLeft: '1px solid var(--border-default, rgba(255,255,255,0.08))',
+              backgroundColor: '#FFFFFF',
+              borderLeft: '1px solid rgba(0, 0, 0, 0.08)',
+              boxShadow: '-4px 0 20px rgba(0, 0, 0, 0.06)',
             }}
             initial={{ x: '100%' }}
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 30, stiffness: 300 }}
           >
-            {/* Header */}
             <div
               className="flex items-center justify-between p-4 border-b"
-              style={{
-                borderColor: 'var(--border-subtle, rgba(255,255,255,0.04))',
-              }}
+              style={{ borderColor: 'rgba(0, 0, 0, 0.06)' }}
             >
-              <h2
-                className="text-lg font-bold"
-                style={{
-                  color: 'var(--text-primary, rgba(255,255,255,0.92))',
-                }}
-              >
+              <h2 className="text-lg font-semibold" style={{ color: '#1a1a1a' }}>
                 Portfolio
               </h2>
               <button
                 onClick={onClose}
                 className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
-                style={{
-                  backgroundColor: 'rgba(255,255,255,0.04)',
-                  color: 'var(--text-secondary, rgba(255,255,255,0.55))',
-                }}
+                style={{ backgroundColor: '#F3F3EE', color: '#666666' }}
               >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="18" y1="6" x2="6" y2="18" />
                   <line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
             </div>
 
-            <div className="p-4 space-y-4">
-              {/* Total Value */}
+            <div className="p-4 space-y-5">
               <div>
-                <span
-                  className="text-xs font-medium block mb-1"
-                  style={{
-                    color: 'var(--text-tertiary, rgba(255,255,255,0.30))',
-                  }}
-                >
+                <span className="text-xs font-medium block mb-1" style={{ color: '#999999' }}>
                   Total Value
                 </span>
-                <span
-                  className="text-3xl font-bold font-mono block"
-                  style={{
-                    color: 'var(--text-primary, rgba(255,255,255,0.92))',
-                  }}
-                >
+                <span className="text-3xl font-bold font-mono block" style={{ color: '#1a1a1a' }}>
                   ${mockTotalValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </span>
-                <span
-                  className="font-mono text-sm"
-                  style={{
-                    color:
-                      mockChange24h >= 0
-                        ? 'var(--accent-green, #34d399)'
-                        : 'var(--accent-red, #f87171)',
-                  }}
-                >
-                  {mockChange24h >= 0 ? '+' : ''}
-                  ${mockChange24h.toFixed(2)} ({mockChange24hPercent >= 0 ? '+' : ''}
-                  {mockChange24hPercent.toFixed(2)}%) 24h
+                <span className="font-mono text-sm" style={{ color: mockChange24h >= 0 ? '#16a34a' : '#dc2626' }}>
+                  {mockChange24h >= 0 ? '+' : ''}${mockChange24h.toFixed(2)} ({mockChange24hPercent >= 0 ? '+' : ''}{mockChange24hPercent.toFixed(2)}%) today
                 </span>
               </div>
 
-              {/* P&L Chart */}
               <PLChart />
 
-              {/* Positions */}
               <div>
-                <span
-                  className="text-xs font-medium mb-2 block"
-                  style={{
-                    color: 'var(--text-secondary, rgba(255,255,255,0.55))',
-                  }}
-                >
+                <span className="text-xs font-medium mb-2 block" style={{ color: '#666666' }}>
                   Open Positions ({mockPositions.length})
                 </span>
                 <div className="space-y-2">
@@ -174,9 +124,6 @@ export default function PortfolioPanel({ isOpen, onClose }: PortfolioPanelProps)
                   ))}
                 </div>
               </div>
-
-              {/* Funding Tracker */}
-              <FundingTracker />
             </div>
           </motion.aside>
         </>

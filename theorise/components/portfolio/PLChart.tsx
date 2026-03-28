@@ -23,48 +23,43 @@ const mockData = [
 export default function PLChart() {
   const lastValue = mockData[mockData.length - 1]?.pnl ?? 0;
   const isPositive = lastValue >= 0;
-  const color = isPositive ? '#34d399' : '#f87171';
-  const fillColor = isPositive
-    ? 'rgba(52, 211, 153, 0.12)'
-    : 'rgba(248, 113, 113, 0.12)';
+  const color = isPositive ? '#22c55e' : '#ef4444';
 
   return (
     <div
       className="rounded-lg p-3"
       style={{
-        backgroundColor: 'var(--bg-surface, rgba(255,255,255,0.02))',
-        border: '1px solid var(--border-subtle, rgba(255,255,255,0.04))',
+        backgroundColor: '#FAFAF8',
+        border: '1px solid rgba(0, 0, 0, 0.06)',
       }}
     >
-      <span
-        className="text-xs font-medium mb-2 block"
-        style={{ color: 'var(--text-secondary, rgba(255,255,255,0.55))' }}
-      >
-        P&amp;L (24h)
+      <span className="text-xs font-medium mb-2 block" style={{ color: '#666666' }}>
+        Today&apos;s Performance
       </span>
       <div style={{ width: '100%', height: 120 }}>
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={mockData}>
             <defs>
               <linearGradient id="plGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={color} stopOpacity={0.2} />
+                <stop offset="0%" stopColor={color} stopOpacity={0.15} />
                 <stop offset="100%" stopColor={color} stopOpacity={0} />
               </linearGradient>
             </defs>
             <XAxis
               dataKey="time"
-              tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.30)' }}
+              tick={{ fontSize: 10, fill: '#999999' }}
               axisLine={false}
               tickLine={false}
             />
             <YAxis hide />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#14141f',
-                border: '1px solid rgba(255,255,255,0.08)',
+                backgroundColor: '#FFFFFF',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
                 borderRadius: '8px',
                 fontSize: '12px',
-                color: 'rgba(255,255,255,0.92)',
+                color: '#1a1a1a',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
               }}
               formatter={(value) => [`$${Number(value).toFixed(2)}`, 'P&L']}
             />

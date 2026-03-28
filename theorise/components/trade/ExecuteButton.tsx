@@ -18,25 +18,14 @@ export default function ExecuteButton({
       onClick={onClick}
       disabled={disabled || loading}
       className={`
-        w-full font-extrabold rounded-lg px-6 py-3 text-sm
+        w-full font-semibold rounded-lg px-6 py-2.5 text-sm
         transition-all duration-200 ease-out
-        hover:scale-[1.03] active:scale-[0.98]
-        disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100
+        hover:opacity-90 active:scale-[0.98]
+        disabled:opacity-40 disabled:cursor-not-allowed
       `}
       style={{
-        background: disabled ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg, #34d399, #059669)',
-        color: disabled ? 'rgba(255,255,255,0.3)' : '#000000',
-        boxShadow: disabled ? 'none' : '0 0 20px rgba(52, 211, 153, 0.3)',
-      }}
-      onMouseEnter={(e) => {
-        if (!disabled && !loading) {
-          e.currentTarget.style.boxShadow = '0 0 30px rgba(52, 211, 153, 0.5)';
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!disabled && !loading) {
-          e.currentTarget.style.boxShadow = '0 0 20px rgba(52, 211, 153, 0.3)';
-        }
+        background: disabled ? '#F3F3EE' : '#6B5CE7',
+        color: disabled ? '#999999' : '#FFFFFF',
       }}
     >
       {loading ? (
@@ -60,10 +49,10 @@ export default function ExecuteButton({
               d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
             />
           </svg>
-          Executing...
+          Placing order...
         </span>
       ) : (
-        'Execute Trade'
+        'Invest'
       )}
     </button>
   );

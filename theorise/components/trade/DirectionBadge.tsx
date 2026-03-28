@@ -7,24 +7,24 @@ interface DirectionBadgeProps {
 
 const directionConfig: Record<Direction, { label: string; color: string; bg: string }> = {
   LONG: {
-    label: 'LONG',
-    color: 'var(--accent-green, #34d399)',
-    bg: 'rgba(52, 211, 153, 0.12)',
+    label: 'Bullish',
+    color: '#16a34a',
+    bg: 'rgba(34, 197, 94, 0.08)',
   },
   SHORT: {
-    label: 'SHORT',
-    color: 'var(--accent-red, #f87171)',
-    bg: 'rgba(248, 113, 113, 0.12)',
+    label: 'Bearish',
+    color: '#dc2626',
+    bg: 'rgba(239, 68, 68, 0.08)',
   },
   BUY_YES: {
-    label: 'BUY YES',
-    color: 'var(--accent-green, #34d399)',
-    bg: 'rgba(52, 211, 153, 0.12)',
+    label: 'Yes',
+    color: '#16a34a',
+    bg: 'rgba(34, 197, 94, 0.08)',
   },
   BUY_NO: {
-    label: 'BUY NO',
-    color: 'var(--accent-red, #f87171)',
-    bg: 'rgba(248, 113, 113, 0.12)',
+    label: 'No',
+    color: '#dc2626',
+    bg: 'rgba(239, 68, 68, 0.08)',
   },
 };
 
@@ -33,10 +33,10 @@ export default function DirectionBadge({ direction }: DirectionBadgeProps) {
 
   return (
     <span
-      className="font-extrabold tracking-wide rounded inline-block"
+      className="font-semibold rounded-full inline-block"
       style={{
-        fontSize: '11px',
-        padding: '3px 10px',
+        fontSize: '12px',
+        padding: '3px 12px',
         backgroundColor: config.bg,
         color: config.color,
       }}

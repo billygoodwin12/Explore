@@ -5,33 +5,32 @@ interface VenueTagProps {
   venue: Venue;
 }
 
-const venueStyles: Record<
-  Venue,
-  { bg: string; color: string }
-> = {
+const venueConfig: Record<Venue, { label: string; bg: string; color: string }> = {
   hyperliquid: {
-    bg: 'rgba(110, 231, 183, 0.10)',
-    color: 'var(--venue-hyperliquid, #6ee7b7)',
+    label: 'Futures',
+    bg: 'rgba(34, 197, 94, 0.08)',
+    color: '#16a34a',
   },
   polymarket: {
-    bg: 'rgba(147, 130, 255, 0.10)',
-    color: 'var(--venue-polymarket, #9382ff)',
+    label: 'Prediction',
+    bg: 'rgba(107, 92, 231, 0.08)',
+    color: '#6B5CE7',
   },
 };
 
 export default function VenueTag({ venue }: VenueTagProps) {
-  const styles = venueStyles[venue];
+  const config = venueConfig[venue];
 
   return (
     <span
-      className="text-xs font-bold tracking-widest uppercase rounded-sm inline-block"
+      className="text-xs font-semibold rounded-full inline-block"
       style={{
-        backgroundColor: styles.bg,
-        color: styles.color,
-        padding: '2px 8px',
+        backgroundColor: config.bg,
+        color: config.color,
+        padding: '3px 10px',
       }}
     >
-      {venue}
+      {config.label}
     </span>
   );
 }

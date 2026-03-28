@@ -12,16 +12,12 @@ interface GlowButtonProps {
 
 const variantStyles = {
   green: {
-    background: 'linear-gradient(135deg, #34d399, #059669)',
-    color: '#000000',
-    shadow: '0 0 20px rgba(52, 211, 153, 0.3)',
-    shadowHover: '0 0 30px rgba(52, 211, 153, 0.5)',
+    background: '#22c55e',
+    color: '#ffffff',
   },
   purple: {
-    background: 'linear-gradient(135deg, #9382ff, #6d5dd3)',
+    background: '#6B5CE7',
     color: '#ffffff',
-    shadow: '0 0 20px rgba(147, 130, 255, 0.3)',
-    shadowHover: '0 0 30px rgba(147, 130, 255, 0.5)',
   },
 } as const;
 
@@ -39,26 +35,15 @@ export default function GlowButton({
       onClick={onClick}
       disabled={disabled}
       className={`
-        font-extrabold rounded-lg px-6 py-3
+        font-semibold rounded-lg px-6 py-2.5
         transition-all duration-200 ease-out
-        hover:scale-[1.03] active:scale-[0.98]
-        disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100
+        hover:opacity-90 active:scale-[0.98]
+        disabled:opacity-40 disabled:cursor-not-allowed
         ${className}
       `}
       style={{
-        background: disabled ? 'rgba(255,255,255,0.1)' : styles.background,
-        color: disabled ? 'rgba(255,255,255,0.3)' : styles.color,
-        boxShadow: disabled ? 'none' : styles.shadow,
-      }}
-      onMouseEnter={(e) => {
-        if (!disabled) {
-          e.currentTarget.style.boxShadow = styles.shadowHover;
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!disabled) {
-          e.currentTarget.style.boxShadow = styles.shadow;
-        }
+        background: disabled ? '#F3F3EE' : styles.background,
+        color: disabled ? '#999999' : styles.color,
       }}
     >
       {children}

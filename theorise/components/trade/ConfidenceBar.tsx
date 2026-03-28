@@ -5,9 +5,9 @@ interface ConfidenceBarProps {
 }
 
 function getColor(confidence: number): string {
-  if (confidence > 80) return 'var(--accent-green, #34d399)';
-  if (confidence >= 65) return 'var(--accent-amber, #fbbf24)';
-  return 'var(--accent-red, #f87171)';
+  if (confidence > 80) return '#22c55e';
+  if (confidence >= 65) return '#f59e0b';
+  return '#ef4444';
 }
 
 export default function ConfidenceBar({ confidence }: ConfidenceBarProps) {
@@ -21,7 +21,7 @@ export default function ConfidenceBar({ confidence }: ConfidenceBarProps) {
         style={{
           width: '60px',
           height: '4px',
-          backgroundColor: 'rgba(255,255,255,0.06)',
+          backgroundColor: 'rgba(0, 0, 0, 0.06)',
         }}
       >
         <div
