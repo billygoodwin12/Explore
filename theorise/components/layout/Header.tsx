@@ -31,7 +31,7 @@ export default function Header({ activePositions = 0 }: HeaderProps) {
         </div>
         <div className="flex flex-col">
           <span className="font-bold text-[var(--text-primary,rgba(255,255,255,0.92))] leading-tight">
-            Thesis
+            Theorise
           </span>
           <span
             className="text-xs uppercase tracking-widest leading-tight"

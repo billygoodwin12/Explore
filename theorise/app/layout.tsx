@@ -3,7 +3,7 @@ import '@/styles/globals.css';
 import WalletProvider from '@/components/wallet/WalletProvider';
 
 export const metadata: Metadata = {
-  title: 'Thesis | Macro → Markets',
+  title: 'Theorise | Macro → Markets',
   description:
     'Translate your macro world-view into actionable trades across perpetuals and prediction markets.',
 };

@@ -23,7 +23,7 @@ export default function ThesisBlock({
           className="text-xs uppercase tracking-widest font-bold"
           style={{ color: 'var(--accent-purple, #9382ff)' }}
         >
-          Thesis Mapping
+          Thesis Map
         </span>
       </div>
 

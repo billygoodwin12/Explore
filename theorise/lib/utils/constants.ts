@@ -125,7 +125,7 @@ export function convictionLabel(score: number): string {
 // Misc
 // ---------------------------------------------------------------------------
 
-export const APP_NAME = 'Thesis';
+export const APP_NAME = 'Theorise';
 export const APP_DESCRIPTION =
   'AI-powered macro thesis to trade execution pipeline';
 export const MAX_CHAT_HISTORY = 50;
