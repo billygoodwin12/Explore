@@ -15,7 +15,6 @@ export default function ChatInput({
   showSuggestions = false,
 }: ChatInputProps) {
   const [input, setInput] = useState('');
-  const walletWarning = false; // hardcoded for now
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -39,35 +38,17 @@ export default function ChatInput({
 
   return (
     <div
-      className="sticky bottom-0 z-40 border-t px-4 pb-4 pt-3"
+      className="sticky bottom-0 z-40 px-4 pb-4 pt-3"
       style={{
-        backgroundColor: 'rgba(10, 10, 15, 0.90)',
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
-        borderColor: 'var(--border-subtle, rgba(255,255,255,0.04))',
+        backgroundColor: '#FFFFFF',
+        boxShadow: '0 -1px 3px rgba(0, 0, 0, 0.04)',
       }}
     >
-      {/* Wallet warning */}
-      {walletWarning && (
-        <div
-          className="flex items-center gap-2 px-3 py-2 rounded-lg mb-3 text-xs"
-          style={{
-            backgroundColor: 'rgba(251, 191, 36, 0.08)',
-            border: '1px solid rgba(251, 191, 36, 0.20)',
-            color: 'var(--accent-amber, #fbbf24)',
-          }}
-        >
-          <span>&#9888;</span>
-          <span>Connect your wallet to execute trades directly from chat.</span>
-        </div>
-      )}
-
       {/* Input container */}
       <div
         className="flex items-center gap-2 rounded-2xl px-2"
         style={{
-          backgroundColor: 'var(--bg-surface, rgba(255,255,255,0.02))',
-          border: '1px solid var(--border-default, rgba(255,255,255,0.08))',
+          backgroundColor: '#F3F3EE',
         }}
       >
         <input
@@ -75,12 +56,12 @@ export default function ChatInput({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="I think the war in Iran is going to get worse..."
+          placeholder="What's on your mind about the markets?"
           disabled={isLoading}
           className="flex-1 bg-transparent border-none outline-none text-sm"
           style={{
-            padding: '14px 18px',
-            color: 'var(--text-primary, rgba(255,255,255,0.92))',
+            padding: '14px 16px',
+            color: '#1a1a1a',
           }}
         />
 
@@ -88,21 +69,17 @@ export default function ChatInput({
         <button
           onClick={handleSend}
           disabled={!hasText || isLoading}
-          className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 transition-all duration-200"
+          className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all duration-200"
           style={{
-            background: hasText
-              ? 'linear-gradient(135deg, #9382ff, #6d5dd3)'
-              : 'var(--bg-surface, rgba(255,255,255,0.02))',
+            backgroundColor: hasText ? '#6B5CE7' : 'rgba(0, 0, 0, 0.06)',
           }}
         >
           <svg
-            width="18"
-            height="18"
+            width="16"
+            height="16"
             viewBox="0 0 24 24"
             fill="none"
-            stroke={
-              hasText ? '#ffffff' : 'var(--text-tertiary, rgba(255,255,255,0.30))'
-            }
+            stroke={hasText ? '#ffffff' : '#cccccc'}
             strokeWidth="2.5"
             strokeLinecap="round"
             strokeLinejoin="round"

@@ -84,37 +84,39 @@ export default function ChatContainer() {
   const showSuggestions = messages.length === 0;
 
   return (
-    <div className="flex flex-col h-full">
+    <div
+      className="flex flex-col h-full"
+      style={{ backgroundColor: '#FAFAF8' }}
+    >
       {/* Messages area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto py-4">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full px-4">
+            {/* Brand icon */}
             <div
-              className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-              style={{
-                background: 'linear-gradient(135deg, rgba(147,130,255,0.12), rgba(52,211,153,0.08))',
-                border: '1px solid rgba(147, 130, 255, 0.15)',
-              }}
+              className="w-12 h-12 rounded-full flex items-center justify-center mb-5"
+              style={{ backgroundColor: 'rgba(107, 92, 231, 0.10)' }}
             >
               <span
-                className="text-2xl"
-                style={{ color: 'var(--accent-purple, #9382ff)' }}
+                className="font-bold"
+                style={{ color: '#6B5CE7', fontSize: '18px' }}
               >
-                &#9670;
+                T
               </span>
             </div>
+
             <h2
               className="text-lg font-semibold mb-2"
-              style={{ color: 'var(--text-primary, rgba(255,255,255,0.92))' }}
+              style={{ color: '#1a1a1a' }}
             >
-              What&apos;s your macro thesis?
+              What&apos;s on your mind?
             </h2>
             <p
               className="text-sm text-center max-w-md"
-              style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
+              style={{ color: '#666666', lineHeight: 1.6 }}
             >
-              Ask me about geopolitics, economics, or markets — or share a thesis
-              and I&apos;ll map it to actionable trades across venues.
+              Share a thought about the world and I&apos;ll help you find
+              investment opportunities.
             </p>
           </div>
         )}
