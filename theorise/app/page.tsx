@@ -19,7 +19,11 @@ export default function HomePage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--bg)' }}>
       <Header />
-      <ChatContainer />
+      <div style={{ flex: 1, overflow: 'hidden', display: 'flex', justifyContent: 'center' }}>
+        <div style={{ width: '100%', maxWidth: 720, height: '100%' }}>
+          <ChatContainer />
+        </div>
+      </div>
     </div>
   );
 }
