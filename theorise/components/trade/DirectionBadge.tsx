@@ -7,12 +7,12 @@ interface DirectionBadgeProps {
 
 const directionConfig: Record<Direction, { label: string; color: string; bg: string }> = {
   LONG: {
-    label: 'Bullish',
+    label: 'Long',
     color: '#16a34a',
     bg: 'rgba(34, 197, 94, 0.08)',
   },
   SHORT: {
-    label: 'Bearish',
+    label: 'Short',
     color: '#dc2626',
     bg: 'rgba(239, 68, 68, 0.08)',
   },

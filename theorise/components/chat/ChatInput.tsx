@@ -56,7 +56,7 @@ export default function ChatInput({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="What's on your mind about the markets?"
+          placeholder="What is your theory?"
           disabled={isLoading}
           className="flex-1 bg-transparent border-none outline-none text-sm"
           style={{
