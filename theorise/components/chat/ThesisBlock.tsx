@@ -1,8 +1,20 @@
 import React from 'react';
 
+interface CausalChainStep {
+  from: string;
+  to: string;
+  mechanism: string;
+  confidence: number;
+}
+
 interface ThesisBlockProps {
   thesisSummary: string;
-  causalChain: string[];
+  causalChain: (string | CausalChainStep)[];
+}
+
+function formatStep(step: string | CausalChainStep): string {
+  if (typeof step === 'string') return step;
+  return `${step.from} → ${step.to} (${step.mechanism})`;
 }
 
 export default function ThesisBlock({
@@ -56,7 +68,7 @@ export default function ThesisBlock({
                     color: 'var(--text-secondary, rgba(255,255,255,0.55))',
                   }}
                 >
-                  {step}
+                  {formatStep(step)}
                 </span>
               </div>
               {index < causalChain.length - 1 && (
