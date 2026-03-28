@@ -5,32 +5,16 @@ interface VenueTagProps {
   venue: Venue;
 }
 
-const venueConfig: Record<Venue, { label: string; bg: string; color: string }> = {
-  hyperliquid: {
-    label: 'Futures',
-    bg: 'rgba(34, 197, 94, 0.08)',
-    color: '#16a34a',
-  },
-  polymarket: {
-    label: 'Prediction',
-    bg: 'rgba(107, 92, 231, 0.08)',
-    color: '#6B5CE7',
-  },
-};
-
 export default function VenueTag({ venue }: VenueTagProps) {
-  const config = venueConfig[venue];
-
+  const isHL = venue === 'hyperliquid';
   return (
-    <span
-      className="text-xs font-semibold rounded-full inline-block"
-      style={{
-        backgroundColor: config.bg,
-        color: config.color,
-        padding: '3px 10px',
-      }}
-    >
-      {config.label}
+    <span style={{
+      fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+      padding: '2px 8px', borderRadius: 4,
+      background: isHL ? '#ecfdf5' : '#f3f0ff',
+      color: isHL ? '#059669' : '#7c3aed',
+    }}>
+      {isHL ? 'Futures' : 'Prediction'}
     </span>
   );
 }

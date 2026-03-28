@@ -4,40 +4,25 @@ interface ConfidenceBarProps {
   confidence: number;
 }
 
-function getColor(confidence: number): string {
-  if (confidence > 80) return '#22c55e';
-  if (confidence >= 65) return '#f59e0b';
-  return '#ef4444';
-}
-
 export default function ConfidenceBar({ confidence }: ConfidenceBarProps) {
-  const color = getColor(confidence);
-  const clampedConfidence = Math.max(0, Math.min(100, confidence));
+  const v = Math.max(0, Math.min(100, confidence));
+  const color = v > 80 ? '#22c55e' : v > 65 ? '#f59e0b' : '#ef4444';
+  const textColor = v > 80 ? '#16a34a' : v > 65 ? '#d97706' : '#dc2626';
 
   return (
-    <div className="flex items-center gap-2">
-      <div
-        className="rounded-full overflow-hidden"
-        style={{
-          width: '60px',
-          height: '4px',
-          backgroundColor: 'rgba(0, 0, 0, 0.06)',
-        }}
-      >
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{
-            width: `${clampedConfidence}%`,
-            backgroundColor: color,
-          }}
-        />
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ width: 44, height: 3, background: '#f0eeeb', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{
+          width: `${v}%`, height: '100%', borderRadius: 2,
+          background: color,
+          transition: 'width 0.6s cubic-bezier(0.16,1,0.3,1)',
+        }} />
       </div>
-      <span
-        className="font-mono text-xs font-bold"
-        style={{ color }}
-      >
-        {clampedConfidence}%
-      </span>
+      <span style={{
+        fontSize: 10, fontWeight: 700,
+        fontFamily: 'var(--mono)',
+        color: textColor,
+      }}>{v}%</span>
     </div>
   );
 }

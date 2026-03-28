@@ -14,7 +14,6 @@ export default function ChatContainer() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom on new messages or loading state change
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -23,12 +22,10 @@ export default function ChatContainer() {
 
   const handleSend = useCallback(
     async (content: string) => {
-      // Add user message
       addMessage({ role: 'user', content });
       setLoading(true);
 
       try {
-        // Build conversation history from store messages
         const history = messages.map((msg) => ({
           role: msg.role as 'user' | 'assistant',
           content: msg.content,
@@ -47,13 +44,11 @@ export default function ChatContainer() {
         const data = await response.json();
 
         if (data.mode === 'conversation') {
-          // Pure conversational response — no trade cards
           addMessage({
             role: 'assistant',
             content: data.content,
           });
         } else {
-          // Trade recommendation response
           addMessage({
             role: 'assistant',
             content: data.content,
@@ -81,54 +76,69 @@ export default function ChatContainer() {
     [addMessage, setLoading, messages],
   );
 
+  const showEmpty = messages.length === 0 && !isLoading;
   const showSuggestions = messages.length === 0;
 
   return (
     <div
-      className="flex flex-col h-full"
-      style={{ backgroundColor: '#FAFAF8' }}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        background: 'var(--bg, #faf9f7)',
+      }}
     >
-      {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto py-4">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full px-4">
-            {/* Brand icon */}
-            <div
-              className="w-12 h-12 rounded-full flex items-center justify-center mb-5"
-              style={{ backgroundColor: 'rgba(107, 92, 231, 0.10)' }}
-            >
-              <span
-                className="font-bold"
-                style={{ color: '#6B5CE7', fontSize: '18px' }}
-              >
-                T
-              </span>
-            </div>
+      {showEmpty ? (
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <h2
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              color: '#1a1917',
+              letterSpacing: '-0.03em',
+              margin: 0,
+            }}
+          >
+            What&apos;s your theory?
+          </h2>
+          <p
+            style={{
+              fontSize: 14,
+              color: '#a8a49e',
+              maxWidth: 340,
+              lineHeight: 1.6,
+              textAlign: 'center',
+              marginTop: 8,
+            }}
+          >
+            Tell me what you think is going to happen — I&apos;ll find
+            investments that match your view.
+          </p>
+        </div>
+      ) : (
+        <div
+          ref={scrollRef}
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '20px 20px 0',
+          }}
+        >
+          {messages.map((message) => (
+            <ChatMessage key={message.id} message={message} />
+          ))}
+          {isLoading && <TypingIndicator />}
+        </div>
+      )}
 
-            <h2
-              className="text-lg font-semibold mb-2"
-              style={{ color: '#1a1a1a' }}
-            >
-              What&apos;s on your mind?
-            </h2>
-            <p
-              className="text-sm text-center max-w-md"
-              style={{ color: '#666666', lineHeight: 1.6 }}
-            >
-              Share a thought about the world and I&apos;ll help you find
-              investment opportunities.
-            </p>
-          </div>
-        )}
-
-        {messages.map((message) => (
-          <ChatMessage key={message.id} message={message} />
-        ))}
-
-        {isLoading && <TypingIndicator />}
-      </div>
-
-      {/* Input */}
       <ChatInput
         onSend={handleSend}
         isLoading={isLoading}

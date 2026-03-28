@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface LandingPageProps {
   onStart: () => void;
@@ -8,159 +8,240 @@ interface LandingPageProps {
 
 const steps = [
   {
-    icon: '💬',
     number: 1,
-    title: 'Share your thinking',
-    description:
-      'Tell us what you believe about the economy, politics, or markets. No jargon needed.',
+    label: 'Share your thinking',
+    desc: 'Tell us what you believe about the economy, politics, or markets. No jargon needed.',
   },
   {
-    icon: '🔍',
     number: 2,
-    title: 'Get smart suggestions',
-    description:
-      'Our AI breaks down your idea and finds relevant investments across futures and predictions.',
+    label: 'Get smart suggestions',
+    desc: 'Our AI breaks down your idea and finds relevant investments across futures and predictions.',
   },
   {
-    icon: '✅',
     number: 3,
-    title: 'Invest with confidence',
-    description:
-      'Review clear recommendations with plain-English explanations, then act when you\'re ready.',
+    label: 'Invest with confidence',
+    desc: "Review clear recommendations with plain-English explanations, then act when you're ready.",
   },
 ];
 
-const badges = ['AI-Powered', 'Real Markets', 'No Minimums'];
+const tags = ['AI-Powered', 'Real Markets', 'No Minimums'];
 
 export default function LandingPage({ onStart }: LandingPageProps) {
+  const [vis, setVis] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setVis(true), 80);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <div
-      className="min-h-screen w-full overflow-y-auto"
-      style={{ backgroundColor: '#FAFAF8' }}
+      style={{
+        background: 'var(--bg)',
+        minHeight: '100vh',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'relative',
+      }}
     >
-      {/* Hero Section */}
-      <section className="flex flex-col items-center justify-center px-6 pt-32 pb-24 text-center">
-        {/* Brand badge */}
-        <span
-          className="inline-flex items-center rounded-full px-4 py-1.5 text-xs font-medium mb-8"
-          style={{
-            backgroundColor: 'rgba(107, 92, 231, 0.08)',
-            color: '#6B5CE7',
-          }}
-        >
-          Powered by AI
-        </span>
+      {/* Logo */}
+      <div
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 12,
+          background: '#1a1917',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: '#fff',
+          fontSize: 18,
+          fontWeight: 800,
+          marginBottom: 24,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        T
+      </div>
 
-        {/* Heading */}
-        <h1
-          className="font-bold mb-4"
-          style={{
-            fontSize: '40px',
-            lineHeight: 1.15,
-            color: '#1a1a1a',
-            maxWidth: '600px',
-          }}
-        >
-          Turn your ideas into investments
-        </h1>
+      {/* Heading */}
+      <h1
+        style={{
+          fontSize: 42,
+          fontWeight: 700,
+          lineHeight: 1.12,
+          letterSpacing: '-0.035em',
+          color: '#1a1917',
+          textAlign: 'center',
+          whiteSpace: 'pre-line',
+          marginBottom: 16,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        {'Turn your ideas\ninto investments'}
+      </h1>
 
-        {/* Subtitle */}
-        <p
-          className="mb-10 max-w-lg"
-          style={{
-            fontSize: '18px',
-            lineHeight: 1.6,
-            color: '#666666',
-          }}
-        >
-          Tell us what you think is happening in the world. We'll find the trades
-          that match.
-        </p>
+      {/* Subtitle */}
+      <p
+        style={{
+          fontSize: 16,
+          color: '#8a8680',
+          maxWidth: 400,
+          textAlign: 'center',
+          lineHeight: 1.6,
+          marginBottom: 28,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        Tell us what you think is happening in the world. We&apos;ll find the trades that match.
+      </p>
 
-        {/* CTA */}
-        <button
-          onClick={onStart}
-          className="rounded-full font-medium transition-shadow duration-200 hover:shadow-lg"
-          style={{
-            backgroundColor: '#6B5CE7',
-            color: '#FFFFFF',
-            padding: '14px 32px',
-            fontSize: '16px',
-          }}
-        >
-          Start a conversation &rarr;
-        </button>
+      {/* CTA */}
+      <button
+        onClick={onStart}
+        style={{
+          background: '#1a1917',
+          borderRadius: 12,
+          padding: '14px 32px',
+          fontSize: 15,
+          fontWeight: 600,
+          color: '#fff',
+          border: 'none',
+          cursor: 'pointer',
+          marginBottom: 12,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = '#2d2c28';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.background = '#1a1917';
+        }}
+      >
+        Start a conversation &rarr;
+      </button>
 
-        {/* Muted helper text */}
-        <p className="mt-4" style={{ fontSize: '13px', color: '#999999' }}>
-          No account needed to explore
-        </p>
-      </section>
+      {/* Helper text */}
+      <p
+        style={{
+          fontSize: 12,
+          color: '#b5b1ab',
+          marginBottom: 0,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        No account needed to explore
+      </p>
 
-      {/* How it Works */}
-      <section className="px-6 pb-24 max-w-4xl mx-auto">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {steps.map((step) => (
+      {/* Steps */}
+      <div
+        style={{
+          marginTop: 64,
+          display: 'flex',
+          gap: 32,
+          justifyContent: 'center',
+          flexWrap: 'wrap',
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        {steps.map((step) => (
+          <div
+            key={step.number}
+            style={{
+              width: 200,
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
             <div
-              key={step.number}
-              className="rounded-xl p-6"
               style={{
-                backgroundColor: '#FFFFFF',
-                border: '1px solid rgba(0, 0, 0, 0.06)',
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                background: '#f3f2ef',
+                border: '1px solid #eeedea',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 12,
+                fontWeight: 700,
+                color: '#7c3aed',
+                fontFamily: 'var(--mono)',
+                marginBottom: 4,
               }}
             >
-              {/* Icon + number */}
-              <div className="flex items-center gap-3 mb-4">
-                <span style={{ fontSize: '24px' }}>{step.icon}</span>
-                <span
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
-                  style={{
-                    backgroundColor: 'rgba(107, 92, 231, 0.10)',
-                    color: '#6B5CE7',
-                  }}
-                >
-                  {step.number}
-                </span>
-              </div>
-
-              <h3
-                className="font-semibold mb-2"
-                style={{ fontSize: '16px', color: '#1a1a1a' }}
-              >
-                {step.title}
-              </h3>
-              <p style={{ fontSize: '14px', lineHeight: 1.65, color: '#666666' }}>
-                {step.description}
-              </p>
+              {step.number}
             </div>
-          ))}
-        </div>
-      </section>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#1a1917' }}>
+              {step.label}
+            </div>
+            <div style={{ fontSize: 12.5, color: '#a8a49e', lineHeight: 1.55 }}>
+              {step.desc}
+            </div>
+          </div>
+        ))}
+      </div>
 
-      {/* Social Proof / Trust */}
-      <section className="px-6 pb-32 text-center">
-        <p
-          className="mb-6"
-          style={{ fontSize: '15px', color: '#666666', maxWidth: '480px', margin: '0 auto 24px' }}
-        >
-          Powered by institutional-grade research, simplified for everyone.
-        </p>
-        <div className="flex items-center justify-center gap-3 flex-wrap">
-          {badges.map((badge) => (
-            <span
-              key={badge}
-              className="inline-flex items-center rounded-full px-4 py-1.5 text-xs font-medium"
-              style={{
-                backgroundColor: '#F3F3EE',
-                color: '#666666',
-                border: '1px solid rgba(0, 0, 0, 0.05)',
-              }}
-            >
-              {badge}
-            </span>
-          ))}
-        </div>
-      </section>
+      {/* Tags */}
+      <div
+        style={{
+          marginTop: 48,
+          display: 'flex',
+          gap: 8,
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            style={{
+              fontSize: 11,
+              fontWeight: 500,
+              color: '#b5b1ab',
+              background: '#f3f2ef',
+              padding: '4px 10px',
+              borderRadius: 6,
+            }}
+          >
+            {tag}
+          </span>
+        ))}
+      </div>
+
+      {/* Footer */}
+      <p
+        style={{
+          position: 'absolute',
+          bottom: 24,
+          fontSize: 11,
+          color: '#ccc9c3',
+          opacity: vis ? 1 : 0,
+          transform: vis ? 'translateY(0)' : 'translateY(4px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
+        }}
+      >
+        Powered by institutional-grade research, simplified for everyone.
+      </p>
     </div>
   );
 }

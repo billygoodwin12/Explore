@@ -1,20 +1,29 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
-import SuggestionChips from './SuggestionChips';
+import React, { useState, useRef, useCallback } from 'react';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
   isLoading: boolean;
   showSuggestions?: boolean;
+  showWalletWarning?: boolean;
 }
+
+const suggestions = [
+  'I think consumers will spend less',
+  'The Iran situation will escalate',
+  'AI is the next big bubble',
+  'A recession is coming',
+];
 
 export default function ChatInput({
   onSend,
   isLoading,
   showSuggestions = false,
+  showWalletWarning = false,
 }: ChatInputProps) {
   const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
@@ -30,68 +39,128 @@ export default function ChatInput({
     }
   };
 
-  const handleSuggestionSelect = (suggestion: string) => {
-    onSend(suggestion);
-  };
-
   const hasText = input.trim().length > 0;
+  const isActive = hasText && !isLoading;
 
   return (
     <div
-      className="sticky bottom-0 z-40 px-4 pb-4 pt-3"
       style={{
-        backgroundColor: '#FFFFFF',
-        boxShadow: '0 -1px 3px rgba(0, 0, 0, 0.04)',
+        padding: '12px 20px 20px',
+        borderTop: '1px solid #eeedea',
+        background: '#ffffff',
+        flexShrink: 0,
       }}
     >
-      {/* Input container */}
-      <div
-        className="flex items-center gap-2 rounded-2xl px-2"
-        style={{
-          backgroundColor: '#F3F3EE',
-        }}
-      >
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="What is your theory?"
-          disabled={isLoading}
-          className="flex-1 bg-transparent border-none outline-none text-sm"
+      {/* Wallet warning */}
+      {showWalletWarning && !showSuggestions && (
+        <div
           style={{
-            padding: '14px 16px',
-            color: '#1a1a1a',
+            marginBottom: 10,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: '#fffbeb',
+            border: '1px solid #fef3c7',
+            fontSize: 12,
+            color: '#b45309',
           }}
-        />
+        >
+          &#x26A0; Connect your wallet to execute trades. You can still explore
+          recommendations.
+        </div>
+      )}
+
+      {/* Input row */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        {/* Input container */}
+        <div
+          style={{
+            flex: 1,
+            background: '#f7f6f3',
+            border: '1px solid #eeedea',
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          <input
+            ref={inputRef}
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="What is your theory?"
+            disabled={isLoading}
+            style={{
+              width: '100%',
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              padding: '12px 14px',
+              color: '#1a1917',
+              fontSize: 14,
+              fontFamily: 'var(--display)',
+            }}
+          />
+        </div>
 
         {/* Send button */}
         <button
           onClick={handleSend}
-          disabled={!hasText || isLoading}
-          className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-all duration-200"
+          disabled={!isActive}
           style={{
-            backgroundColor: hasText ? '#6B5CE7' : 'rgba(0, 0, 0, 0.06)',
+            width: 42,
+            height: 42,
+            borderRadius: 12,
+            border: 'none',
+            cursor: isActive ? 'pointer' : 'default',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 18,
+            background: isActive ? '#1a1917' : '#f3f2ef',
+            color: isActive ? '#ffffff' : '#ccc9c3',
+            flexShrink: 0,
           }}
         >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={hasText ? '#ffffff' : '#cccccc'}
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
-          </svg>
+          &#x2191;
         </button>
       </div>
 
-      {/* Suggestion chips */}
-      {showSuggestions && <SuggestionChips onSelect={handleSuggestionSelect} />}
+      {/* Suggestions */}
+      {showSuggestions && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          {suggestions.map((suggestion) => (
+            <button
+              key={suggestion}
+              onClick={() => {
+                setInput(suggestion);
+                inputRef.current?.focus();
+              }}
+              style={{
+                background: '#ffffff',
+                border: '1px solid #eeedea',
+                borderRadius: 8,
+                padding: '7px 12px',
+                fontSize: 12,
+                color: '#8a8680',
+                fontFamily: 'var(--display)',
+                whiteSpace: 'nowrap',
+                cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = '#d5d3cf';
+                e.currentTarget.style.color = '#5c5955';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = '#eeedea';
+                e.currentTarget.style.color = '#8a8680';
+              }}
+            >
+              {suggestion}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

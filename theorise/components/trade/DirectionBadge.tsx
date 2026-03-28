@@ -3,45 +3,27 @@ import type { Direction } from '@/lib/venues/types';
 
 interface DirectionBadgeProps {
   direction: Direction;
+  instrumentType?: string;
 }
 
-const directionConfig: Record<Direction, { label: string; color: string; bg: string }> = {
-  LONG: {
-    label: 'Long',
-    color: '#16a34a',
-    bg: 'rgba(34, 197, 94, 0.08)',
-  },
-  SHORT: {
-    label: 'Short',
-    color: '#dc2626',
-    bg: 'rgba(239, 68, 68, 0.08)',
-  },
-  BUY_YES: {
-    label: 'Yes',
-    color: '#16a34a',
-    bg: 'rgba(34, 197, 94, 0.08)',
-  },
-  BUY_NO: {
-    label: 'No',
-    color: '#dc2626',
-    bg: 'rgba(239, 68, 68, 0.08)',
-  },
-};
-
-export default function DirectionBadge({ direction }: DirectionBadgeProps) {
-  const config = directionConfig[direction];
+export default function DirectionBadge({ direction, instrumentType }: DirectionBadgeProps) {
+  const isPrediction = instrumentType === 'prediction';
+  let label: string;
+  if (isPrediction) {
+    label = direction === 'BUY_YES' ? 'Yes' : 'No';
+  } else {
+    label = direction === 'LONG' ? 'Long' : 'Short';
+  }
+  const bull = direction === 'LONG' || direction === 'BUY_YES';
 
   return (
-    <span
-      className="font-semibold rounded-full inline-block"
-      style={{
-        fontSize: '12px',
-        padding: '3px 12px',
-        backgroundColor: config.bg,
-        color: config.color,
-      }}
-    >
-      {config.label}
+    <span style={{
+      fontSize: 10, fontWeight: 700,
+      padding: '2px 8px', borderRadius: 4,
+      background: bull ? '#dcfce7' : '#fee2e2',
+      color: bull ? '#15803d' : '#dc2626',
+    }}>
+      {label}
     </span>
   );
 }

@@ -6,26 +6,44 @@ import WalletButton from '@/components/wallet/WalletButton';
 export default function Header() {
   return (
     <header
-      className="sticky top-0 z-50 flex items-center justify-between px-4 md:px-6 border-b"
       style={{
-        height: '56px',
-        backgroundColor: '#FFFFFF',
-        borderColor: 'rgba(0, 0, 0, 0.08)',
+        height: 54,
+        position: 'sticky',
+        top: 0,
+        zIndex: 10,
+        borderBottom: '1px solid #eeedea',
+        background: '#fff',
+        padding: '0 20px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
       }}
     >
-      {/* Left: Logo + App Name */}
-      <div className="flex items-center gap-2.5">
+      {/* Left: Logo + Name */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-sm"
           style={{
-            background: 'linear-gradient(135deg, #6B5CE7, #4F46E5)',
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: '#1a1917',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#fff',
+            fontSize: 13,
+            fontWeight: 800,
           }}
         >
           T
         </div>
         <span
-          className="font-semibold text-base"
-          style={{ color: '#1a1a1a' }}
+          style={{
+            fontSize: 15,
+            fontWeight: 700,
+            color: '#1a1917',
+            letterSpacing: '-0.02em',
+          }}
         >
           Theorise
         </span>

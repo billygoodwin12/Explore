@@ -1,40 +1,82 @@
 'use client';
 
 import React from 'react';
-import { motion } from 'framer-motion';
+
+const pulseKeyframes = `
+@keyframes typingPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+`;
 
 export default function TypingIndicator() {
   return (
-    <div className="flex items-center gap-3 px-4 py-3">
-      {/* Dots */}
-      <div className="flex items-center gap-1.5">
-        {[0, 1, 2].map((i) => (
-          <motion.div
-            key={i}
-            className="rounded-full"
+    <>
+      <style>{pulseKeyframes}</style>
+      <div style={{ display: 'flex', flexDirection: 'row', gap: 10, marginBottom: 16 }}>
+        {/* T icon */}
+        <div
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 8,
+            background: '#1a1917',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <span
             style={{
-              width: '6px',
-              height: '6px',
-              backgroundColor: '#6B5CE7',
+              fontSize: 12,
+              fontWeight: 800,
+              color: '#ffffff',
+              lineHeight: 1,
             }}
-            animate={{ opacity: [0.3, 1, 0.3] }}
-            transition={{
-              duration: 1.2,
-              repeat: Infinity,
-              delay: i * 0.2,
-              ease: 'easeInOut',
-            }}
-          />
-        ))}
-      </div>
+          >
+            T
+          </span>
+        </div>
 
-      {/* Text */}
-      <span
-        className="text-sm"
-        style={{ color: '#999999' }}
-      >
-        Thinking...
-      </span>
-    </div>
+        {/* Bubble */}
+        <div
+          style={{
+            padding: '12px 16px',
+            borderRadius: 16,
+            background: '#ffffff',
+            border: '1px solid #eeedea',
+            display: 'flex',
+            alignItems: 'center',
+          }}
+        >
+          {/* 3 dots */}
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#d5d3cf',
+                marginRight: i < 2 ? 4 : 0,
+                animation: `typingPulse 1s ease infinite ${i * 0.15}s`,
+              }}
+            />
+          ))}
+
+          {/* Text */}
+          <span
+            style={{
+              fontSize: 12,
+              color: '#b5b1ab',
+              marginLeft: 6,
+            }}
+          >
+            Mapping your thesis to markets&hellip;
+          </span>
+        </div>
+      </div>
+    </>
   );
 }
