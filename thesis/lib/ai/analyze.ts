@@ -4,21 +4,39 @@ import { ThesisAnalysis } from '../venues/types';
 
 const client = new Anthropic();
 
-export async function analyzeThesis(userInput: string): Promise<ThesisAnalysis> {
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface AnalysisResult {
+  mode: 'conversation' | 'trades';
+  content: string;
+  thesis?: ThesisAnalysis;
+}
+
+export async function analyzeThesis(
+  userInput: string,
+  history: ConversationMessage[] = [],
+): Promise<AnalysisResult> {
   if (!userInput || userInput.trim().length === 0) {
-    throw new Error('Thesis input cannot be empty');
+    throw new Error('Input cannot be empty');
   }
 
+  // Build message history for multi-turn conversation
+  const messages: Anthropic.MessageParam[] = [
+    ...history.map((msg) => ({
+      role: msg.role as 'user' | 'assistant',
+      content: msg.content,
+    })),
+    { role: 'user', content: userInput.trim() },
+  ];
+
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4096,
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 2048,
     system: THESIS_SYSTEM_PROMPT,
-    messages: [
-      {
-        role: 'user',
-        content: userInput.trim(),
-      },
-    ],
+    messages,
   });
 
   const textBlock = message.content.find((block) => block.type === 'text');
@@ -34,23 +52,36 @@ export async function analyzeThesis(userInput: string): Promise<ThesisAnalysis> 
     .replace(/\n?```\s*$/, '')
     .trim();
 
-  let parsed: unknown;
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonText);
   } catch {
-    throw new Error(
-      `Failed to parse Claude response as JSON. Raw response: ${rawText.slice(0, 500)}`
-    );
+    // If JSON parsing fails, treat as conversational response
+    return {
+      mode: 'conversation',
+      content: rawText,
+    };
   }
 
-  const analysis = parsed as ThesisAnalysis;
+  const mode = parsed.mode as string;
 
-  // Validate required fields
-  if (!analysis.thesis_summary || typeof analysis.thesis_summary !== 'string') {
+  // Conversational mode — just return the content
+  if (mode === 'conversation' || !parsed.recommendations) {
+    return {
+      mode: 'conversation',
+      content: (parsed.content as string) || rawText,
+    };
+  }
+
+  // Trade mode — validate and return structured analysis
+  const analysis: ThesisAnalysis = {
+    thesis_summary: (parsed.thesis_summary as string) || '',
+    causal_chain: (parsed.causal_chain as ThesisAnalysis['causal_chain']) || [],
+    recommendations: (parsed.recommendations as ThesisAnalysis['recommendations']) || [],
+  };
+
+  if (!analysis.thesis_summary) {
     throw new Error('Response missing valid thesis_summary');
-  }
-  if (!Array.isArray(analysis.causal_chain)) {
-    throw new Error('Response missing valid causal_chain array');
   }
   if (!Array.isArray(analysis.recommendations) || analysis.recommendations.length === 0) {
     throw new Error('Response missing valid recommendations array');
@@ -60,11 +91,15 @@ export async function analyzeThesis(userInput: string): Promise<ThesisAnalysis> 
   for (const rec of analysis.recommendations) {
     if (!rec.venue || !rec.symbol || !rec.direction || rec.conviction == null) {
       throw new Error(
-        `Invalid recommendation: missing required fields in ${JSON.stringify(rec)}`
+        `Invalid recommendation: missing required fields in ${JSON.stringify(rec)}`,
       );
     }
     rec.conviction = Math.max(0, Math.min(100, rec.conviction));
   }
 
-  return analysis;
+  return {
+    mode: 'trades',
+    content: (parsed.content as string) || 'Here are my trade recommendations based on your thesis.',
+    thesis: analysis,
+  };
 }

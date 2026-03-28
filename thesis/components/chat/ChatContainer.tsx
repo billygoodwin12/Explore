@@ -28,10 +28,16 @@ export default function ChatContainer() {
       setLoading(true);
 
       try {
+        // Build conversation history from store messages
+        const history = messages.map((msg) => ({
+          role: msg.role as 'user' | 'assistant',
+          content: msg.content,
+        }));
+
         const response = await fetch('/api/thesis/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: content }),
+          body: JSON.stringify({ message: content, history }),
         });
 
         if (!response.ok) {
@@ -40,25 +46,39 @@ export default function ChatContainer() {
 
         const data = await response.json();
 
-        // Add assistant message with thesis and recommendations
-        addMessage({
-          role: 'assistant',
-          content: data.content ?? data.message ?? 'Analysis complete.',
-          thesis: data.thesis ?? undefined,
-          enrichedRecommendations: data.enrichedRecommendations ?? data.recommendations ?? undefined,
-        });
+        if (data.mode === 'conversation') {
+          // Pure conversational response — no trade cards
+          addMessage({
+            role: 'assistant',
+            content: data.content,
+          });
+        } else {
+          // Trade recommendation response
+          addMessage({
+            role: 'assistant',
+            content: data.content,
+            thesis: data.thesis_summary
+              ? {
+                  thesis_summary: data.thesis_summary,
+                  causal_chain: data.causal_chain || [],
+                  recommendations: data.recommendations || [],
+                }
+              : undefined,
+            enrichedRecommendations: data.recommendations || undefined,
+          });
+        }
       } catch (error) {
-        console.error('Failed to analyze thesis:', error);
+        console.error('Failed to get response:', error);
         addMessage({
           role: 'assistant',
           content:
-            'I encountered an error while analyzing your thesis. Please try again.',
+            'I encountered an error processing your message. Please try again.',
         });
       } finally {
         setLoading(false);
       }
     },
-    [addMessage, setLoading],
+    [addMessage, setLoading, messages],
   );
 
   const showSuggestions = messages.length === 0;
@@ -93,8 +113,8 @@ export default function ChatContainer() {
               className="text-sm text-center max-w-md"
               style={{ color: 'var(--text-tertiary, rgba(255,255,255,0.30))' }}
             >
-              Share your view on geopolitics, economics, or markets and I&apos;ll
-              map it to actionable trades across venues.
+              Ask me about geopolitics, economics, or markets — or share a thesis
+              and I&apos;ll map it to actionable trades across venues.
             </p>
           </div>
         )}

@@ -1,25 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzeThesis } from '@/lib/ai/analyze';
+import { analyzeThesis, ConversationMessage } from '@/lib/ai/analyze';
 import { enrichRecommendations } from '@/lib/ai/enrich';
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { input } = body as { input?: string };
+    const { message, history } = body as {
+      message?: string;
+      history?: ConversationMessage[];
+    };
 
-    if (!input || typeof input !== 'string' || input.trim().length === 0) {
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
       return NextResponse.json(
-        { error: 'Missing or empty "input" field in request body' },
-        { status: 400 }
+        { error: 'Missing or empty "message" field in request body' },
+        { status: 400 },
       );
     }
 
-    const analysis = await analyzeThesis(input);
-    const enrichedRecommendations = await enrichRecommendations(analysis.recommendations);
+    const result = await analyzeThesis(message, history || []);
+
+    // Conversational response — no trade recommendations
+    if (result.mode === 'conversation') {
+      return NextResponse.json({
+        mode: 'conversation',
+        content: result.content,
+      });
+    }
+
+    // Trade response — enrich recommendations with market data
+    const enrichedRecommendations = result.thesis
+      ? await enrichRecommendations(result.thesis.recommendations)
+      : [];
 
     return NextResponse.json({
-      thesis_summary: analysis.thesis_summary,
-      causal_chain: analysis.causal_chain,
+      mode: 'trades',
+      content: result.content,
+      thesis_summary: result.thesis?.thesis_summary,
+      causal_chain: result.thesis?.causal_chain,
       recommendations: enrichedRecommendations,
     });
   } catch (err) {
@@ -28,7 +45,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       { error: message },
-      { status: isClientError ? 400 : 500 }
+      { status: isClientError ? 400 : 500 },
     );
   }
 }
