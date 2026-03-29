@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { Recommendation, MarketData } from '@/lib/venues/types';
 import VenueTag from './VenueTag';
 import DirectionBadge from './DirectionBadge';
@@ -9,6 +9,7 @@ import ConfidenceBar from './ConfidenceBar';
 interface TradeCardProps {
   recommendation: Recommendation;
   marketData: MarketData;
+  livePrice?: MarketData;
   index: number;
   selected: boolean;
   onToggle: () => void;
@@ -17,6 +18,7 @@ interface TradeCardProps {
 export default function TradeCard({
   recommendation,
   marketData,
+  livePrice,
   index,
   selected,
   onToggle,
@@ -25,19 +27,40 @@ export default function TradeCard({
   const [size, setSize] = useState('100');
   const [lev, setLev] = useState(recommendation.instrument_type === 'perp' ? '1x' : '');
   const [filled, setFilled] = useState(false);
+  const [flash, setFlash] = useState<'up' | 'down' | null>(null);
+  const prevPriceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const tm = setTimeout(() => setShow(true), 60 + index * 80);
     return () => clearTimeout(tm);
   }, [index]);
 
-  const formatPrice = (price: number) => {
-    if (price >= 1000) return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    if (price >= 1) return price.toFixed(2);
-    return price.toFixed(4);
+  // Use live price if available, otherwise fallback to initial market data
+  const currentData = livePrice || marketData;
+  const price = currentData.price;
+  const change24h = currentData.change24h;
+
+  // Flash animation on price change
+  useEffect(() => {
+    if (prevPriceRef.current !== null && prevPriceRef.current !== price) {
+      setFlash(price > prevPriceRef.current ? 'up' : 'down');
+      const tm = setTimeout(() => setFlash(null), 600);
+      prevPriceRef.current = price;
+      return () => clearTimeout(tm);
+    }
+    prevPriceRef.current = price;
+  }, [price]);
+
+  const formatPrice = (p: number) => {
+    if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    if (p >= 1) return p.toFixed(2);
+    return p.toFixed(4);
   };
 
   const isPerp = recommendation.instrument_type === 'perp';
+
+  const flashColor = flash === 'up' ? 'rgba(22, 163, 74, 0.08)' : flash === 'down' ? 'rgba(220, 38, 38, 0.08)' : undefined;
+  const priceColor = flash === 'up' ? '#16a34a' : flash === 'down' ? '#dc2626' : '#1a1917';
 
   return (
     <div
@@ -46,7 +69,7 @@ export default function TradeCard({
         opacity: show ? 1 : 0,
         transform: show ? 'translateY(0)' : 'translateY(6px)',
         transition: 'all 0.4s cubic-bezier(0.16,1,0.3,1)',
-        background: filled ? '#f0fdf4' : selected ? '#fafaf8' : 'white',
+        background: filled ? '#f0fdf4' : flashColor || (selected ? '#fafaf8' : 'white'),
         border: `1px solid ${filled ? '#bbf7d0' : selected ? '#e2e0db' : '#eeedea'}`,
         borderRadius: 12,
         padding: '14px 16px',
@@ -77,6 +100,18 @@ export default function TradeCard({
                 Filled ✓
               </span>
             )}
+            {livePrice && !filled && (
+              <span style={{
+                fontSize: 9, fontWeight: 600, color: '#16a34a', fontFamily: 'var(--mono)',
+                display: 'flex', alignItems: 'center', gap: 3,
+              }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: '50%', background: '#16a34a',
+                  animation: 'pulse 2s ease-in-out infinite',
+                }} />
+                LIVE
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 15, fontWeight: 600, color: '#1a1917', marginBottom: 3, letterSpacing: '-0.01em' }}>
             {recommendation.name}
@@ -87,14 +122,18 @@ export default function TradeCard({
         </div>
 
         <div style={{ textAlign: 'right', flexShrink: 0, minWidth: 90 }}>
-          <div style={{ fontSize: 17, fontWeight: 700, fontFamily: 'var(--mono)', color: '#1a1917', letterSpacing: '-0.02em' }}>
-            ${formatPrice(marketData.price)}
+          <div style={{
+            fontSize: 17, fontWeight: 700, fontFamily: 'var(--mono)', letterSpacing: '-0.02em',
+            color: priceColor,
+            transition: 'color 0.3s ease',
+          }}>
+            ${formatPrice(price)}
           </div>
           <div style={{
             fontSize: 10, fontFamily: 'var(--mono)', fontWeight: 600, marginTop: 3,
-            color: marketData.change24h >= 0 ? '#16a34a' : '#dc2626',
+            color: change24h >= 0 ? '#16a34a' : '#dc2626',
           }}>
-            {marketData.change24h >= 0 ? '+' : ''}{marketData.change24h.toFixed(2)}%
+            {change24h >= 0 ? '+' : ''}{change24h.toFixed(2)}%
           </div>
           <div style={{ marginTop: 6 }}>
             <ConfidenceBar confidence={recommendation.conviction} />

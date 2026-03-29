@@ -1,57 +1,46 @@
 'use client';
 
-// ---------------------------------------------------------------------------
-// usePriceStream – simulated WebSocket price streaming
-// ---------------------------------------------------------------------------
+import { useEffect, useRef, useState, useCallback } from 'react';
+import type { MarketData } from '@/lib/venues/types';
 
-import { useEffect, useRef, useState } from 'react';
+/**
+ * Polls the real Hyperliquid price API every `intervalMs` for live prices.
+ * Returns a map of symbol → MarketData that updates in real time.
+ */
+export function usePriceStream(symbols: string[], intervalMs = 5000) {
+  const [prices, setPrices] = useState<Record<string, MarketData>>({});
+  const symbolsKey = symbols.sort().join(',');
+  const activeRef = useRef(true);
 
-const BASE_PRICES: Record<string, number> = {
-  BTC: 87_200,
-  ETH: 2_015,
-  SOL: 142,
-  ARB: 1.12,
-  DOGE: 0.168,
-  AVAX: 35.5,
-  LINK: 14.8,
-  SPX: 5_450,
-  GC: 3_020,
-};
-
-function jitter(base: number): number {
-  const pct = (Math.random() - 0.5) * 0.004; // +/- 0.2%
-  return parseFloat((base * (1 + pct)).toPrecision(6));
-}
-
-export function usePriceStream(symbols: string[]) {
-  const [prices, setPrices] = useState<Record<string, number>>({});
-  const lastPrices = useRef<Record<string, number>>({});
+  const fetchPrices = useCallback(async () => {
+    if (!symbolsKey) return;
+    try {
+      const res = await fetch(`/api/markets/prices?symbols=${symbolsKey}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (activeRef.current && data.prices) {
+        setPrices(data.prices);
+      }
+    } catch {
+      // Silently ignore fetch errors
+    }
+  }, [symbolsKey]);
 
   useEffect(() => {
     if (symbols.length === 0) return;
+    activeRef.current = true;
 
-    // Seed initial prices
-    const seed: Record<string, number> = {};
-    for (const sym of symbols) {
-      const base = BASE_PRICES[sym.toUpperCase()] ?? 100 + Math.random() * 500;
-      seed[sym] = base;
-      lastPrices.current[sym] = base;
-    }
-    setPrices(seed);
+    // Fetch immediately
+    fetchPrices();
 
-    const interval = setInterval(() => {
-      const next: Record<string, number> = {};
-      for (const sym of symbols) {
-        const prev = lastPrices.current[sym] ?? 100;
-        const newPrice = jitter(prev);
-        next[sym] = newPrice;
-        lastPrices.current[sym] = newPrice;
-      }
-      setPrices((prev) => ({ ...prev, ...next }));
-    }, 2000);
+    // Then poll
+    const interval = setInterval(fetchPrices, intervalMs);
 
-    return () => clearInterval(interval);
-  }, [symbols.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      activeRef.current = false;
+      clearInterval(interval);
+    };
+  }, [fetchPrices, intervalMs, symbols.length]);
 
   return { prices };
 }

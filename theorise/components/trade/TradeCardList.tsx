@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import type { EnrichedRecommendation } from '@/lib/venues/types';
 import TradeCard from './TradeCard';
+import { usePriceStream } from '@/hooks/usePriceStream';
 
 interface TradeCardListProps {
   recommendations: EnrichedRecommendation[];
@@ -10,6 +11,17 @@ interface TradeCardListProps {
 
 export default function TradeCardList({ recommendations }: TradeCardListProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Collect Hyperliquid symbols for live price polling
+  const hlSymbols = useMemo(
+    () => recommendations
+      .filter((r) => r.venue === 'hyperliquid')
+      .map((r) => r.symbol),
+    [recommendations],
+  );
+
+  // Poll every 5 seconds for live Hyperliquid prices
+  const { prices: livePrices } = usePriceStream(hlSymbols, 5000);
 
   const toggle = useCallback((asset: string) => {
     setSelected((prev) => {
@@ -33,6 +45,7 @@ export default function TradeCardList({ recommendations }: TradeCardListProps) {
           key={`${rec.venue}-${rec.symbol}-${index}`}
           recommendation={rec}
           marketData={rec.marketData}
+          livePrice={rec.venue === 'hyperliquid' ? livePrices[rec.symbol.toUpperCase()] : undefined}
           index={index}
           selected={selected.has(rec.symbol)}
           onToggle={() => toggle(rec.symbol)}

@@ -26,9 +26,13 @@ export default function ChatContainer() {
       setLoading(true);
 
       try {
+        // Build history — send raw JSON for assistant messages so Claude
+        // stays in its "always respond with JSON" format
         const history = messages.map((msg) => ({
           role: msg.role as 'user' | 'assistant',
-          content: msg.content,
+          content: msg.role === 'assistant' && msg.rawJson
+            ? msg.rawJson
+            : msg.content,
         }));
 
         const response = await fetch('/api/thesis/analyze', {
@@ -47,11 +51,13 @@ export default function ChatContainer() {
           addMessage({
             role: 'assistant',
             content: data.content,
+            rawJson: data.rawJson,
           });
         } else {
           addMessage({
             role: 'assistant',
             content: data.content,
+            rawJson: data.rawJson,
             thesis: data.thesis_summary
               ? {
                   thesis_summary: data.thesis_summary,

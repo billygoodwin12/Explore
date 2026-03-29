@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         mode: 'conversation',
         content: result.content,
+        rawJson: result.rawJson,
       });
     }
 
@@ -35,6 +36,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       mode: 'trades',
       content: result.content,
+      rawJson: result.rawJson,
       thesis_summary: result.thesis?.thesis_summary,
       causal_chain: result.thesis?.causal_chain,
       recommendations: enrichedRecommendations,

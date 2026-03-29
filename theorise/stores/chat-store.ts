@@ -13,6 +13,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Raw JSON string from AI — used when sending history back to Claude */
+  rawJson?: string;
   thesis?: ThesisAnalysis;
   enrichedRecommendations?: EnrichedRecommendation[];
   timestamp: Date;
@@ -55,6 +57,7 @@ export const useChatStore = create<ChatStore>((set) => ({
           id: msg.id ?? generateId(),
           role: msg.role,
           content: msg.content,
+          rawJson: msg.rawJson,
           thesis: msg.thesis,
           enrichedRecommendations: msg.enrichedRecommendations,
           timestamp: msg.timestamp ?? new Date(),

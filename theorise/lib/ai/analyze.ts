@@ -12,7 +12,21 @@ export interface ConversationMessage {
 export interface AnalysisResult {
   mode: 'conversation' | 'trades';
   content: string;
+  /** Raw JSON string to store for history */
+  rawJson: string;
   thesis?: ThesisAnalysis;
+}
+
+/**
+ * Strip markdown code fences and extract JSON from various formats.
+ */
+function extractJson(raw: string): string {
+  let s = raw.trim();
+  // Remove opening code fence: ```json, ```, or similar
+  s = s.replace(/^`{3,}(?:json|JSON)?\s*\n?/, '');
+  // Remove closing code fence
+  s = s.replace(/\n?\s*`{3,}\s*$/, '');
+  return s.trim();
 }
 
 export async function analyzeThesis(
@@ -45,21 +59,18 @@ export async function analyzeThesis(
   }
 
   const rawText = textBlock.text.trim();
-
-  // Strip markdown code fences if present
-  const jsonText = rawText
-    .replace(/^```(?:json)?\s*\n?/, '')
-    .replace(/\n?```\s*$/, '')
-    .trim();
+  const jsonText = extractJson(rawText);
 
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonText);
   } catch {
     // If JSON parsing fails, treat as conversational response
+    // but clean up any JSON artifacts from the display text
     return {
       mode: 'conversation',
-      content: rawText,
+      content: jsonText.startsWith('{') ? 'Sorry, I had trouble formatting my response. Could you try again?' : rawText,
+      rawJson: JSON.stringify({ mode: 'conversation', content: rawText }),
     };
   }
 
@@ -67,9 +78,11 @@ export async function analyzeThesis(
 
   // Conversational mode — just return the content
   if (mode === 'conversation' || !parsed.recommendations) {
+    const content = (parsed.content as string) || rawText;
     return {
       mode: 'conversation',
-      content: (parsed.content as string) || rawText,
+      content,
+      rawJson: JSON.stringify({ mode: 'conversation', content }),
     };
   }
 
@@ -97,9 +110,12 @@ export async function analyzeThesis(
     rec.conviction = Math.max(0, Math.min(100, rec.conviction));
   }
 
+  const content = (parsed.content as string) || 'Here are my trade recommendations based on your thesis.';
+
   return {
     mode: 'trades',
-    content: (parsed.content as string) || 'Here are my trade recommendations based on your thesis.',
+    content,
+    rawJson: jsonText,
     thesis: analysis,
   };
 }
