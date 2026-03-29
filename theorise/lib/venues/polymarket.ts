@@ -18,8 +18,62 @@ interface GammaMarket {
   endDate: string;
   active: boolean;
   closed: boolean;
-  image: string;
   description: string;
+}
+
+// ---------------------------------------------------------------------------
+// Cache top markets so we can do client-side keyword matching
+// ---------------------------------------------------------------------------
+
+let cachedMarkets: { markets: GammaMarket[]; ts: number } | null = null;
+const CACHE_TTL = 120_000; // 2 minutes
+
+async function fetchTopMarkets(): Promise<GammaMarket[]> {
+  if (cachedMarkets && Date.now() - cachedMarkets.ts < CACHE_TTL) {
+    return cachedMarkets.markets;
+  }
+
+  // Fetch a large batch of active, high-volume markets
+  const params = new URLSearchParams({
+    active: 'true',
+    closed: 'false',
+    order: 'volume24hr',
+    ascending: 'false',
+    limit: '100',
+  });
+
+  const res = await fetch(`${GAMMA_API}/markets?${params.toString()}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Polymarket API error: ${res.status} ${res.statusText}`);
+  }
+
+  const markets: GammaMarket[] = await res.json();
+  cachedMarkets = { markets, ts: Date.now() };
+  return markets;
+}
+
+// ---------------------------------------------------------------------------
+// Keyword matching — score markets against a search query
+// ---------------------------------------------------------------------------
+
+function scoreMarket(market: GammaMarket, keywords: string[]): number {
+  const text = `${market.question} ${market.description || ''}`.toLowerCase();
+  let score = 0;
+  for (const kw of keywords) {
+    if (text.includes(kw)) {
+      // Bonus for question match vs description match
+      score += market.question.toLowerCase().includes(kw) ? 3 : 1;
+    }
+  }
+  // Boost by volume (prefer liquid markets)
+  const vol = parseFloat(market.volume24hr) || 0;
+  if (vol > 500_000) score += 2;
+  else if (vol > 100_000) score += 1;
+  return score;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,65 +82,46 @@ interface GammaMarket {
 
 /**
  * Search for prediction markets matching a query string.
- * Calls the real Polymarket Gamma API.
+ * Uses client-side keyword matching against top active markets,
+ * since the Gamma API search is unreliable.
  */
 export async function searchMarkets(query: string): Promise<GammaMarket[]> {
-  const params = new URLSearchParams({
-    closed: 'false',
-    active: 'true',
-    limit: '10',
-  });
-  if (query) {
-    params.set('search', query);
-  }
+  const markets = await fetchTopMarkets();
 
-  const res = await fetch(`${GAMMA_API}/markets?${params.toString()}`, {
-    method: 'GET',
-    headers: { 'Accept': 'application/json' },
-  });
+  if (!query) return markets.slice(0, 10);
 
-  if (!res.ok) {
-    throw new Error(`Polymarket API error: ${res.status} ${res.statusText}`);
-  }
+  const keywords = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2); // drop short words like "a", "in", "by"
 
-  const markets: GammaMarket[] = await res.json();
-  return markets;
+  if (keywords.length === 0) return markets.slice(0, 10);
+
+  const scored = markets
+    .map((m) => ({ market: m, score: scoreMarket(m, keywords) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, 10).map((s) => s.market);
 }
 
 /**
- * Search for a single market by its slug or question text.
+ * Find the best matching market for a query.
  */
-export async function findMarket(slugOrQuery: string): Promise<GammaMarket | null> {
-  // Try slug-based lookup first
-  const params = new URLSearchParams({
-    slug: slugOrQuery,
-    closed: 'false',
-  });
-
-  let res = await fetch(`${GAMMA_API}/markets?${params.toString()}`, {
-    method: 'GET',
-    headers: { 'Accept': 'application/json' },
-  });
-
-  if (res.ok) {
-    const markets: GammaMarket[] = await res.json();
-    if (markets.length > 0) return markets[0];
-  }
-
-  // Fallback: search by text
-  const searchResults = await searchMarkets(slugOrQuery);
-  return searchResults.length > 0 ? searchResults[0] : null;
+export async function findMarket(query: string): Promise<GammaMarket | null> {
+  const results = await searchMarkets(query);
+  return results.length > 0 ? results[0] : null;
 }
 
 /**
  * Fetch market data for a specific Polymarket prediction market.
- * Accepts a slug, condition ID, or search query.
+ * Accepts a search query — finds the best matching active market.
  */
 export async function getMarketData(identifier: string): Promise<MarketData> {
   const market = await findMarket(identifier);
 
   if (!market) {
-    throw new Error(`Polymarket market "${identifier}" not found`);
+    throw new Error(`Polymarket: no market found for "${identifier}"`);
   }
 
   // Parse outcome prices — [yesPrice, noPrice]
@@ -99,14 +134,14 @@ export async function getMarketData(identifier: string): Promise<MarketData> {
   }
 
   const volume24h = parseFloat(market.volume24hr) || 0;
-  const totalVolume = parseFloat(market.volume) || 0;
 
   return {
     price: yesPrice,
-    change24h: 0, // Gamma API doesn't provide 24h price change directly
+    change24h: 0, // Gamma API doesn't provide 24h price change
     volume24h,
     expiryDate: market.endDate?.split('T')[0],
-    totalTraders: Math.round(totalVolume / 50), // rough estimate
+    totalTraders: Math.round((parseFloat(market.volume) || 0) / 50),
+    matchedQuestion: market.question,
   };
 }
 

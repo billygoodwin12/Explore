@@ -48,6 +48,8 @@ export interface MarketData {
   openInterest?: number;
   expiryDate?: string;
   totalTraders?: number;
+  /** For Polymarket: the actual matched market question */
+  matchedQuestion?: string;
 }
 
 export interface EnrichedRecommendation extends Recommendation {

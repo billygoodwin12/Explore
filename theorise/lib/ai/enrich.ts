@@ -28,7 +28,13 @@ export async function enrichRecommendations(
         marketData = fallbackMarketData(rec);
       }
 
-      return { ...rec, marketData } satisfies EnrichedRecommendation;
+      // If Polymarket matched a real question, use it as the display name
+      const name =
+        rec.venue === 'polymarket' && marketData.matchedQuestion
+          ? marketData.matchedQuestion
+          : rec.name;
+
+      return { ...rec, name, marketData } satisfies EnrichedRecommendation;
     })
   );
 
