@@ -51,7 +51,27 @@ async function fetchTopMarkets(): Promise<GammaMarket[]> {
     throw new Error(`Polymarket API error: ${res.status} ${res.statusText}`);
   }
 
-  const markets: GammaMarket[] = await res.json();
+  const raw: GammaMarket[] = await res.json();
+
+  // Filter out markets whose end date has passed or are nearly resolved (price < 0.05 or > 0.95)
+  const now = new Date();
+  const markets = raw.filter((m) => {
+    // Drop markets with past end dates
+    if (m.endDate) {
+      const end = new Date(m.endDate);
+      if (end < now) return false;
+    }
+    // Drop markets that are essentially resolved (yes price < 5% or > 95%)
+    try {
+      const prices = JSON.parse(m.outcomePrices);
+      const yesPrice = parseFloat(prices[0]);
+      if (yesPrice < 0.05 || yesPrice > 0.95) return false;
+    } catch {
+      // keep if we can't parse
+    }
+    return true;
+  });
+
   cachedMarkets = { markets, ts: Date.now() };
   return markets;
 }
@@ -73,6 +93,13 @@ function scoreMarket(market: GammaMarket, keywords: string[]): number {
   const vol = parseFloat(market.volume24hr) || 0;
   if (vol > 500_000) score += 2;
   else if (vol > 100_000) score += 1;
+
+  // Penalize markets ending within 7 days (likely stale / nearly resolved)
+  if (market.endDate) {
+    const daysLeft = (new Date(market.endDate).getTime() - Date.now()) / 86_400_000;
+    if (daysLeft < 7) score -= 2;
+  }
+
   return score;
 }
 
