@@ -1,117 +1,139 @@
 import { MarketData, Position, TradeOrder, TradeResult } from '@/lib/venues/types';
 
-// ---------------------------------------------------------------------------
-// Mock price catalogue
-// ---------------------------------------------------------------------------
-
-const MOCK_PRICES: Record<string, { price: number; change24h: number }> = {
-  BTC:  { price: 87_200, change24h: 2.4 },
-  ETH:  { price: 2_015,  change24h: 1.8 },
-  SOL:  { price: 142,    change24h: 3.1 },
-  ARB:  { price: 1.12,   change24h: -0.6 },
-  DOGE: { price: 0.168,  change24h: 4.2 },
-  AVAX: { price: 35.5,   change24h: 1.2 },
-  LINK: { price: 14.8,   change24h: -0.3 },
-  MATIC:{ price: 0.52,   change24h: -1.1 },
-  OP:   { price: 1.85,   change24h: 2.0 },
-  APT:  { price: 8.9,    change24h: 0.5 },
-  CL:   { price: 70.45,  change24h: -1.2 },
-  GC:   { price: 3_020,  change24h: 0.8 },
-  SI:   { price: 33.5,   change24h: 1.5 },
-  NG:   { price: 2.85,   change24h: -2.3 },
-  HG:   { price: 4.15,   change24h: 0.3 },
-  SPX:  { price: 5_450,  change24h: 0.4 },
-  NDQ:  { price: 18_900, change24h: 0.6 },
-  RUT:  { price: 2_050,  change24h: -0.2 },
-  EUR:  { price: 1.085,  change24h: 0.1 },
-  GBP:  { price: 1.265,  change24h: -0.1 },
-  JPY:  { price: 151.2,  change24h: 0.3 },
-};
+const API_URL = 'https://api.hyperliquid.xyz/info';
 
 // ---------------------------------------------------------------------------
-// Hyperliquid client (mock implementation)
+// Types for Hyperliquid API responses
+// ---------------------------------------------------------------------------
+
+interface AssetMeta {
+  name: string;
+  szDecimals: number;
+}
+
+interface AssetCtx {
+  funding: string;
+  openInterest: string;
+  prevDayPx: string;
+  dayNtlVlm: string;
+  premium: string;
+  oraclePx: string;
+  markPx: string;
+  midPx?: string;
+}
+
+// Cache for asset metadata (universe list) — refreshed every 60s
+let cachedMeta: { assets: AssetMeta[]; contexts: AssetCtx[]; ts: number } | null = null;
+const CACHE_TTL = 60_000;
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+async function fetchMetaAndCtxs(): Promise<{ assets: AssetMeta[]; contexts: AssetCtx[] }> {
+  if (cachedMeta && Date.now() - cachedMeta.ts < CACHE_TTL) {
+    return { assets: cachedMeta.assets, contexts: cachedMeta.contexts };
+  }
+
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Hyperliquid API error: ${res.status} ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  // Response is [meta, assetCtxs] where meta has { universe: AssetMeta[] }
+  const assets: AssetMeta[] = data[0].universe;
+  const contexts: AssetCtx[] = data[1];
+
+  cachedMeta = { assets, contexts, ts: Date.now() };
+  return { assets, contexts };
+}
+
+/**
+ * Find the index of a symbol in the Hyperliquid universe.
+ * Tries exact match first, then case-insensitive.
+ */
+function findAssetIndex(assets: AssetMeta[], symbol: string): number {
+  const upper = symbol.toUpperCase();
+  // Common aliases
+  const ALIASES: Record<string, string> = {
+    BITCOIN: 'BTC',
+    ETHEREUM: 'ETH',
+    SOLANA: 'SOL',
+  };
+  const resolved = ALIASES[upper] ?? upper;
+
+  const idx = assets.findIndex(
+    (a) => a.name.toUpperCase() === resolved,
+  );
+  return idx;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch market data for a Hyperliquid perpetual instrument.
- *
- * Returns mock data while we don't have production API keys.
- * The interface matches what the real Hyperliquid REST API would return.
+ * Get the list of all tradeable symbols on Hyperliquid.
+ */
+export async function getAvailableSymbols(): Promise<string[]> {
+  const { assets } = await fetchMetaAndCtxs();
+  return assets.map((a) => a.name);
+}
+
+/**
+ * Fetch real-time market data for a Hyperliquid perpetual instrument.
  */
 export async function getMarketData(symbol: string): Promise<MarketData> {
-  const known = MOCK_PRICES[symbol.toUpperCase()];
-  const price = known?.price ?? 100 + Math.random() * 900;
-  const change24h = known?.change24h ?? parseFloat(((Math.random() - 0.5) * 10).toFixed(2));
+  const { assets, contexts } = await fetchMetaAndCtxs();
+  const idx = findAssetIndex(assets, symbol);
+
+  if (idx === -1) {
+    throw new Error(`Symbol "${symbol}" not found on Hyperliquid`);
+  }
+
+  const ctx = contexts[idx];
+  const markPrice = parseFloat(ctx.markPx);
+  const prevDayPrice = parseFloat(ctx.prevDayPx);
+  const change24h = prevDayPrice > 0
+    ? ((markPrice - prevDayPrice) / prevDayPrice) * 100
+    : 0;
 
   return {
-    price,
-    change24h,
-    volume24h: Math.round(price * (500_000 + Math.random() * 5_000_000)),
-    fundingRate: parseFloat(((Math.random() - 0.3) * 0.06).toFixed(4)),
-    openInterest: Math.round(price * (1_000_000 + Math.random() * 20_000_000)),
+    price: markPrice,
+    change24h: parseFloat(change24h.toFixed(2)),
+    volume24h: parseFloat(ctx.dayNtlVlm),
+    fundingRate: parseFloat(ctx.funding),
+    openInterest: parseFloat(ctx.openInterest),
   };
 }
 
 /**
  * Fetch account state for a Hyperliquid wallet address.
+ * Still mock — requires wallet signature for real data.
  */
 export async function getAccountState(
   address: string,
 ): Promise<{ balance: number; positions: Position[] }> {
-  // Return mock account with a few positions
   return {
-    balance: 25_000,
-    positions: [
-      {
-        venue: 'hyperliquid',
-        symbol: 'BTC',
-        name: 'Bitcoin Perpetual',
-        direction: 'LONG',
-        size: 0.15,
-        entryPrice: 85_400,
-        currentPrice: 87_200,
-        unrealizedPnl: 270,
-        unrealizedPnlPercent: 2.11,
-        leverage: 3,
-        liquidationPrice: 62_100,
-      },
-      {
-        venue: 'hyperliquid',
-        symbol: 'ETH',
-        name: 'Ethereum Perpetual',
-        direction: 'SHORT',
-        size: 5,
-        entryPrice: 2_080,
-        currentPrice: 2_015,
-        unrealizedPnl: 325,
-        unrealizedPnlPercent: 3.13,
-        leverage: 5,
-        liquidationPrice: 2_480,
-      },
-    ],
+    balance: 0,
+    positions: [],
   };
 }
 
 /**
  * Place an order on Hyperliquid.
- *
- * Returns a mock fill result. In production this would sign and submit
- * the order via the Hyperliquid exchange API.
+ * Still mock — requires wallet signature for real execution.
  */
 export async function placeOrder(order: TradeOrder): Promise<TradeResult> {
-  const known = MOCK_PRICES[order.symbol.toUpperCase()];
-  const basePrice = known?.price ?? 100 + Math.random() * 5_000;
-
-  // Simulate slight slippage based on direction
-  const slippage =
-    order.direction === 'LONG' || order.direction === 'BUY_YES' ? 1.001 : 0.999;
-  const fillPrice = parseFloat((basePrice * slippage).toFixed(4));
-
   return {
-    orderId: `HL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    status: 'filled',
-    fillPrice,
-    txHash: `0x${Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('')}`,
-    filledAt: new Date().toISOString(),
+    orderId: `HL-${Date.now()}-mock`,
+    status: 'pending',
+    error: 'Execution not yet implemented — connect wallet first',
   };
 }

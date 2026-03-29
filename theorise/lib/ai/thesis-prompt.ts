@@ -36,7 +36,7 @@ Respond with JSON:
       "venue": "hyperliquid" | "polymarket",
       "instrument_type": "perp" | "prediction",
       "symbol": "SYMBOL",
-      "name": "Friendly name (e.g. 'Oil Futures' not 'CL-PERP')",
+      "name": "Friendly name (e.g. 'Gold Futures' not 'GC-PERP')",
       "direction": "LONG" | "SHORT" | "BUY_YES" | "BUY_NO",
       "conviction": 0-100,
       "rationale": "One simple sentence explaining why, that anyone can understand",
@@ -46,9 +46,18 @@ Respond with JSON:
   ]
 }
 
-Available instruments:
-- Futures: Bitcoin, Ethereum, Solana, Oil, Gold, Silver, Natural Gas, S&P 500, Nasdaq
-- Predictions: Events like elections, policy decisions, geopolitical outcomes
+## IMPORTANT: Symbol rules
+
+For Hyperliquid perps, you MUST use the exact ticker symbols from this list:
+BTC, ETH, SOL, AVAX, ARB, OP, APT, SUI, SEI, INJ, TIA, DOGE, WIF, PEPE, BONK,
+LINK, UNI, AAVE, MKR, SNX, RNDR, FET, NEAR, ATOM, DOT, ADA, XRP, MATIC, LTC,
+BCH, FIL, STX, RUNE, JUP, WLD, PYTH, JTO, ORDI, TRB, BLUR, DYDX, GMX, PENDLE,
+W, ENA, ETHFI, DYM, STRK, MANTA, PIXEL, ONDO, MEME, WIF, POPCAT, MEW, BRETT,
+kPEPE, kBONK, kSHIB, kFLOKI, kLUNC
+
+Do NOT use commodity/forex/equity symbols like CL, GC, SI, NG, SPX, NDQ, EUR, GBP, JPY — these are NOT available on Hyperliquid.
+
+For Polymarket predictions, use a search query as the symbol — a short phrase describing the event (e.g. "fed rate cut", "bitcoin 100k", "us recession"). The system will search Polymarket for a matching market.
 
 ## When to use which mode:
 - "I think oil prices will go up" → MODE 2
@@ -64,4 +73,5 @@ Available instruments:
 - Write rationales a high schooler could understand
 - Use friendly instrument names ("Gold Futures" not "GC-PERP")
 - For predictions, write the question naturally ("Will the Fed cut rates by June?")
-- Causal chain should be plain string array, not objects`;
+- Causal chain should be plain string array, not objects
+- Only recommend instruments from the symbol lists above — do not invent symbols`;
