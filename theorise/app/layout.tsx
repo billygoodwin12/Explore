@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import '@/styles/globals.css';
 import WalletProvider from '@/components/wallet/WalletProvider';
+import Header from '@/components/layout/Header';
 
 export const metadata: Metadata = {
   title: 'Theorise',
-  description: 'Turn your ideas into investments.',
+  description: 'Trade on your convictions. Build a vault. Let others invest in your edge.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -19,7 +20,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
-        <WalletProvider>{children}</WalletProvider>
+        <WalletProvider>
+          <Header />
+          <main
+            style={{
+              maxWidth: 1200,
+              margin: '0 auto',
+              padding: '0 24px',
+              minHeight: 'calc(100vh - 57px)',
+            }}
+          >
+            {children}
+          </main>
+        </WalletProvider>
       </body>
     </html>
   );

@@ -2,55 +2,73 @@
 
 import React from 'react';
 import WalletButton from '@/components/wallet/WalletButton';
+import TabNavigation from './TabNavigation';
 
 export default function Header() {
   return (
     <header
       style={{
-        height: 54,
         position: 'sticky',
         top: 0,
-        zIndex: 10,
-        borderBottom: '1px solid #eeedea',
-        background: '#fff',
-        padding: '0 20px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
+        zIndex: 50,
+        background: 'var(--bg)',
+        borderBottom: '1px solid var(--border)',
       }}
     >
-      {/* Left: Logo + Name */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 8,
-            background: '#1a1917',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#fff',
-            fontSize: 13,
-            fontWeight: 800,
-          }}
-        >
-          T
+      {/* Main header bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 24px',
+          height: 56,
+          maxWidth: 1200,
+          margin: '0 auto',
+        }}
+      >
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--text-primary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: 800,
+                color: 'var(--text-inverse)',
+                lineHeight: 1,
+              }}
+            >
+              T
+            </span>
+          </div>
+          <span
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              letterSpacing: '-0.03em',
+              color: 'var(--text-primary)',
+            }}
+          >
+            Theorise
+          </span>
         </div>
-        <span
-          style={{
-            fontSize: 15,
-            fontWeight: 700,
-            color: '#1a1917',
-            letterSpacing: '-0.02em',
-          }}
-        >
-          Theorise
-        </span>
-      </div>
 
-      {/* Right: Wallet */}
-      <WalletButton />
+        {/* Center: Tab nav (hidden on mobile) */}
+        <TabNavigation />
+
+        {/* Right: Wallet */}
+        <WalletButton />
+      </div>
     </header>
   );
 }
