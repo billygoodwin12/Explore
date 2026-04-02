@@ -2,27 +2,33 @@
 
 import { useState } from 'react';
 import { C, D, M, fmt } from '@/styles/tokens';
-
-const PERPS = [
-  { sym: 'BTC', name: 'Bitcoin',    price: 87241.50, chg: 2.41,  funding: 0.0045, oi: '2.1B', cat: 'crypto' },
-  { sym: 'ETH', name: 'Ethereum',   price: 1842.30,  chg: -0.89, funding: 0.0067, oi: '890M', cat: 'crypto' },
-  { sym: 'SOL', name: 'Solana',     price: 142.85,   chg: 4.12,  funding: 0.0082, oi: '340M', cat: 'crypto' },
-  { sym: 'CL',  name: 'Crude Oil',  price: 71.42,    chg: 3.14,  funding: 0.0031, oi: '180M', cat: 'commodity' },
-  { sym: 'GC',  name: 'Gold',       price: 2441.80,  chg: 0.67,  funding: -0.0015, oi: '420M', cat: 'commodity' },
-  { sym: 'NQ',  name: 'Nasdaq 100', price: 21345.40, chg: -1.23, funding: 0.0041, oi: '560M', cat: 'index' },
-  { sym: 'NG',  name: 'Nat Gas',    price: 2.84,     chg: 1.92,  funding: 0.0022, oi: '95M',  cat: 'commodity' },
-  { sym: 'ES',  name: 'S&P 500',    price: 5892.10,  chg: -0.45, funding: 0.0033, oi: '310M', cat: 'index' },
-] as const;
-
-type Perp = typeof PERPS[number];
+import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 
 export default function TradePage() {
-  const [selected, setSelected] = useState<Perp>(PERPS[0]);
-  const [side, setSide]         = useState<'long' | 'short'>('long');
-  const [lev, setLev]           = useState('3x');
-  const [cat, setCat]           = useState('all');
+  const { markets, loading } = useMarketData(5000);
+  const [selectedSym, setSelectedSym] = useState('BTC');
+  const [side, setSide]               = useState<'long' | 'short'>('long');
+  const [lev, setLev]                 = useState('3x');
+  const [cat, setCat]                 = useState('all');
 
-  const list = cat === 'all' ? PERPS : PERPS.filter(p => p.cat === cat);
+  const selected = markets.find(m => m.sym === selectedSym) || markets[0];
+  const list = cat === 'all' ? markets : markets.filter(p => p.cat === cat);
+
+  if (loading && markets.length === 0) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted, fontFamily: M, fontSize: 13 }}>
+        Loading markets...
+      </div>
+    );
+  }
+
+  if (!selected) return null;
+
+  const levOptions = (() => {
+    const max = selected.maxLeverage || 20;
+    const all = [1, 2, 3, 5, 10, 20, 40];
+    return all.filter(l => l <= max).map(l => `${l}x`);
+  })();
 
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -34,7 +40,7 @@ export default function TradePage() {
             Markets
           </div>
           <div style={{ display: 'flex', gap: 3 }}>
-            {['all', 'crypto', 'commodity', 'index'].map(c => (
+            {['all', 'crypto'].map(c => (
               <button key={c} onClick={() => setCat(c)} style={{
                 padding: '5px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
                 fontSize: 11, fontWeight: 600, textTransform: 'capitalize', fontFamily: D,
@@ -47,7 +53,7 @@ export default function TradePage() {
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 4 }}>
           {list.map(p => (
-            <div key={p.sym} onClick={() => setSelected(p)} style={{
+            <div key={p.sym} onClick={() => setSelectedSym(p.sym)} style={{
               display: 'flex', alignItems: 'center', padding: '9px 10px', gap: 10,
               cursor: 'pointer', borderRadius: 8,
               background: selected.sym === p.sym ? C.bg : 'transparent',
@@ -60,7 +66,7 @@ export default function TradePage() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: C.primary, fontFamily: D }}>{p.name}</div>
                 <div style={{ fontSize: 10, color: C.muted, fontFamily: M }}>
-                  Fund: {p.funding > 0 ? '+' : ''}{(p.funding * 100).toFixed(4)}%
+                  Fund: {p.funding >= 0 ? '+' : ''}{(p.funding * 100).toFixed(4)}%
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -87,8 +93,9 @@ export default function TradePage() {
                 <span style={{ fontSize: 12, fontWeight: 500, color: C.muted }}>Perp</span>
               </div>
               <div style={{ display: 'flex', gap: 14, fontSize: 10, fontFamily: M, color: C.secondary, marginTop: 1 }}>
-                <span>OI {selected.oi}</span>
-                <span>Funding {selected.funding > 0 ? '+' : ''}{(selected.funding * 100).toFixed(4)}%</span>
+                <span>OI ${selected.oi}</span>
+                <span>Funding {selected.funding >= 0 ? '+' : ''}{(selected.funding * 100).toFixed(4)}%</span>
+                <span>Max {selected.maxLeverage}x</span>
               </div>
             </div>
           </div>
@@ -146,7 +153,7 @@ export default function TradePage() {
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Leverage</div>
           <div style={{ display: 'flex', gap: 2, background: C.bg, borderRadius: 7, padding: 2, border: `1px solid ${C.borderLight}` }}>
-            {['1x', '2x', '3x', '5x', '10x', '20x'].map(l => (
+            {levOptions.map(l => (
               <button key={l} onClick={() => setLev(l)} style={{
                 flex: 1, padding: '6px 0', borderRadius: 5, border: 'none', cursor: 'pointer',
                 fontSize: 10, fontWeight: 700, fontFamily: M,
