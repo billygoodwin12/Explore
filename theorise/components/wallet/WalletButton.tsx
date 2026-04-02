@@ -3,7 +3,31 @@
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { C, M } from '@/styles/tokens';
 
+const hasWalletConnect = !!process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+
 export default function WalletButton() {
+  if (!hasWalletConnect) {
+    return (
+      <button
+        disabled
+        style={{
+          padding: '7px 16px',
+          borderRadius: 8,
+          fontSize: 12,
+          fontWeight: 700,
+          fontFamily: M,
+          background: C.primary,
+          color: 'white',
+          border: `1px solid ${C.primary}`,
+          opacity: 0.5,
+          cursor: 'not-allowed',
+        }}
+      >
+        Connect Wallet
+      </button>
+    );
+  }
+
   return (
     <ConnectButton.Custom>
       {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
