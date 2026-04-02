@@ -1,4 +1,4 @@
-import { http, createConfig } from 'wagmi';
+import { http } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
 import { getDefaultConfig } from '@rainbow-me/rainbowkit';
 
@@ -9,12 +9,17 @@ import { getDefaultConfig } from '@rainbow-me/rainbowkit';
  *
  * When moving to mainnet, switch to Arbitrum One.
  */
-export const config = getDefaultConfig({
-  appName: 'Theorise',
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'placeholder',
-  chains: [arbitrumSepolia],
-  transports: {
-    [arbitrumSepolia.id]: http(),
-  },
-  ssr: true,
-});
+
+const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+
+export const config = projectId
+  ? getDefaultConfig({
+      appName: 'Theorise',
+      projectId,
+      chains: [arbitrumSepolia],
+      transports: {
+        [arbitrumSepolia.id]: http(),
+      },
+      ssr: true,
+    })
+  : null;

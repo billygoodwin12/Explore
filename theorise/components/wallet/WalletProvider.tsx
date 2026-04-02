@@ -18,10 +18,8 @@ const queryClient = new QueryClient({
   },
 });
 
-const hasWalletConnect = !!process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
-
 export default function WalletProvider({ children }: { children: React.ReactNode }) {
-  if (!hasWalletConnect) {
+  if (!config) {
     return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   }
 
