@@ -11,7 +11,7 @@ import { getDefaultConfig } from '@rainbow-me/rainbowkit';
  */
 export const config = getDefaultConfig({
   appName: 'Theorise',
-  projectId: process.env.NEXT_PUBLIC_WC_PROJECT_ID || 'demo',
+  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'placeholder',
   chains: [arbitrumSepolia],
   transports: {
     [arbitrumSepolia.id]: http(),
