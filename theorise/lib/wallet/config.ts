@@ -1,6 +1,6 @@
-import { http } from 'wagmi';
+import { http, createConfig } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { getDefaultConfig } from '@rainbow-me/rainbowkit';
+import { injected, metaMask } from 'wagmi/connectors';
 
 /**
  * Hyperliquid testnet uses Arbitrum Sepolia for bridging.
@@ -9,17 +9,11 @@ import { getDefaultConfig } from '@rainbow-me/rainbowkit';
  *
  * When moving to mainnet, switch to Arbitrum One.
  */
-
-const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
-
-export const config = projectId
-  ? getDefaultConfig({
-      appName: 'Theorise',
-      projectId,
-      chains: [arbitrumSepolia],
-      transports: {
-        [arbitrumSepolia.id]: http(),
-      },
-      ssr: true,
-    })
-  : null;
+export const config = createConfig({
+  chains: [arbitrumSepolia],
+  connectors: [injected(), metaMask()],
+  transports: {
+    [arbitrumSepolia.id]: http(),
+  },
+  ssr: true,
+});

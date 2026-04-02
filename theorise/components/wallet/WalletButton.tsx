@@ -1,67 +1,67 @@
 'use client';
 
-import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { C, M } from '@/styles/tokens';
 
-const hasWalletConnect = !!process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
-
 export default function WalletButton() {
-  if (!hasWalletConnect) {
+  const { address, isConnected } = useAccount();
+  const { connect, connectors } = useConnect();
+  const { disconnect } = useDisconnect();
+
+  const displayAddress = address
+    ? `${address.slice(0, 6)}...${address.slice(-4)}`
+    : '';
+
+  if (isConnected) {
     return (
       <button
-        disabled
+        onClick={() => disconnect()}
         style={{
           padding: '7px 16px',
           borderRadius: 8,
+          cursor: 'pointer',
           fontSize: 12,
           fontWeight: 700,
           fontFamily: M,
-          background: C.primary,
-          color: 'white',
-          border: `1px solid ${C.primary}`,
-          opacity: 0.5,
-          cursor: 'not-allowed',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          background: C.greenBg,
+          color: C.green,
+          border: '1px solid #B2E5CC',
+          transition: 'all 0.15s',
         }}
       >
-        Connect Wallet
+        <div style={{
+          width: 6, height: 6, borderRadius: '50%',
+          background: C.green,
+          boxShadow: `0 0 6px ${C.green}44`,
+        }} />
+        {displayAddress}
       </button>
     );
   }
 
   return (
-    <ConnectButton.Custom>
-      {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
-        const connected = mounted && account && chain;
-        return (
-          <button
-            onClick={connected ? openAccountModal : openConnectModal}
-            style={{
-              padding: '7px 16px',
-              borderRadius: 8,
-              cursor: 'pointer',
-              fontSize: 12,
-              fontWeight: 700,
-              fontFamily: M,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 7,
-              background: connected ? C.greenBg : C.primary,
-              color: connected ? C.green : 'white',
-              border: connected ? '1px solid #B2E5CC' : `1px solid ${C.primary}`,
-              transition: 'all 0.15s',
-            }}
-          >
-            {connected && (
-              <div style={{
-                width: 6, height: 6, borderRadius: '50%',
-                background: C.green,
-                boxShadow: `0 0 6px ${C.green}44`,
-              }} />
-            )}
-            {connected ? account.displayName : 'Connect Wallet'}
-          </button>
-        );
+    <button
+      onClick={() => {
+        const connector = connectors[0];
+        if (connector) connect({ connector });
       }}
-    </ConnectButton.Custom>
+      style={{
+        padding: '7px 16px',
+        borderRadius: 8,
+        cursor: 'pointer',
+        fontSize: 12,
+        fontWeight: 700,
+        fontFamily: M,
+        background: C.primary,
+        color: 'white',
+        border: `1px solid ${C.primary}`,
+        transition: 'all 0.15s',
+      }}
+    >
+      Connect Wallet
+    </button>
   );
 }
