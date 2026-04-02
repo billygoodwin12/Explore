@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData, type MarketData } from '@/hooks/useMarketData';
+import Chart from '@/components/chart/Chart';
 
 export default function TradePage() {
   const { markets, loading } = useMarketData();
@@ -110,13 +111,7 @@ export default function TradePage() {
         </div>
 
         <div style={{ flex: 1, padding: 16 }}>
-          <div style={{ width: '100%', height: '100%', borderRadius: 10, background: C.card, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ textAlign: 'center', color: C.muted }}>
-              <div style={{ fontSize: 32, marginBottom: 6, opacity: 0.25 }}>📊</div>
-              <div style={{ fontSize: 13, fontFamily: D }}>TradingView chart</div>
-              <div style={{ fontSize: 10, fontFamily: M, marginTop: 4, color: C.border, letterSpacing: '0.08em' }}>TESTNET</div>
-            </div>
-          </div>
+          <Chart coin={selected.sym} />
         </div>
       </div>
 
