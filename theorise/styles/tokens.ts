@@ -25,8 +25,19 @@ export const C = {
 export const D = "'Outfit', sans-serif";
 export const M = "'Source Code Pro', monospace";
 
-export const fmt = (n: number, d = 2) =>
-  n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+/** Format price Hyperliquid-style: 5 significant digits total.
+ *  65,555 | 1,122.3 | 103.24 | 1.0324 | 0.12345 */
+export const fmt = (n: number): string => {
+  const abs = Math.abs(n);
+  let decimals: number;
+  if (abs >= 10000)     decimals = 0;
+  else if (abs >= 1000) decimals = 1;
+  else if (abs >= 100)  decimals = 2;
+  else if (abs >= 10)   decimals = 3;
+  else if (abs >= 1)    decimals = 4;
+  else                  decimals = 5;
+  return n.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+};
 
 export const fmtK = (n: number) =>
   n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M`

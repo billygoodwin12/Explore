@@ -5,7 +5,7 @@ import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 
 export default function TradePage() {
-  const { markets, loading } = useMarketData(5000);
+  const { markets, loading } = useMarketData();
   const [selectedSym, setSelectedSym] = useState('BTC');
   const [side, setSide]               = useState<'long' | 'short'>('long');
   const [lev, setLev]                 = useState('3x');

@@ -4,7 +4,7 @@ import { C, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 
 export default function Ticker() {
-  const { markets, loading } = useMarketData(5000);
+  const { markets, loading } = useMarketData();
 
   // Show top 6 assets in the ticker strip
   const display = markets.slice(0, 6);

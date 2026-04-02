@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 const API_URL = 'https://api.hyperliquid.xyz/info';
+const WS_URL = 'wss://api.hyperliquid.xyz/ws';
 
 /** Assets we care about — maps Hyperliquid name → display config */
 const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity' | 'index' }> = {
@@ -20,6 +21,8 @@ const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity'
   APT:   { name: 'Aptos',      cat: 'crypto' },
 };
 
+const TRACKED_SYMS = Object.keys(TRACKED_ASSETS);
+
 export interface MarketData {
   sym: string;
   name: string;
@@ -36,6 +39,18 @@ function formatOI(usdValue: number): string {
   if (usdValue >= 1e6) return `${(usdValue / 1e6).toFixed(0)}M`;
   if (usdValue >= 1e3) return `${(usdValue / 1e3).toFixed(0)}K`;
   return usdValue.toFixed(0);
+}
+
+function sortMarkets(markets: MarketData[]): MarketData[] {
+  const priority = ['BTC', 'ETH', 'SOL'];
+  return [...markets].sort((a, b) => {
+    const ai = priority.indexOf(a.sym);
+    const bi = priority.indexOf(b.sym);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+    return 0;
+  });
 }
 
 async function fetchMarkets(): Promise<MarketData[]> {
@@ -76,29 +91,21 @@ async function fetchMarkets(): Promise<MarketData[]> {
     });
   }
 
-  // Sort: BTC, ETH first, then by OI descending
-  const priority = ['BTC', 'ETH', 'SOL'];
-  markets.sort((a, b) => {
-    const ai = priority.indexOf(a.sym);
-    const bi = priority.indexOf(b.sym);
-    if (ai !== -1 && bi !== -1) return ai - bi;
-    if (ai !== -1) return -1;
-    if (bi !== -1) return 1;
-    return 0;
-  });
-
-  return markets;
+  return sortMarkets(markets);
 }
 
-export function useMarketData(refreshInterval = 5000) {
+export function useMarketData() {
   const [markets, setMarkets] = useState<MarketData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const marketsRef = useRef<MarketData[]>([]);
 
+  // Initial REST fetch for full data
   const refresh = useCallback(async () => {
     try {
       const data = await fetchMarkets();
+      marketsRef.current = data;
       setMarkets(data);
       setError(null);
     } catch (e) {
@@ -108,13 +115,79 @@ export function useMarketData(refreshInterval = 5000) {
     }
   }, []);
 
+  // WebSocket for real-time mid price updates
   useEffect(() => {
     refresh();
-    intervalRef.current = setInterval(refresh, refreshInterval);
+
+    // Refresh full data every 30s for funding/OI updates
+    const fullRefresh = setInterval(refresh, 30_000);
+
+    let ws: WebSocket;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+
+    function connect() {
+      ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // Subscribe to allMids channel for real-time price updates
+        ws.send(JSON.stringify({
+          method: 'subscribe',
+          subscription: { type: 'allMids' },
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.channel === 'allMids' && msg.data?.mids) {
+            const mids: Record<string, string> = msg.data.mids;
+            const current = marketsRef.current;
+            if (current.length === 0) return;
+
+            let changed = false;
+            const updated = current.map(m => {
+              const newPx = mids[m.sym];
+              if (newPx) {
+                const price = parseFloat(newPx);
+                if (price !== m.price) {
+                  changed = true;
+                  return { ...m, price };
+                }
+              }
+              return m;
+            });
+
+            if (changed) {
+              marketsRef.current = updated;
+              setMarkets(updated);
+            }
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimeout = setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    connect();
+
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(fullRefresh);
+      clearTimeout(reconnectTimeout);
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // prevent reconnect on cleanup
+        wsRef.current.close();
+      }
     };
-  }, [refresh, refreshInterval]);
+  }, [refresh]);
 
   return { markets, loading, error, refresh };
 }
