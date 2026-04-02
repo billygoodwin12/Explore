@@ -1,82 +1,61 @@
 'use client';
 
-import React from 'react';
 import { usePathname, useRouter } from 'next/navigation';
+import { C, D, M } from '@/styles/tokens';
 
-const tabs = [
-  { label: 'Trade', href: '/trade', enabled: true },
-  { label: 'Vaults', href: '/vaults', enabled: true },
-  { label: 'Social', href: '/social', enabled: false },
+const TABS = [
+  { key: 'trade',  label: 'Trade',  href: '/trade',  enabled: true },
+  { key: 'vaults', label: 'Vaults', href: '/vaults', enabled: true },
+  { key: 'social', label: 'Social', href: '/social', enabled: false },
 ] as const;
 
 export default function TabNavigation() {
   const pathname = usePathname();
-  const router = useRouter();
+  const router   = useRouter();
 
   return (
-    <nav
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 2,
-        background: 'var(--bg-surface)',
-        borderRadius: 'var(--radius-lg)',
-        padding: 3,
-      }}
-    >
-      {tabs.map((tab) => {
-        const isActive = pathname.startsWith(tab.href);
-        const isDisabled = !tab.enabled;
-
+    <div style={{
+      display: 'flex',
+      gap: 2,
+      background: C.bg,
+      borderRadius: 9,
+      padding: 3,
+      border: `1px solid ${C.borderLight}`,
+    }}>
+      {TABS.map(({ key, label, href, enabled }) => {
+        const active = pathname.startsWith(href);
         return (
           <button
-            key={tab.href}
-            onClick={() => !isDisabled && router.push(tab.href)}
-            disabled={isDisabled}
+            key={key}
+            onClick={() => enabled && router.push(href)}
             style={{
-              position: 'relative',
-              padding: '7px 20px',
-              borderRadius: 'var(--radius-md)',
+              padding: '6px 20px',
+              borderRadius: 7,
               border: 'none',
-              fontSize: 13,
+              cursor: enabled ? 'pointer' : 'default',
+              fontSize: 12,
               fontWeight: 600,
-              fontFamily: 'var(--font-display)',
-              letterSpacing: '-0.01em',
-              cursor: isDisabled ? 'default' : 'pointer',
-              transition: 'all 0.15s ease',
-              background: isActive ? 'var(--bg-card)' : 'transparent',
-              color: isDisabled
-                ? 'var(--text-muted)'
-                : isActive
-                  ? 'var(--text-primary)'
-                  : 'var(--text-tertiary)',
-              boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.06)' : 'none',
-              opacity: isDisabled ? 0.5 : 1,
+              fontFamily: D,
+              position: 'relative',
+              background: active ? C.card : 'transparent',
+              color: !enabled ? C.border : active ? C.primary : C.secondary,
+              boxShadow: active ? '0 1px 3px rgba(0,0,0,0.05)' : 'none',
+              opacity: !enabled ? 0.5 : 1,
+              transition: 'all 0.1s',
             }}
           >
-            {tab.label}
-            {isDisabled && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: -6,
-                  right: -4,
-                  fontSize: 8,
-                  fontWeight: 700,
-                  color: 'var(--text-muted)',
-                  background: 'var(--bg-surface)',
-                  padding: '1px 4px',
-                  borderRadius: 'var(--radius-sm)',
-                  letterSpacing: '0.02em',
-                  textTransform: 'uppercase',
-                }}
-              >
-                Soon
+            {label}
+            {!enabled && (
+              <span style={{
+                position: 'absolute', top: -5, right: 0,
+                fontSize: 7, fontWeight: 700, color: C.muted, fontFamily: M,
+              }}>
+                SOON
               </span>
             )}
           </button>
         );
       })}
-    </nav>
+    </div>
   );
 }

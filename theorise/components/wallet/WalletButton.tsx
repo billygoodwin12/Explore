@@ -1,51 +1,40 @@
 'use client';
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { C, M } from '@/styles/tokens';
 
 export default function WalletButton() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, openAccountModal, openConnectModal, mounted }) => {
-        const ready = mounted;
-        const connected = ready && account && chain;
-
+        const connected = mounted && account && chain;
         return (
           <button
             onClick={connected ? openAccountModal : openConnectModal}
             style={{
+              padding: '7px 16px',
+              borderRadius: 8,
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: M,
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
-              padding: '8px 16px',
-              borderRadius: 'var(--radius-lg)',
-              border: '1px solid var(--border)',
-              background: connected ? 'var(--bg-surface)' : 'var(--text-primary)',
-              color: connected ? 'var(--text-primary)' : 'var(--text-inverse)',
-              fontSize: 13,
-              fontWeight: 600,
-              fontFamily: 'var(--font-display)',
-              cursor: 'pointer',
-              transition: 'all 0.15s ease',
-              letterSpacing: '-0.01em',
+              gap: 7,
+              background: connected ? C.greenBg : C.primary,
+              color: connected ? C.green : 'white',
+              border: connected ? '1px solid #B2E5CC' : `1px solid ${C.primary}`,
+              transition: 'all 0.15s',
             }}
           >
-            {connected ? (
-              <>
-                <span
-                  style={{
-                    width: 7,
-                    height: 7,
-                    borderRadius: '50%',
-                    background: 'var(--green)',
-                  }}
-                />
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                  {account.displayName}
-                </span>
-              </>
-            ) : (
-              'Connect Wallet'
+            {connected && (
+              <div style={{
+                width: 6, height: 6, borderRadius: '50%',
+                background: C.green,
+                boxShadow: `0 0 6px ${C.green}44`,
+              }} />
             )}
+            {connected ? account.displayName : 'Connect Wallet'}
           </button>
         );
       }}

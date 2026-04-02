@@ -1,74 +1,39 @@
 'use client';
 
-import React from 'react';
-import WalletButton from '@/components/wallet/WalletButton';
+import { C, D } from '@/styles/tokens';
 import TabNavigation from './TabNavigation';
+import WalletButton from '@/components/wallet/WalletButton';
 
 export default function Header() {
   return (
-    <header
-      style={{
-        position: 'sticky',
-        top: 0,
-        zIndex: 50,
-        background: 'var(--bg)',
-        borderBottom: '1px solid var(--border)',
-      }}
-    >
-      {/* Main header bar */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 24px',
-          height: 56,
-          maxWidth: 1200,
-          margin: '0 auto',
-        }}
-      >
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--text-primary)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <span
-              style={{
-                fontSize: 14,
-                fontWeight: 800,
-                color: 'var(--text-inverse)',
-                lineHeight: 1,
-              }}
-            >
-              T
-            </span>
-          </div>
-          <span
-            style={{
-              fontSize: 17,
-              fontWeight: 700,
-              letterSpacing: '-0.03em',
-              color: 'var(--text-primary)',
-            }}
-          >
-            Theorise
-          </span>
-        </div>
-
-        {/* Center: Tab nav (hidden on mobile) */}
-        <TabNavigation />
-
-        {/* Right: Wallet */}
-        <WalletButton />
+    <div style={{
+      padding: '0 20px',
+      height: 52,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      borderBottom: `1px solid ${C.border}`,
+      background: C.card,
+      flexShrink: 0,
+    }}>
+      {/* Logo */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        <div style={{
+          width: 28, height: 28, borderRadius: 7,
+          background: C.primary,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, fontWeight: 700, color: 'white', fontFamily: D,
+        }}>T</div>
+        <span style={{ fontSize: 15, fontWeight: 700, color: C.primary, fontFamily: D, letterSpacing: '-0.02em' }}>
+          Theorise
+        </span>
       </div>
-    </header>
+
+      {/* Tabs */}
+      <TabNavigation />
+
+      {/* Wallet */}
+      <WalletButton />
+    </div>
   );
 }

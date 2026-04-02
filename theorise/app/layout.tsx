@@ -1,11 +1,10 @@
 import type { Metadata } from 'next';
 import '@/styles/globals.css';
 import WalletProvider from '@/components/wallet/WalletProvider';
-import Header from '@/components/layout/Header';
 
 export const metadata: Metadata = {
   title: 'Theorise',
-  description: 'Trade on your convictions. Build a vault. Let others invest in your edge.',
+  description: 'Trade your convictions. Build a vault. Let others invest in your edge.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -15,24 +14,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;500;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;700&display=swap"
           rel="stylesheet"
         />
       </head>
       <body>
-        <WalletProvider>
-          <Header />
-          <main
-            style={{
-              maxWidth: 1200,
-              margin: '0 auto',
-              padding: '0 24px',
-              minHeight: 'calc(100vh - 57px)',
-            }}
-          >
-            {children}
-          </main>
-        </WalletProvider>
+        <WalletProvider>{children}</WalletProvider>
       </body>
     </html>
   );
