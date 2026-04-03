@@ -1,18 +1,18 @@
 import { http, createConfig } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { injected, coinbaseWallet } from 'wagmi/connectors';
+import { coinbaseWallet } from 'wagmi/connectors';
 
 /**
  * Hyperliquid testnet uses Arbitrum Sepolia for bridging.
- * For now we connect wallets on Arbitrum Sepolia — the Hyperliquid
- * API itself is accessed via REST/WebSocket, not on-chain calls.
  *
- * When moving to mainnet, switch to Arbitrum One.
+ * We rely on wagmi's multiInjectedProviderDiscovery (enabled by default)
+ * to auto-detect MetaMask, Phantom, and other browser wallets.
+ * Only Coinbase Wallet needs an explicit connector since it has
+ * a built-in onboarding flow.
  */
 export const config = createConfig({
   chains: [arbitrumSepolia],
   connectors: [
-    injected(),
     coinbaseWallet({ appName: 'Theorise' }),
   ],
   transports: {

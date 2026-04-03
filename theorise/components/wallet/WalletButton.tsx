@@ -10,6 +10,10 @@ export default function WalletButton() {
   const { disconnect } = useDisconnect();
   const [showMenu, setShowMenu] = useState(false);
 
+  // Filter out generic "Injected" if named wallets (MetaMask, Phantom) are detected
+  const namedWallets = connectors.filter(c => c.name !== 'Injected');
+  const displayConnectors = namedWallets.length > 0 ? namedWallets : connectors;
+
   const displayAddress = address
     ? `${address.slice(0, 6)}...${address.slice(-4)}`
     : '';
@@ -94,7 +98,7 @@ export default function WalletButton() {
             }}>
               Select a wallet
             </div>
-            {connectors.map((connector) => (
+            {displayConnectors.map((connector) => (
               <button
                 key={connector.uid}
                 onClick={() => {
@@ -122,7 +126,7 @@ export default function WalletButton() {
                 {connector.name}
               </button>
             ))}
-            {connectors.length === 0 && (
+            {displayConnectors.length === 0 && (
               <div style={{
                 padding: '10px 12px',
                 fontSize: 12,
