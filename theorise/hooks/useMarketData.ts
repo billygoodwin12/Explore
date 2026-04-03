@@ -62,12 +62,15 @@ let ws: WebSocket | null = null;
 let fullRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
+let snapshot = { markets, loading, error };
+
 function notify() {
+  snapshot = { markets, loading, error };
   listeners.forEach(l => l());
 }
 
 function getSnapshot() {
-  return { markets, loading, error };
+  return snapshot;
 }
 
 function subscribe(listener: () => void) {
