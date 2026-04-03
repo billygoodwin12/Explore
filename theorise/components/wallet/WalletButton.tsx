@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { C, M } from '@/styles/tokens';
 
@@ -8,7 +7,6 @@ export default function WalletButton() {
   const { address, isConnected } = useAccount();
   const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
-  const [showMenu, setShowMenu] = useState(false);
 
   const displayAddress = address
     ? `${address.slice(0, 6)}...${address.slice(-4)}`
@@ -45,9 +43,18 @@ export default function WalletButton() {
   }
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {error && (
+        <span style={{ fontSize: 10, fontFamily: M, color: C.red, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {error.message.slice(0, 40)}
+        </span>
+      )}
       <button
-        onClick={() => setShowMenu(!showMenu)}
+        onClick={() => {
+          // Use the first available connector (injected = MetaMask/browser wallet)
+          const connector = connectors[0];
+          if (connector) connect({ connector });
+        }}
         disabled={isPending}
         style={{
           padding: '7px 16px',
@@ -65,88 +72,6 @@ export default function WalletButton() {
       >
         {isPending ? 'Connecting...' : 'Connect Wallet'}
       </button>
-
-      {showMenu && (
-        <>
-          <div
-            onClick={() => setShowMenu(false)}
-            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-          />
-          <div style={{
-            position: 'absolute',
-            top: 'calc(100% + 8px)',
-            right: 0,
-            background: C.card,
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            padding: 8,
-            minWidth: 200,
-            zIndex: 100,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-          }}>
-            <div style={{
-              fontSize: 11,
-              fontFamily: M,
-              color: C.secondary,
-              padding: '4px 8px 8px',
-              borderBottom: `1px solid ${C.borderLight}`,
-              marginBottom: 4,
-            }}>
-              Select a wallet
-            </div>
-            {connectors.map((connector) => (
-              <button
-                key={connector.uid}
-                onClick={() => {
-                  connect({ connector });
-                  setShowMenu(false);
-                }}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  padding: '10px 12px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  fontFamily: M,
-                  fontWeight: 500,
-                  color: C.primary,
-                  textAlign: 'left',
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-              >
-                {connector.name}
-              </button>
-            ))}
-            {connectors.length === 0 && (
-              <div style={{
-                padding: '10px 12px',
-                fontSize: 12,
-                fontFamily: M,
-                color: C.muted,
-              }}>
-                No wallets detected. Install MetaMask to get started.
-              </div>
-            )}
-            {error && (
-              <div style={{
-                padding: '8px 12px',
-                fontSize: 11,
-                fontFamily: M,
-                color: C.red,
-                borderTop: `1px solid ${C.borderLight}`,
-                marginTop: 4,
-              }}>
-                {error.message.slice(0, 80)}
-              </div>
-            )}
-          </div>
-        </>
-      )}
     </div>
   );
 }
