@@ -1,6 +1,6 @@
 import { http, createConfig } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { injected, metaMask, coinbaseWallet } from 'wagmi/connectors';
+import { injected, coinbaseWallet } from 'wagmi/connectors';
 
 /**
  * Hyperliquid testnet uses Arbitrum Sepolia for bridging.
@@ -13,7 +13,6 @@ export const config = createConfig({
   chains: [arbitrumSepolia],
   connectors: [
     injected(),
-    metaMask(),
     coinbaseWallet({ appName: 'Theorise' }),
   ],
   transports: {
