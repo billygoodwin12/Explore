@@ -62,7 +62,7 @@ let ws: WebSocket | null = null;
 let fullRefreshInterval: ReturnType<typeof setInterval> | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
-let snapshot = { markets, loading, error };
+let snapshot: { markets: MarketData[]; loading: boolean; error: string | null } = { markets, loading, error };
 
 function notify() {
   snapshot = { markets, loading, error };
