@@ -1,86 +1,19 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useAccount, useWalletClient } from 'wagmi';
+import { useState } from 'react';
 import { C, D, M, fmt } from '@/styles/tokens';
-import { useMarketData } from '@/hooks/useMarketData';
-import { usePositions } from '@/hooks/usePositions';
-import { placeMarketOrder, updateLeverage, getAssetIndex } from '@/lib/hyperliquid/exchange';
+import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 import Chart from '@/components/chart/Chart';
-
-const SLIPPAGE = 0.03; // 3% slippage for market orders
 
 export default function TradePage() {
   const { markets, loading } = useMarketData();
-  const { isConnected } = useAccount();
-  const { data: walletClient } = useWalletClient();
-  const { positions, accountValue, refresh: refreshPositions } = usePositions();
-
   const [selectedSym, setSelectedSym] = useState('BTC');
-  const [side, setSide] = useState<'long' | 'short'>('long');
-  const [lev, setLev] = useState('3x');
-  const [cat, setCat] = useState('all');
-  const [sizeUsd, setSizeUsd] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [orderStatus, setOrderStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [side, setSide]               = useState<'long' | 'short'>('long');
+  const [lev, setLev]                 = useState('3x');
+  const [cat, setCat]                 = useState('all');
 
   const selected = markets.find(m => m.sym === selectedSym) || markets[0];
   const list = cat === 'all' ? markets : markets.filter(p => p.cat === cat);
-
-  const handleSubmit = useCallback(async () => {
-    if (!walletClient || !selected || !sizeUsd) return;
-
-    setSubmitting(true);
-    setOrderStatus(null);
-
-    try {
-      const assetIndex = await getAssetIndex(selected.sym);
-      const leverage = parseInt(lev);
-      const isBuy = side === 'long';
-
-      // Set leverage first
-      await updateLeverage(walletClient, assetIndex, leverage);
-
-      // Calculate size in asset units
-      const sizeInAsset = parseFloat(sizeUsd) / selected.price;
-      // Round to reasonable precision
-      const szDecimals = selected.price > 1000 ? 5 : selected.price > 10 ? 2 : 1;
-      const size = sizeInAsset.toFixed(szDecimals);
-
-      // Market order: IOC at slippage price
-      const slippagePrice = isBuy
-        ? selected.price * (1 + SLIPPAGE)
-        : selected.price * (1 - SLIPPAGE);
-
-      // Round price to appropriate precision
-      const priceDecimals = selected.price > 1000 ? 0 : selected.price > 10 ? 1 : 4;
-      const price = slippagePrice.toFixed(priceDecimals);
-
-      const result = await placeMarketOrder(walletClient, assetIndex, isBuy, size, price);
-
-      if (result.status === 'ok') {
-        const statuses = result.response?.data?.statuses;
-        if (statuses?.[0]?.filled) {
-          const fill = statuses[0].filled;
-          setOrderStatus({ type: 'success', msg: `Filled ${fill.totalSz} @ $${fmt(parseFloat(fill.avgPx))}` });
-        } else if (statuses?.[0]?.resting) {
-          setOrderStatus({ type: 'success', msg: 'Order resting' });
-        } else if (statuses?.[0]?.error) {
-          setOrderStatus({ type: 'error', msg: statuses[0].error });
-        } else {
-          setOrderStatus({ type: 'success', msg: 'Order submitted' });
-        }
-        setSizeUsd('');
-        refreshPositions();
-      } else {
-        setOrderStatus({ type: 'error', msg: result.error || 'Order failed' });
-      }
-    } catch (e) {
-      setOrderStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Order failed' });
-    } finally {
-      setSubmitting(false);
-    }
-  }, [walletClient, selected, sizeUsd, side, lev, refreshPositions]);
 
   if (loading && markets.length === 0) {
     return (
@@ -148,9 +81,8 @@ export default function TradePage() {
         </div>
       </div>
 
-      {/* ── Chart + Positions ── */}
+      {/* ── Chart area ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: C.bg }}>
-        {/* Market header */}
         <div style={{ padding: '14px 20px', background: C.card, borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ width: 40, height: 40, borderRadius: 10, background: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, fontFamily: M, color: C.primary }}>
@@ -168,76 +100,19 @@ export default function TradePage() {
               </div>
             </div>
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 20 }}>
-            {isConnected && (
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 10, fontFamily: M, color: C.muted, letterSpacing: '0.05em' }}>ACCOUNT</div>
-                <div style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.primary }}>${fmt(parseFloat(accountValue))}</div>
-              </div>
-            )}
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 24, fontWeight: 700, fontFamily: M, color: C.primary, letterSpacing: '-0.03em' }}>
-                ${fmt(selected.price)}
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 700, fontFamily: M, color: selected.chg >= 0 ? C.green : C.red }}>
-                {selected.chg >= 0 ? '+' : ''}{selected.chg}%
-              </div>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: M, color: C.primary, letterSpacing: '-0.03em' }}>
+              ${fmt(selected.price)}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, fontFamily: M, color: selected.chg >= 0 ? C.green : C.red }}>
+              {selected.chg >= 0 ? '+' : ''}{selected.chg}%
             </div>
           </div>
         </div>
 
-        {/* Chart */}
-        <div style={{ flex: 1, padding: 16, minHeight: 0 }}>
+        <div style={{ flex: 1, padding: 16 }}>
           <Chart coin={selected.sym} />
         </div>
-
-        {/* Positions panel */}
-        {isConnected && positions.length > 0 && (
-          <div style={{ borderTop: `1px solid ${C.border}`, background: C.card, padding: '10px 20px', maxHeight: 180, overflowY: 'auto' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted, marginBottom: 8, fontFamily: M }}>
-              Open Positions
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: M }}>
-              <thead>
-                <tr style={{ color: C.muted, fontSize: 10 }}>
-                  <th style={{ textAlign: 'left', padding: '4px 0', fontWeight: 600 }}>Market</th>
-                  <th style={{ textAlign: 'right', padding: '4px 0', fontWeight: 600 }}>Size</th>
-                  <th style={{ textAlign: 'right', padding: '4px 0', fontWeight: 600 }}>Entry</th>
-                  <th style={{ textAlign: 'right', padding: '4px 0', fontWeight: 600 }}>Lev</th>
-                  <th style={{ textAlign: 'right', padding: '4px 0', fontWeight: 600 }}>uPnL</th>
-                </tr>
-              </thead>
-              <tbody>
-                {positions.map(p => {
-                  const szi = parseFloat(p.szi);
-                  const pnl = parseFloat(p.unrealizedPnl);
-                  return (
-                    <tr key={p.coin} style={{ borderTop: `1px solid ${C.borderLight}` }}>
-                      <td style={{ padding: '6px 0', fontWeight: 600, color: C.primary }}>
-                        {p.coin}{' '}
-                        <span style={{ color: szi > 0 ? C.green : C.red, fontSize: 10 }}>
-                          {szi > 0 ? 'LONG' : 'SHORT'}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'right', padding: '6px 0', color: C.primary }}>
-                        {Math.abs(szi).toFixed(4)}
-                      </td>
-                      <td style={{ textAlign: 'right', padding: '6px 0', color: C.secondary }}>
-                        ${fmt(parseFloat(p.entryPx))}
-                      </td>
-                      <td style={{ textAlign: 'right', padding: '6px 0', color: C.secondary }}>
-                        {p.leverage.value}x
-                      </td>
-                      <td style={{ textAlign: 'right', padding: '6px 0', fontWeight: 600, color: pnl >= 0 ? C.green : C.red }}>
-                        {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       {/* ── Order entry ── */}
@@ -249,7 +124,6 @@ export default function TradePage() {
           <div style={{ fontSize: 11, fontFamily: M, color: C.secondary }}>${fmt(selected.price)}</div>
         </div>
 
-        {/* Side toggle */}
         <div style={{ display: 'flex', marginBottom: 14, background: C.bg, borderRadius: 9, padding: 3, border: `1px solid ${C.borderLight}` }}>
           {(['long', 'short'] as const).map(s => (
             <button key={s} onClick={() => setSide(s)} style={{
@@ -263,41 +137,14 @@ export default function TradePage() {
           ))}
         </div>
 
-        {/* Size input */}
         <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Size (USD)</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Size</div>
           <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '0 10px' }}>
             <span style={{ fontSize: 11, color: C.muted, fontFamily: M, lineHeight: '36px' }}>$</span>
-            <input
-              placeholder="0.00"
-              value={sizeUsd}
-              onChange={e => setSizeUsd(e.target.value)}
-              type="number"
-              min="0"
-              step="any"
-              style={{ flex: 1, border: 'none', background: 'transparent', padding: '9px 6px', fontSize: 13, fontFamily: M, fontWeight: 600, color: C.primary, outline: 'none' }}
-            />
+            <input placeholder="0.00" style={{ flex: 1, border: 'none', background: 'transparent', padding: '9px 6px', fontSize: 13, fontFamily: M, fontWeight: 600, color: C.primary }} />
           </div>
-          {sizeUsd && parseFloat(sizeUsd) > 0 && (
-            <div style={{ fontSize: 10, fontFamily: M, color: C.muted, marginTop: 4 }}>
-              ~{(parseFloat(sizeUsd) / selected.price).toFixed(4)} {selected.sym}
-            </div>
-          )}
         </div>
 
-        {/* Quick size buttons */}
-        <div style={{ display: 'flex', gap: 3, marginBottom: 14 }}>
-          {['50', '100', '250', '500'].map(v => (
-            <button key={v} onClick={() => setSizeUsd(v)} style={{
-              flex: 1, padding: '5px 0', borderRadius: 5, border: `1px solid ${C.borderLight}`,
-              cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: M,
-              background: sizeUsd === v ? C.primary : C.bg,
-              color: sizeUsd === v ? 'white' : C.secondary,
-            }}>${v}</button>
-          ))}
-        </div>
-
-        {/* Leverage */}
         <div style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Leverage</div>
           <div style={{ display: 'flex', gap: 2, background: C.bg, borderRadius: 7, padding: 2, border: `1px solid ${C.borderLight}` }}>
@@ -314,43 +161,14 @@ export default function TradePage() {
           </div>
         </div>
 
-        {/* Order status */}
-        {orderStatus && (
-          <div style={{
-            marginBottom: 10, padding: '8px 10px', borderRadius: 7, fontSize: 11, fontFamily: M,
-            background: orderStatus.type === 'success' ? C.greenBg : C.redBg,
-            color: orderStatus.type === 'success' ? C.greenTxt : C.redTxt,
-          }}>
-            {orderStatus.msg}
-          </div>
-        )}
-
-        {/* Submit */}
         <div style={{ marginTop: 'auto' }}>
-          {!isConnected ? (
-            <div style={{ textAlign: 'center', fontSize: 11, fontFamily: M, color: C.muted, padding: '12px 0' }}>
-              Connect wallet to trade
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: 9, fontFamily: M, color: C.muted, textAlign: 'center', marginBottom: 6, letterSpacing: '0.05em' }}>
-                HYPERLIQUID TESTNET
-              </div>
-              <button
-                onClick={handleSubmit}
-                disabled={submitting || !sizeUsd || parseFloat(sizeUsd) <= 0}
-                style={{
-                  width: '100%', padding: '12px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
-                  fontSize: 13, fontWeight: 700, fontFamily: D,
-                  background: side === 'long' ? C.green : C.red, color: 'white',
-                  opacity: submitting || !sizeUsd || parseFloat(sizeUsd) <= 0 ? 0.5 : 1,
-                  transition: 'opacity 0.15s',
-                }}
-              >
-                {submitting ? 'Submitting...' : `${side === 'long' ? 'Long' : 'Short'} ${selected.sym} ${lev}`}
-              </button>
-            </>
-          )}
+          <button style={{
+            width: '100%', padding: '12px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
+            fontSize: 13, fontWeight: 700, fontFamily: D,
+            background: side === 'long' ? C.green : C.red, color: 'white',
+          }}>
+            {side === 'long' ? 'Long' : 'Short'} {selected.sym} {lev}
+          </button>
         </div>
       </div>
     </div>

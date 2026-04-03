@@ -1,10 +1,11 @@
 'use client';
 
-import { useSyncExternalStore, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const API_URL = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';
 
+/** Assets we care about — maps Hyperliquid name → display config */
 const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity' | 'index' }> = {
   BTC:   { name: 'Bitcoin',    cat: 'crypto' },
   ETH:   { name: 'Ethereum',   cat: 'crypto' },
@@ -19,6 +20,8 @@ const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity'
   OP:    { name: 'Optimism',   cat: 'crypto' },
   APT:   { name: 'Aptos',      cat: 'crypto' },
 };
+
+const TRACKED_SYMS = Object.keys(TRACKED_ASSETS);
 
 export interface MarketData {
   sym: string;
@@ -50,159 +53,141 @@ function sortMarkets(markets: MarketData[]): MarketData[] {
   });
 }
 
-// ── Singleton store ──────────────────────────────────────────────
+async function fetchMarkets(): Promise<MarketData[]> {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+  });
 
-let markets: MarketData[] = [];
-let loading = true;
-let error: string | null = null;
-let listeners = new Set<() => void>();
-let started = false;
-let subscriberCount = 0;
-let ws: WebSocket | null = null;
-let fullRefreshInterval: ReturnType<typeof setInterval> | null = null;
-let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
 
-let snapshot: { markets: MarketData[]; loading: boolean; error: string | null } = { markets, loading, error };
+  const [meta, ctxs] = await res.json();
+  const universe: { name: string; maxLeverage: number; isDelisted?: boolean }[] = meta.universe;
 
-function notify() {
-  snapshot = { markets, loading, error };
-  listeners.forEach(l => l());
-}
+  const markets: MarketData[] = [];
 
-function getSnapshot() {
-  return snapshot;
-}
+  for (let i = 0; i < universe.length; i++) {
+    const asset = universe[i];
+    const ctx = ctxs[i];
+    const tracked = TRACKED_ASSETS[asset.name];
 
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  subscriberCount++;
-  if (!started) start();
-  return () => {
-    listeners.delete(listener);
-    subscriberCount--;
-    if (subscriberCount <= 0) stop();
-  };
-}
+    if (!tracked || asset.isDelisted) continue;
 
-async function fetchFull() {
-  try {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+    const midPx = parseFloat(ctx.midPx || ctx.markPx);
+    const prevDayPx = parseFloat(ctx.prevDayPx);
+    const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
+    const oi = parseFloat(ctx.openInterest) * midPx;
+
+    markets.push({
+      sym: asset.name,
+      name: tracked.name,
+      cat: tracked.cat,
+      price: midPx,
+      chg: Math.round(chg * 100) / 100,
+      funding: parseFloat(ctx.funding),
+      oi: formatOI(oi),
+      maxLeverage: asset.maxLeverage,
     });
-    if (!res.ok) throw new Error(`API error: ${res.status}`);
-
-    const [meta, ctxs] = await res.json();
-    const universe: { name: string; maxLeverage: number; isDelisted?: boolean }[] = meta.universe;
-    const result: MarketData[] = [];
-
-    for (let i = 0; i < universe.length; i++) {
-      const asset = universe[i];
-      const ctx = ctxs[i];
-      const tracked = TRACKED_ASSETS[asset.name];
-      if (!tracked || asset.isDelisted) continue;
-
-      const midPx = parseFloat(ctx.midPx || ctx.markPx);
-      const prevDayPx = parseFloat(ctx.prevDayPx);
-      const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
-      const oi = parseFloat(ctx.openInterest) * midPx;
-
-      result.push({
-        sym: asset.name,
-        name: tracked.name,
-        cat: tracked.cat,
-        price: midPx,
-        chg: Math.round(chg * 100) / 100,
-        funding: parseFloat(ctx.funding),
-        oi: formatOI(oi),
-        maxLeverage: asset.maxLeverage,
-      });
-    }
-
-    markets = sortMarkets(result);
-    error = null;
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to fetch';
-  } finally {
-    loading = false;
-    notify();
   }
+
+  return sortMarkets(markets);
 }
-
-function connectWs() {
-  ws = new WebSocket(WS_URL);
-
-  ws.onopen = () => {
-    ws!.send(JSON.stringify({
-      method: 'subscribe',
-      subscription: { type: 'allMids' },
-    }));
-  };
-
-  ws.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.channel === 'allMids' && msg.data?.mids) {
-        const mids: Record<string, string> = msg.data.mids;
-        if (markets.length === 0) return;
-
-        let changed = false;
-        const updated = markets.map(m => {
-          const newPx = mids[m.sym];
-          if (newPx) {
-            const price = parseFloat(newPx);
-            if (price !== m.price) {
-              changed = true;
-              return { ...m, price };
-            }
-          }
-          return m;
-        });
-
-        if (changed) {
-          markets = updated;
-          notify();
-        }
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  ws.onclose = () => {
-    if (subscriberCount > 0) {
-      reconnectTimeout = setTimeout(connectWs, 2000);
-    }
-  };
-
-  ws.onerror = () => ws?.close();
-}
-
-function start() {
-  started = true;
-  fetchFull();
-  fullRefreshInterval = setInterval(fetchFull, 30_000);
-  connectWs();
-}
-
-function stop() {
-  started = false;
-  if (fullRefreshInterval) clearInterval(fullRefreshInterval);
-  if (reconnectTimeout) clearTimeout(reconnectTimeout);
-  if (ws) {
-    ws.onclose = null;
-    ws.close();
-    ws = null;
-  }
-}
-
-// ── Hook ─────────────────────────────────────────────────────────
-
-// Stable reference for SSR
-const SERVER_SNAPSHOT = { markets: [] as MarketData[], loading: true, error: null };
 
 export function useMarketData() {
-  const snap = useSyncExternalStore(subscribe, getSnapshot, () => SERVER_SNAPSHOT);
-  return { ...snap, refresh: fetchFull };
+  const [markets, setMarkets] = useState<MarketData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const marketsRef = useRef<MarketData[]>([]);
+
+  // Initial REST fetch for full data
+  const refresh = useCallback(async () => {
+    try {
+      const data = await fetchMarkets();
+      marketsRef.current = data;
+      setMarkets(data);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to fetch');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // WebSocket for real-time mid price updates
+  useEffect(() => {
+    refresh();
+
+    // Refresh full data every 30s for funding/OI updates
+    const fullRefresh = setInterval(refresh, 30_000);
+
+    let ws: WebSocket;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
+
+    function connect() {
+      ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // Subscribe to allMids channel for real-time price updates
+        ws.send(JSON.stringify({
+          method: 'subscribe',
+          subscription: { type: 'allMids' },
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.channel === 'allMids' && msg.data?.mids) {
+            const mids: Record<string, string> = msg.data.mids;
+            const current = marketsRef.current;
+            if (current.length === 0) return;
+
+            let changed = false;
+            const updated = current.map(m => {
+              const newPx = mids[m.sym];
+              if (newPx) {
+                const price = parseFloat(newPx);
+                if (price !== m.price) {
+                  changed = true;
+                  return { ...m, price };
+                }
+              }
+              return m;
+            });
+
+            if (changed) {
+              marketsRef.current = updated;
+              setMarkets(updated);
+            }
+          }
+        } catch {
+          // ignore malformed messages
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimeout = setTimeout(connect, 2000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    connect();
+
+    return () => {
+      clearInterval(fullRefresh);
+      clearTimeout(reconnectTimeout);
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // prevent reconnect on cleanup
+        wsRef.current.close();
+      }
+    };
+  }, [refresh]);
+
+  return { markets, loading, error, refresh };
 }

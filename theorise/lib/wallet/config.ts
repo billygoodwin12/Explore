@@ -12,8 +12,8 @@ import { injected, metaMask, coinbaseWallet } from 'wagmi/connectors';
 export const config = createConfig({
   chains: [arbitrumSepolia],
   connectors: [
+    injected(),
     metaMask(),
-    injected({ target: 'phantom' }),
     coinbaseWallet({ appName: 'Theorise' }),
   ],
   transports: {

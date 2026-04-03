@@ -6,7 +6,7 @@ import { C, M } from '@/styles/tokens';
 
 export default function WalletButton() {
   const { address, isConnected } = useAccount();
-  const { connect, connectors, isPending } = useConnect();
+  const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
   const [showMenu, setShowMenu] = useState(false);
 
@@ -122,6 +122,28 @@ export default function WalletButton() {
                 {connector.name}
               </button>
             ))}
+            {connectors.length === 0 && (
+              <div style={{
+                padding: '10px 12px',
+                fontSize: 12,
+                fontFamily: M,
+                color: C.muted,
+              }}>
+                No wallets detected. Install MetaMask to get started.
+              </div>
+            )}
+            {error && (
+              <div style={{
+                padding: '8px 12px',
+                fontSize: 11,
+                fontFamily: M,
+                color: C.red,
+                borderTop: `1px solid ${C.borderLight}`,
+                marginTop: 4,
+              }}>
+                {error.message.slice(0, 80)}
+              </div>
+            )}
           </div>
         </>
       )}
