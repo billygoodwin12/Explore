@@ -16,7 +16,7 @@ export default function TradePage() {
   const { isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
   const { positions, accountValue, withdrawable, refresh: refreshPositions } = usePositions();
-  const { usdcBalance, depositing, deposit } = useDeposit();
+  const { usdcBalance, depositing, deposit, isReady: depositReady } = useDeposit();
 
   const [selectedSym, setSelectedSym] = useState('BTC');
   const [side, setSide] = useState<'long' | 'short'>('long');
@@ -363,15 +363,15 @@ export default function TradePage() {
                 </div>
                 <button
                   onClick={handleDeposit}
-                  disabled={depositing || !depositAmt || parseFloat(depositAmt) < 5}
+                  disabled={depositing || !depositReady || !depositAmt || parseFloat(depositAmt) < 5}
                   style={{
                     width: '100%', padding: '8px 0', borderRadius: 6, border: 'none', cursor: 'pointer',
                     fontSize: 11, fontWeight: 700, fontFamily: M,
                     background: C.green, color: 'white',
-                    opacity: depositing || !depositAmt || parseFloat(depositAmt) < 5 ? 0.5 : 1,
+                    opacity: depositing || !depositReady || !depositAmt || parseFloat(depositAmt) < 5 ? 0.5 : 1,
                   }}
                 >
-                  {depositing ? 'Depositing...' : 'Deposit USDC'}
+                  {depositing ? 'Depositing...' : !depositReady ? 'Connecting...' : 'Deposit USDC'}
                 </button>
                 {depositStatus && (
                   <div style={{

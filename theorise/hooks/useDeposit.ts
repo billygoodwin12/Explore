@@ -42,7 +42,7 @@ export function useDeposit() {
   }, [refreshBalance]);
 
   const deposit = useCallback(async (amountUsdc: string) => {
-    if (!walletClient || !address) throw new Error('Wallet not connected');
+    if (!address) throw new Error('Wallet not connected');
 
     const amount = parseFloat(amountUsdc);
     if (amount < MIN_DEPOSIT) throw new Error(`Minimum deposit is ${MIN_DEPOSIT} USDC`);
@@ -52,12 +52,24 @@ export function useDeposit() {
     setError(null);
 
     try {
+      // Await walletClient if not yet resolved
+      const wc = walletClient;
+      if (!wc) throw new Error('Wallet client not ready — try again');
+
+      // Ensure wallet is on Arbitrum One (42161)
+      try {
+        await wc.switchChain({ id: 42161 });
+      } catch {
+        // may already be on correct chain
+      }
+
       // Simple transfer of USDC to the bridge address
-      const hash = await walletClient.writeContract({
+      const hash = await wc.writeContract({
         address: ARBITRUM_USDC,
         abi: erc20Abi,
         functionName: 'transfer',
         args: [HYPERLIQUID_BRIDGE, parseUnits(amountUsdc, 6)],
+        chain: { id: 42161, name: 'Arbitrum One', nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: ['https://arb1.arbitrum.io/rpc'] } } },
       });
 
       // Wait for confirmation
@@ -76,5 +88,6 @@ export function useDeposit() {
     }
   }, [walletClient, address, usdcBalance, publicClient, refreshBalance]);
 
-  return { usdcBalance, depositing, error, deposit, refreshBalance, minDeposit: MIN_DEPOSIT };
+  const isReady = !!address && !!walletClient;
+  return { usdcBalance, depositing, error, deposit, refreshBalance, minDeposit: MIN_DEPOSIT, isReady };
 }
