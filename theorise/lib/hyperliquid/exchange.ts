@@ -56,6 +56,17 @@ export function setRawProvider(provider: EIP1193Provider) {
   _providerOverride = provider;
 }
 
+async function signWithProvider(
+  provider: EIP1193Provider,
+  address: string,
+  typedData: string,
+): Promise<string> {
+  return await provider.request({
+    method: 'eth_signTypedData_v4',
+    params: [address, typedData],
+  }) as string;
+}
+
 async function signAction(
   walletClient: WalletClient,
   action: Record<string, unknown>,
@@ -87,21 +98,71 @@ async function signAction(
     message: phantomAgent,
   });
 
-  const provider = _providerOverride;
-  if (!provider) {
-    throw new Error('No wallet provider set. Please reconnect your wallet.');
+  // Try multiple provider strategies to bypass viem's chainId validation.
+  // Strategy 1: the connector's raw provider (set via setRawProvider)
+  // Strategy 2: the underlying provider from walletClient.transport
+  // Strategy 3: window.ethereum directly
+  // If any throws a chainId error (-32603), try the next one.
+
+  const providers: EIP1193Provider[] = [];
+
+  // 1. Connector provider
+  if (_providerOverride) providers.push(_providerOverride);
+
+  // 2. Transport internals — dig into viem's transport for the raw provider
+  const transport = walletClient.transport as Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dig = (obj: any, depth: number): EIP1193Provider | null => {
+    if (!obj || depth > 3) return null;
+    if (obj.request && obj !== walletClient.transport) {
+      return obj as EIP1193Provider;
+    }
+    for (const key of ['provider', 'value']) {
+      const child = obj[key];
+      if (child) {
+        const found = dig(child, depth + 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  const transportProvider = dig(transport, 0);
+  if (transportProvider) providers.push(transportProvider);
+
+  // 3. window.ethereum as last resort
+  if (typeof window !== 'undefined') {
+    const win = window as unknown as { ethereum?: EIP1193Provider };
+    if (win.ethereum?.request) providers.push(win.ethereum);
   }
 
-  const signature = await provider.request({
-    method: 'eth_signTypedData_v4',
-    params: [account.address, typedData],
-  }) as string;
+  if (providers.length === 0) {
+    throw new Error('No wallet provider found. Please install MetaMask or another wallet.');
+  }
 
-  const r = `0x${signature.slice(2, 66)}`;
-  const s = `0x${signature.slice(66, 130)}`;
-  const v = parseInt(signature.slice(130, 132), 16);
+  let lastError: unknown;
+  for (const provider of providers) {
+    try {
+      const signature = await signWithProvider(provider, account.address, typedData);
+      // Success — cache this provider for future calls
+      _providerOverride = provider;
 
-  return { r, s, v };
+      const r = `0x${signature.slice(2, 66)}`;
+      const s = `0x${signature.slice(66, 130)}`;
+      const v = parseInt(signature.slice(130, 132), 16);
+      return { r, s, v };
+    } catch (e: unknown) {
+      lastError = e;
+      const msg = e instanceof Error ? e.message : JSON.stringify(e);
+      // chainId mismatch (-32603) or unauthorized (4100) — try next provider
+      if (msg.includes('chainId') || msg.includes('4100') || msg.includes('not been authorized')) {
+        continue;
+      }
+      // Any other error (user rejected, etc.) — don't retry
+      throw e;
+    }
+  }
+
+  throw lastError;
 }
 
 // ── Types ────────────────────────────────────────────────────────

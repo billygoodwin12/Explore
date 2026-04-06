@@ -107,7 +107,15 @@ export default function TradePage() {
         setOrderStatus({ type: 'error', msg: errMsg });
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : (typeof e === 'object' ? JSON.stringify(e) : String(e));
+      let msg = e instanceof Error ? e.message : (typeof e === 'object' ? JSON.stringify(e) : String(e));
+      // Friendly error messages
+      if (msg.includes('chainId') && msg.includes('1337')) {
+        msg = 'Signing error — please disconnect and reconnect your wallet, then try again.';
+      } else if (msg.includes('4100') || msg.includes('not been authorized')) {
+        msg = 'Wallet not authorized — please disconnect and reconnect your wallet.';
+      } else if (msg.includes('User rejected') || msg.includes('user rejected')) {
+        msg = 'Transaction rejected by user.';
+      }
       setOrderStatus({ type: 'error', msg: msg.length > 200 ? msg.slice(0, 200) : msg });
     } finally {
       setSubmitting(false);
