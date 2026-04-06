@@ -77,25 +77,56 @@ async function signAction(
     message: phantomAgent,
   });
 
-  // Access the raw EIP-1193 provider from the transport
-  const transport = walletClient.transport as { request?: (args: { method: string; params: unknown[] }) => Promise<unknown> };
-  let signature: string;
+  // We need the raw EIP-1193 provider that does NOT validate chainId.
+  // viem's transport.request wraps the provider and validates chainId,
+  // so we must extract the underlying raw provider.
+  type EIP1193Provider = { request: (args: { method: string; params: unknown[] }) => Promise<unknown> };
 
-  if (transport.request) {
-    // Custom transport (e.g. from wagmi connector)
-    signature = await transport.request({
-      method: 'eth_signTypedData_v4',
-      params: [account.address, typedData],
-    }) as string;
-  } else if (typeof window !== 'undefined' && (window as unknown as { ethereum?: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum) {
-    // Fallback to window.ethereum
-    signature = await (window as unknown as { ethereum: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum.request({
-      method: 'eth_signTypedData_v4',
-      params: [account.address, typedData],
-    }) as string;
-  } else {
-    throw new Error('No provider available for signing');
+  // Strategy: get the raw provider from window.ethereum or its multi-provider list
+  let provider: EIP1193Provider | undefined;
+
+  if (typeof window !== 'undefined') {
+    const win = window as unknown as {
+      ethereum?: EIP1193Provider & {
+        providers?: EIP1193Provider[];
+        isMetaMask?: boolean;
+        isPhantom?: boolean;
+        isCoinbaseWallet?: boolean;
+        providerMap?: Map<string, EIP1193Provider>;
+      };
+    };
+
+    if (win.ethereum) {
+      // EIP-6963 multi-provider: wagmi uses providerMap or providers array
+      // Try to find the specific provider that matches the connected wallet
+      if (win.ethereum.providerMap) {
+        // providerMap is used by some wallets
+        for (const [, p] of win.ethereum.providerMap) {
+          if ((p as EIP1193Provider).request) {
+            provider = p;
+            break;
+          }
+        }
+      }
+      if (!provider && win.ethereum.providers?.length) {
+        // Multiple injected providers — just use the first one
+        // (wagmi routes to the correct one via connector)
+        provider = win.ethereum.providers[0];
+      }
+      if (!provider) {
+        provider = win.ethereum;
+      }
+    }
   }
+
+  if (!provider) {
+    throw new Error('No wallet provider found. Please install MetaMask or another wallet.');
+  }
+
+  const signature = await provider.request({
+    method: 'eth_signTypedData_v4',
+    params: [account.address, typedData],
+  }) as string;
 
   const r = `0x${signature.slice(2, 66)}`;
   const s = `0x${signature.slice(66, 130)}`;
