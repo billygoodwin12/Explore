@@ -1,20 +1,33 @@
 'use client';
 
-import { useState, useCallback } from 'react';
-import { useAccount, useWalletClient } from 'wagmi';
+import { useState, useCallback, useEffect } from 'react';
+import { useAccount, useWalletClient, useConnectorClient } from 'wagmi';
 import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
-import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals } from '@/lib/hyperliquid/exchange';
+import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals, setRawProvider } from '@/lib/hyperliquid/exchange';
 import Chart from '@/components/chart/Chart';
 
 const SLIPPAGE = 0.03;
 
 export default function TradePage() {
   const { markets, loading } = useMarketData();
-  const { isConnected } = useAccount();
+  const { isConnected, connector } = useAccount();
   const { data: walletClient } = useWalletClient();
+  const { data: connectorClient } = useConnectorClient();
+
+  // Extract the raw EIP-1193 provider from the connected wallet's connector.
+  // This bypasses viem's chainId validation so we can sign with Hyperliquid's
+  // phantom domain (chainId 1337) while the wallet is on Arbitrum (42161).
+  useEffect(() => {
+    if (!connector) return;
+    connector.getProvider().then((p) => {
+      if (p && typeof (p as { request?: unknown }).request === 'function') {
+        setRawProvider(p as { request: (args: { method: string; params: unknown[] }) => Promise<unknown> });
+      }
+    }).catch(() => {});
+  }, [connector, connectorClient]);
   const { positions, accountValue, withdrawable, spotUsdcTotal, spotUsdcAvailable, refresh: refreshPositions } = usePositions();
   const { usdcBalance, depositing, deposit, isReady: depositReady, isWrongChain, switchToArbitrum } = useDeposit();
 
