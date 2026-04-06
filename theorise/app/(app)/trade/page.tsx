@@ -52,8 +52,8 @@ export default function TradePage() {
       const isBuy = side === 'long';
 
       const levResult = await updateLeverage(walletClient, assetIndex, leverage);
-      if (levResult.status !== 'ok' && levResult.error) {
-        setOrderStatus({ type: 'error', msg: `Leverage: ${levResult.error}` });
+      if (levResult.status !== 'ok') {
+        setOrderStatus({ type: 'error', msg: `Leverage: ${levResult.error || JSON.stringify(levResult)}` });
         setSubmitting(false);
         return;
       }
@@ -91,7 +91,7 @@ export default function TradePage() {
         setOrderStatus({ type: 'error', msg: result.error || JSON.stringify(result.response || result) });
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? e.message : (typeof e === 'object' ? JSON.stringify(e) : String(e));
       setOrderStatus({ type: 'error', msg: msg.length > 200 ? msg.slice(0, 200) : msg });
     } finally {
       setSubmitting(false);
