@@ -55,13 +55,31 @@ async function signAction(
   // 'a' = mainnet
   const phantomAgent = { source: 'a', connectionId };
 
-  const signature = await walletClient.signTypedData({
-    account: walletClient.account!,
+  // Use raw provider request to avoid viem's chainId validation
+  // (Hyperliquid uses chainId 1337 in its EIP-712 domain, but wallet is on 42161)
+  const account = walletClient.account!;
+  const typedData = {
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      Agent: [
+        { name: 'source', type: 'string' },
+        { name: 'connectionId', type: 'bytes32' },
+      ],
+    },
+    primaryType: 'Agent' as const,
     domain: PHANTOM_DOMAIN,
-    types: AGENT_TYPES,
-    primaryType: 'Agent',
     message: phantomAgent,
-  });
+  };
+
+  const signature = await walletClient.request({
+    method: 'eth_signTypedData_v4',
+    params: [account.address, JSON.stringify(typedData)],
+  }) as `0x${string}`;
 
   const r = `0x${signature.slice(2, 66)}`;
   const s = `0x${signature.slice(66, 130)}`;
