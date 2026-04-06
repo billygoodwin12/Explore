@@ -55,10 +55,11 @@ async function signAction(
   // 'a' = mainnet
   const phantomAgent = { source: 'a', connectionId };
 
-  // Use raw provider request to avoid viem's chainId validation
-  // (Hyperliquid uses chainId 1337 in its EIP-712 domain, but wallet is on 42161)
+  // Hyperliquid uses chainId 1337 in its EIP-712 domain, but wallet is on 42161.
+  // Viem validates chainId at every layer, so we must go directly to the
+  // underlying EIP-1193 provider to bypass all viem validation.
   const account = walletClient.account!;
-  const typedData = {
+  const typedData = JSON.stringify({
     types: {
       EIP712Domain: [
         { name: 'name', type: 'string' },
@@ -71,15 +72,30 @@ async function signAction(
         { name: 'connectionId', type: 'bytes32' },
       ],
     },
-    primaryType: 'Agent' as const,
+    primaryType: 'Agent',
     domain: PHANTOM_DOMAIN,
     message: phantomAgent,
-  };
+  });
 
-  const signature = await walletClient.request({
-    method: 'eth_signTypedData_v4',
-    params: [account.address, JSON.stringify(typedData)],
-  }) as `0x${string}`;
+  // Access the raw EIP-1193 provider from the transport
+  const transport = walletClient.transport as { request?: (args: { method: string; params: unknown[] }) => Promise<unknown> };
+  let signature: string;
+
+  if (transport.request) {
+    // Custom transport (e.g. from wagmi connector)
+    signature = await transport.request({
+      method: 'eth_signTypedData_v4',
+      params: [account.address, typedData],
+    }) as string;
+  } else if (typeof window !== 'undefined' && (window as unknown as { ethereum?: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum) {
+    // Fallback to window.ethereum
+    signature = await (window as unknown as { ethereum: { request: (args: { method: string; params: unknown[] }) => Promise<unknown> } }).ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [account.address, typedData],
+    }) as string;
+  } else {
+    throw new Error('No provider available for signing');
+  }
 
   const r = `0x${signature.slice(2, 66)}`;
   const s = `0x${signature.slice(66, 130)}`;
