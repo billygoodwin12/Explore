@@ -51,10 +51,21 @@ export default function TradePage() {
       const leverage = parseInt(lev);
       const isBuy = side === 'long';
 
-      await updateLeverage(walletClient, assetIndex, leverage);
+      const levResult = await updateLeverage(walletClient, assetIndex, leverage);
+      if (levResult.status !== 'ok' && levResult.error) {
+        setOrderStatus({ type: 'error', msg: `Leverage: ${levResult.error}` });
+        setSubmitting(false);
+        return;
+      }
 
       const sizeInAsset = parseFloat(sizeUsd) / selected.price;
       const size = sizeInAsset.toFixed(szDecimals);
+
+      if (parseFloat(size) === 0) {
+        setOrderStatus({ type: 'error', msg: `Size too small. Min ~$${(Math.pow(10, -szDecimals) * selected.price).toFixed(2)}` });
+        setSubmitting(false);
+        return;
+      }
 
       const slippagePrice = isBuy
         ? selected.price * (1 + SLIPPAGE)
@@ -77,10 +88,11 @@ export default function TradePage() {
         setSizeUsd('');
         refreshPositions();
       } else {
-        setOrderStatus({ type: 'error', msg: result.error || JSON.stringify(result) });
+        setOrderStatus({ type: 'error', msg: result.error || JSON.stringify(result.response || result) });
       }
     } catch (e) {
-      setOrderStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Order failed' });
+      const msg = e instanceof Error ? e.message : String(e);
+      setOrderStatus({ type: 'error', msg: msg.length > 200 ? msg.slice(0, 200) : msg });
     } finally {
       setSubmitting(false);
     }
