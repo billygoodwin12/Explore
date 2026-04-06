@@ -15,7 +15,7 @@ export default function TradePage() {
   const { markets, loading } = useMarketData();
   const { isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
-  const { positions, accountValue, withdrawable, refresh: refreshPositions } = usePositions();
+  const { positions, accountValue, withdrawable, spotUsdcTotal, spotUsdcAvailable, refresh: refreshPositions } = usePositions();
   const { usdcBalance, depositing, deposit, isReady: depositReady, isWrongChain, switchToArbitrum } = useDeposit();
 
   const [selectedSym, setSelectedSym] = useState('BTC');
@@ -209,12 +209,12 @@ export default function TradePage() {
             {isConnected && (
               <>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 10, fontFamily: M, color: C.muted, letterSpacing: '0.05em' }}>ACCOUNT</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.primary }}>${fmt(parseFloat(accountValue))}</div>
+                  <div style={{ fontSize: 10, fontFamily: M, color: C.muted, letterSpacing: '0.05em' }}>TOTAL</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.primary }}>${fmt(parseFloat(accountValue) + parseFloat(spotUsdcTotal))}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: 10, fontFamily: M, color: C.muted, letterSpacing: '0.05em' }}>AVAILABLE</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.green }}>${fmt(parseFloat(withdrawable))}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.green }}>${fmt(parseFloat(withdrawable) + parseFloat(spotUsdcAvailable))}</div>
                 </div>
               </>
             )}
@@ -330,6 +330,7 @@ export default function TradePage() {
                 Deposit
               </button>
             </div>
+            <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginBottom: 4 }}>PERPS</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M, marginBottom: 3 }}>
               <span style={{ color: C.muted }}>Equity</span>
               <span style={{ color: C.primary, fontWeight: 600 }}>${fmt(parseFloat(accountValue))}</span>
@@ -338,8 +339,18 @@ export default function TradePage() {
               <span style={{ color: C.muted }}>Available</span>
               <span style={{ color: C.green, fontWeight: 600 }}>${fmt(parseFloat(withdrawable))}</span>
             </div>
+            <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginTop: 8, marginBottom: 4 }}>SPOT</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M, marginBottom: 3 }}>
+              <span style={{ color: C.muted }}>USDC Balance</span>
+              <span style={{ color: C.primary, fontWeight: 600 }}>${fmt(parseFloat(spotUsdcTotal))}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M, marginBottom: 3 }}>
+              <span style={{ color: C.muted }}>Available</span>
+              <span style={{ color: C.green, fontWeight: 600 }}>${fmt(parseFloat(spotUsdcAvailable))}</span>
+            </div>
+            <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginTop: 8, marginBottom: 4 }}>WALLET</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M }}>
-              <span style={{ color: C.muted }}>Wallet USDC</span>
+              <span style={{ color: C.muted }}>Arb USDC</span>
               <span style={{ color: C.secondary, fontWeight: 600 }}>{fmt(parseFloat(usdcBalance))}</span>
             </div>
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAccount } from 'wagmi';
-import { getClearinghouseState, type Position, type ClearinghouseState } from '@/lib/hyperliquid/exchange';
+import { getClearinghouseState, getSpotClearinghouseState, type Position } from '@/lib/hyperliquid/exchange';
 
 export function usePositions() {
   const { address } = useAccount();
@@ -10,6 +10,8 @@ export function usePositions() {
   const [accountValue, setAccountValue] = useState('0');
   const [withdrawable, setWithdrawable] = useState('0');
   const [marginUsed, setMarginUsed] = useState('0');
+  const [spotUsdcTotal, setSpotUsdcTotal] = useState('0');
+  const [spotUsdcAvailable, setSpotUsdcAvailable] = useState('0');
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -19,19 +21,37 @@ export function usePositions() {
       setAccountValue('0');
       setWithdrawable('0');
       setMarginUsed('0');
+      setSpotUsdcTotal('0');
+      setSpotUsdcAvailable('0');
       return;
     }
 
     try {
       setLoading(true);
-      const state = await getClearinghouseState(address);
-      const open = state.assetPositions
+      const [perpsState, spotState] = await Promise.all([
+        getClearinghouseState(address),
+        getSpotClearinghouseState(address),
+      ]);
+
+      // Perps
+      const open = perpsState.assetPositions
         .map(ap => ap.position)
         .filter(p => parseFloat(p.szi) !== 0);
       setPositions(open);
-      setAccountValue(state.marginSummary.accountValue);
-      setWithdrawable(state.withdrawable);
-      setMarginUsed(state.marginSummary.totalMarginUsed);
+      setAccountValue(perpsState.marginSummary.accountValue);
+      setWithdrawable(perpsState.withdrawable);
+      setMarginUsed(perpsState.marginSummary.totalMarginUsed);
+
+      // Spot USDC balance
+      const usdcBal = spotState.balances?.find(b => b.coin === 'USDC');
+      if (usdcBal) {
+        setSpotUsdcTotal(usdcBal.total);
+        const available = parseFloat(usdcBal.total) - parseFloat(usdcBal.hold);
+        setSpotUsdcAvailable(available.toString());
+      } else {
+        setSpotUsdcTotal('0');
+        setSpotUsdcAvailable('0');
+      }
     } catch {
       // silently fail, will retry
     } finally {
@@ -47,5 +67,5 @@ export function usePositions() {
     };
   }, [refresh]);
 
-  return { positions, accountValue, withdrawable, marginUsed, loading, refresh };
+  return { positions, accountValue, withdrawable, marginUsed, spotUsdcTotal, spotUsdcAvailable, loading, refresh };
 }

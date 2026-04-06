@@ -121,6 +121,27 @@ export async function getClearinghouseState(address: string): Promise<Clearingho
   return await res.json();
 }
 
+export interface SpotBalance {
+  coin: string;
+  token: number;
+  hold: string;
+  total: string;
+  entryNtl: string;
+}
+
+export interface SpotClearinghouseState {
+  balances: SpotBalance[];
+}
+
+export async function getSpotClearinghouseState(address: string): Promise<SpotClearinghouseState> {
+  const res = await fetch(MAINNET_INFO, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'spotClearinghouseState', user: address }),
+  });
+  return await res.json();
+}
+
 export async function getOpenOrders(address: string) {
   const res = await fetch(MAINNET_INFO, {
     method: 'POST',
