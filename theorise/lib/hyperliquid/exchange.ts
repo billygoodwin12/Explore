@@ -48,23 +48,57 @@ function actionHash(action: Record<string, unknown>, nonce: number): `0x${string
 
 type EIP1193Provider = { request: (args: { method: string; params: unknown[] }) => Promise<unknown> };
 
-/** Resolve the raw EIP-1193 provider — either passed explicitly or from window.ethereum */
-let _providerOverride: EIP1193Provider | null = null;
+/** Cached raw provider that successfully signed before */
+let _cachedProvider: EIP1193Provider | null = null;
 
-/** Call this once after connecting to cache the raw provider from the wagmi connector */
+/** Set by the trade page after connector.getProvider() */
 export function setRawProvider(provider: EIP1193Provider) {
-  _providerOverride = provider;
+  _cachedProvider = provider;
 }
 
-async function signWithProvider(
-  provider: EIP1193Provider,
-  address: string,
-  typedData: string,
-): Promise<string> {
-  return await provider.request({
-    method: 'eth_signTypedData_v4',
-    params: [address, typedData],
-  }) as string;
+/**
+ * Find the raw browser wallet provider that has `address` authorized.
+ * Browsers with multiple wallets (MetaMask + Phantom + Coinbase) expose them
+ * via `window.ethereum.providers` array. We query `eth_accounts` on each
+ * to find the one that owns the connected address.
+ */
+async function findProviderForAddress(address: string): Promise<EIP1193Provider | null> {
+  if (typeof window === 'undefined') return null;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const win = window as any;
+  if (!win.ethereum) return null;
+
+  // Collect all candidate providers
+  const candidates: EIP1193Provider[] = [];
+
+  // EIP-5749: multiple injected providers
+  if (Array.isArray(win.ethereum.providers)) {
+    for (const p of win.ethereum.providers) {
+      if (p?.request) candidates.push(p);
+    }
+  }
+
+  // The main window.ethereum itself
+  if (win.ethereum.request) {
+    candidates.push(win.ethereum);
+  }
+
+  // Check which provider has our address authorized
+  const addrLower = address.toLowerCase();
+  for (const provider of candidates) {
+    try {
+      const accounts = await provider.request({ method: 'eth_accounts', params: [] }) as string[];
+      if (accounts.some((a: string) => a.toLowerCase() === addrLower)) {
+        return provider;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  // None matched — return first available as fallback
+  return candidates[0] || null;
 }
 
 async function signAction(
@@ -73,12 +107,8 @@ async function signAction(
   nonce: number,
 ) {
   const connectionId = actionHash(action, nonce);
-  // 'a' = mainnet
-  const phantomAgent = { source: 'a', connectionId };
+  const phantomAgent = { source: 'a', connectionId }; // 'a' = mainnet
 
-  // Hyperliquid uses chainId 1337 in its EIP-712 domain, but wallet is on 42161.
-  // Viem validates chainId at every layer, so we must use the raw EIP-1193
-  // provider from the connected wallet's connector.
   const account = walletClient.account!;
   const typedData = JSON.stringify({
     types: {
@@ -98,71 +128,58 @@ async function signAction(
     message: phantomAgent,
   });
 
-  // Try multiple provider strategies to bypass viem's chainId validation.
-  // Strategy 1: the connector's raw provider (set via setRawProvider)
-  // Strategy 2: the underlying provider from walletClient.transport
-  // Strategy 3: window.ethereum directly
-  // If any throws a chainId error (-32603), try the next one.
+  // Hyperliquid's EIP-712 domain uses chainId 1337. Viem wraps every provider
+  // and rejects signing when the domain chainId doesn't match the wallet's
+  // active chain (42161 for Arbitrum). We bypass viem entirely by calling
+  // eth_signTypedData_v4 on the raw browser wallet provider.
 
-  const providers: EIP1193Provider[] = [];
+  // Use cached provider if we have one, otherwise find the right one
+  let provider = _cachedProvider;
+  if (!provider) {
+    provider = await findProviderForAddress(account.address);
+  }
+  if (!provider) {
+    throw new Error('No wallet provider found. Please install a wallet extension.');
+  }
 
-  // 1. Connector provider
-  if (_providerOverride) providers.push(_providerOverride);
+  try {
+    const signature = await provider.request({
+      method: 'eth_signTypedData_v4',
+      params: [account.address, typedData],
+    }) as string;
 
-  // 2. Transport internals — dig into viem's transport for the raw provider
-  const transport = walletClient.transport as Record<string, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dig = (obj: any, depth: number): EIP1193Provider | null => {
-    if (!obj || depth > 3) return null;
-    if (obj.request && obj !== walletClient.transport) {
-      return obj as EIP1193Provider;
-    }
-    for (const key of ['provider', 'value']) {
-      const child = obj[key];
-      if (child) {
-        const found = dig(child, depth + 1);
-        if (found) return found;
+    // Cache this provider — it works
+    _cachedProvider = provider;
+
+    const r = `0x${signature.slice(2, 66)}`;
+    const s = `0x${signature.slice(66, 130)}`;
+    const v = parseInt(signature.slice(130, 132), 16);
+    return { r, s, v };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : JSON.stringify(e);
+
+    // If the cached provider failed with chainId or auth error, clear cache
+    // and retry with a fresh provider lookup
+    if (_cachedProvider && (msg.includes('chainId') || msg.includes('4100') || msg.includes('not been authorized'))) {
+      _cachedProvider = null;
+      const freshProvider = await findProviderForAddress(account.address);
+      if (freshProvider && freshProvider !== provider) {
+        const signature = await freshProvider.request({
+          method: 'eth_signTypedData_v4',
+          params: [account.address, typedData],
+        }) as string;
+
+        _cachedProvider = freshProvider;
+
+        const r = `0x${signature.slice(2, 66)}`;
+        const s = `0x${signature.slice(66, 130)}`;
+        const v = parseInt(signature.slice(130, 132), 16);
+        return { r, s, v };
       }
     }
-    return null;
-  };
-  const transportProvider = dig(transport, 0);
-  if (transportProvider) providers.push(transportProvider);
 
-  // 3. window.ethereum as last resort
-  if (typeof window !== 'undefined') {
-    const win = window as unknown as { ethereum?: EIP1193Provider };
-    if (win.ethereum?.request) providers.push(win.ethereum);
+    throw e;
   }
-
-  if (providers.length === 0) {
-    throw new Error('No wallet provider found. Please install MetaMask or another wallet.');
-  }
-
-  let lastError: unknown;
-  for (const provider of providers) {
-    try {
-      const signature = await signWithProvider(provider, account.address, typedData);
-      // Success — cache this provider for future calls
-      _providerOverride = provider;
-
-      const r = `0x${signature.slice(2, 66)}`;
-      const s = `0x${signature.slice(66, 130)}`;
-      const v = parseInt(signature.slice(130, 132), 16);
-      return { r, s, v };
-    } catch (e: unknown) {
-      lastError = e;
-      const msg = e instanceof Error ? e.message : JSON.stringify(e);
-      // chainId mismatch (-32603) or unauthorized (4100) — try next provider
-      if (msg.includes('chainId') || msg.includes('4100') || msg.includes('not been authorized')) {
-        continue;
-      }
-      // Any other error (user rejected, etc.) — don't retry
-      throw e;
-    }
-  }
-
-  throw lastError;
 }
 
 // ── Types ────────────────────────────────────────────────────────
