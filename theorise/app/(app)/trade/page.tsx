@@ -107,7 +107,13 @@ export default function TradePage() {
       await deposit(depositAmt);
       setDepositStatus({ type: 'success', msg: `Deposited ${depositAmt} USDC — credits in ~1 min` });
       setDepositAmt('');
-      setTimeout(refreshPositions, 60000);
+      // Poll for balance update every 5s for 2 minutes
+      let polls = 0;
+      const pollInterval = setInterval(() => {
+        refreshPositions();
+        polls++;
+        if (polls >= 24) clearInterval(pollInterval);
+      }, 5000);
     } catch (e) {
       setDepositStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Deposit failed' });
     }
