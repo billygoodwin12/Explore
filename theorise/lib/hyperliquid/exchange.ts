@@ -108,7 +108,7 @@ async function signAction(
 
 export interface OrderResult {
   status: string;
-  response?: {
+  response?: string | {
     type: string;
     data?: {
       statuses: Array<{
@@ -245,7 +245,6 @@ export async function placeMarketOrder(
         s: normalizeNumber(size),
         r: reduceOnly,
         t: { limit: { tif: 'Ioc' } },
-        c: null,
       },
     ],
     grouping: 'na',

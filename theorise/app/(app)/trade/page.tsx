@@ -53,7 +53,8 @@ export default function TradePage() {
 
       const levResult = await updateLeverage(walletClient, assetIndex, leverage);
       if (levResult.status !== 'ok') {
-        setOrderStatus({ type: 'error', msg: `Leverage: ${levResult.error || JSON.stringify(levResult)}` });
+        const errMsg = typeof levResult.response === 'string' ? levResult.response : (levResult.error || JSON.stringify(levResult));
+        setOrderStatus({ type: 'error', msg: `Leverage: ${errMsg}` });
         setSubmitting(false);
         return;
       }
@@ -76,7 +77,8 @@ export default function TradePage() {
       const result = await placeMarketOrder(walletClient, assetIndex, isBuy, size, price);
 
       if (result.status === 'ok') {
-        const statuses = result.response?.data?.statuses;
+        const resp = typeof result.response === 'object' ? result.response : undefined;
+        const statuses = resp?.data?.statuses;
         if (statuses?.[0]?.filled) {
           const fill = statuses[0].filled;
           setOrderStatus({ type: 'success', msg: `Filled ${fill.totalSz} @ $${fmt(parseFloat(fill.avgPx))}` });
@@ -88,7 +90,8 @@ export default function TradePage() {
         setSizeUsd('');
         refreshPositions();
       } else {
-        setOrderStatus({ type: 'error', msg: result.error || JSON.stringify(result.response || result) });
+        const errMsg = typeof result.response === 'string' ? result.response : (result.error || JSON.stringify(result.response || result));
+        setOrderStatus({ type: 'error', msg: errMsg });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : (typeof e === 'object' ? JSON.stringify(e) : String(e));
