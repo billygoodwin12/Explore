@@ -1,20 +1,24 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
+import { useAccount, usePublicClient, useWalletClient, useSwitchChain } from 'wagmi';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
+import { arbitrum } from 'viem/chains';
 
 const ARBITRUM_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as `0x${string}`;
 const HYPERLIQUID_BRIDGE = '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7' as `0x${string}`;
 const MIN_DEPOSIT = 5; // USDC
 
 export function useDeposit() {
-  const { address } = useAccount();
+  const { address, chainId } = useAccount();
   const publicClient = usePublicClient();
   const { data: walletClient } = useWalletClient();
+  const { switchChainAsync } = useSwitchChain();
   const [usdcBalance, setUsdcBalance] = useState('0');
   const [depositing, setDepositing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isWrongChain = !!address && chainId !== arbitrum.id;
 
   const refreshBalance = useCallback(async () => {
     if (!address || !publicClient) {
@@ -41,6 +45,14 @@ export function useDeposit() {
     return () => clearInterval(interval);
   }, [refreshBalance]);
 
+  const switchToArbitrum = useCallback(async () => {
+    try {
+      await switchChainAsync({ chainId: arbitrum.id });
+    } catch (e) {
+      throw new Error('Please switch to Arbitrum One in your wallet');
+    }
+  }, [switchChainAsync]);
+
   const deposit = useCallback(async (amountUsdc: string) => {
     if (!address) throw new Error('Wallet not connected');
 
@@ -52,27 +64,22 @@ export function useDeposit() {
     setError(null);
 
     try {
-      // Await walletClient if not yet resolved
-      const wc = walletClient;
-      if (!wc) throw new Error('Wallet client not ready — try again');
-
-      // Ensure wallet is on Arbitrum One (42161)
-      try {
-        await wc.switchChain({ id: 42161 });
-      } catch {
-        // may already be on correct chain
+      // Switch chain if needed
+      if (isWrongChain) {
+        await switchToArbitrum();
       }
 
-      // Simple transfer of USDC to the bridge address
-      const hash = await wc.writeContract({
+      // walletClient should now be available after chain switch
+      if (!walletClient) throw new Error('Please switch to Arbitrum One and try again');
+
+      const hash = await walletClient.writeContract({
         address: ARBITRUM_USDC,
         abi: erc20Abi,
         functionName: 'transfer',
         args: [HYPERLIQUID_BRIDGE, parseUnits(amountUsdc, 6)],
-        chain: { id: 42161, name: 'Arbitrum One', nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: ['https://arb1.arbitrum.io/rpc'] } } },
+        chain: arbitrum,
       });
 
-      // Wait for confirmation
       if (publicClient) {
         await publicClient.waitForTransactionReceipt({ hash });
       }
@@ -86,8 +93,8 @@ export function useDeposit() {
     } finally {
       setDepositing(false);
     }
-  }, [walletClient, address, usdcBalance, publicClient, refreshBalance]);
+  }, [walletClient, address, usdcBalance, publicClient, refreshBalance, isWrongChain, switchToArbitrum]);
 
-  const isReady = !!address && !!walletClient;
-  return { usdcBalance, depositing, error, deposit, refreshBalance, minDeposit: MIN_DEPOSIT, isReady };
+  const isReady = !!address && !!walletClient && !isWrongChain;
+  return { usdcBalance, depositing, error, deposit, refreshBalance, minDeposit: MIN_DEPOSIT, isReady, isWrongChain, switchToArbitrum };
 }

@@ -16,7 +16,7 @@ export default function TradePage() {
   const { isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
   const { positions, accountValue, withdrawable, refresh: refreshPositions } = usePositions();
-  const { usdcBalance, depositing, deposit, isReady: depositReady } = useDeposit();
+  const { usdcBalance, depositing, deposit, isReady: depositReady, isWrongChain, switchToArbitrum } = useDeposit();
 
   const [selectedSym, setSelectedSym] = useState('BTC');
   const [side, setSide] = useState<'long' | 'short'>('long');
@@ -363,16 +363,28 @@ export default function TradePage() {
                 </div>
                 <button
                   onClick={handleDeposit}
-                  disabled={depositing || !depositReady || !depositAmt || parseFloat(depositAmt) < 5}
+                  disabled={depositing || !depositAmt || parseFloat(depositAmt) < 5}
                   style={{
                     width: '100%', padding: '8px 0', borderRadius: 6, border: 'none', cursor: 'pointer',
                     fontSize: 11, fontWeight: 700, fontFamily: M,
                     background: C.green, color: 'white',
-                    opacity: depositing || !depositReady || !depositAmt || parseFloat(depositAmt) < 5 ? 0.5 : 1,
+                    opacity: depositing || !depositAmt || parseFloat(depositAmt) < 5 ? 0.5 : 1,
                   }}
                 >
-                  {depositing ? 'Depositing...' : !depositReady ? 'Connecting...' : 'Deposit USDC'}
+                  {depositing ? 'Depositing...' : 'Deposit USDC'}
                 </button>
+                {isWrongChain && !depositing && (
+                  <button
+                    onClick={switchToArbitrum}
+                    style={{
+                      width: '100%', padding: '8px 0', borderRadius: 6, border: `1px solid ${C.accent}`,
+                      background: 'transparent', color: C.accent, fontSize: 10, fontWeight: 700,
+                      fontFamily: M, cursor: 'pointer', marginTop: 6,
+                    }}
+                  >
+                    Switch to Arbitrum One
+                  </button>
+                )}
                 {depositStatus && (
                   <div style={{
                     marginTop: 6, fontSize: 10, fontFamily: M,
