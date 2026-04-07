@@ -1,5 +1,5 @@
 import { encode } from '@msgpack/msgpack';
-import { keccak256, type WalletClient } from 'viem';
+import { keccak256, createWalletClient, custom, type WalletClient, type EIP1193Provider } from 'viem';
 
 const MAINNET_EXCHANGE = 'https://api.hyperliquid.xyz/exchange';
 const MAINNET_INFO = 'https://api.hyperliquid.xyz/info';
@@ -16,6 +16,19 @@ const AGENT_TYPES = {
     { name: 'source', type: 'string' },
     { name: 'connectionId', type: 'bytes32' },
   ],
+} as const;
+
+/**
+ * Minimal chain definition for Hyperliquid's L1 signing.
+ * Orders are NOT EVM transactions — they're signed actions POSTed to the
+ * HyperCore exchange API. But viem requires the WalletClient's chain to
+ * match the EIP-712 domain chainId, so we define a chain with id 1337.
+ */
+const hyperliquidL1 = {
+  id: 1337,
+  name: 'Hyperliquid L1',
+  nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+  rpcUrls: { default: { http: ['https://api.hyperliquid.xyz/evm'] } },
 } as const;
 
 /** Remove trailing zeros from stringified numbers (Hyperliquid requirement) */
@@ -46,59 +59,31 @@ function actionHash(action: Record<string, unknown>, nonce: number): `0x${string
   return keccak256(data);
 }
 
-type EIP1193Provider = { request: (args: { method: string; params: unknown[] }) => Promise<unknown> };
+/** Cached raw EIP-1193 provider from the connected wallet's connector */
+let _rawProvider: EIP1193Provider | null = null;
 
-/** Cached raw provider that successfully signed before */
-let _cachedProvider: EIP1193Provider | null = null;
-
-/** Set by the trade page after connector.getProvider() */
+/**
+ * Cache the raw provider from the wagmi connector.
+ * Call this with the result of connector.getProvider() after wallet connection.
+ */
 export function setRawProvider(provider: EIP1193Provider) {
-  _cachedProvider = provider;
+  _rawProvider = provider;
 }
 
 /**
- * Find the raw browser wallet provider that has `address` authorized.
- * Browsers with multiple wallets (MetaMask + Phantom + Coinbase) expose them
- * via `window.ethereum.providers` array. We query `eth_accounts` on each
- * to find the one that owns the connected address.
+ * Create a viem WalletClient configured for Hyperliquid L1 signing (chainId 1337).
+ * This client uses the raw EIP-1193 provider from the connected wallet,
+ * wrapped in a custom transport. Since the client's chain is 1337 and the
+ * EIP-712 domain is also 1337, viem's chainId validation passes.
+ * The raw provider (MetaMask/Phantom/Coinbase) receives the signing request
+ * without any intermediate validation layer rejecting the chainId.
  */
-async function findProviderForAddress(address: string): Promise<EIP1193Provider | null> {
-  if (typeof window === 'undefined') return null;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const win = window as any;
-  if (!win.ethereum) return null;
-
-  // Collect all candidate providers
-  const candidates: EIP1193Provider[] = [];
-
-  // EIP-5749: multiple injected providers
-  if (Array.isArray(win.ethereum.providers)) {
-    for (const p of win.ethereum.providers) {
-      if (p?.request) candidates.push(p);
-    }
-  }
-
-  // The main window.ethereum itself
-  if (win.ethereum.request) {
-    candidates.push(win.ethereum);
-  }
-
-  // Check which provider has our address authorized
-  const addrLower = address.toLowerCase();
-  for (const provider of candidates) {
-    try {
-      const accounts = await provider.request({ method: 'eth_accounts', params: [] }) as string[];
-      if (accounts.some((a: string) => a.toLowerCase() === addrLower)) {
-        return provider;
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  // None matched — return first available as fallback
-  return candidates[0] || null;
+function createSigningClient(account: `0x${string}`, provider: EIP1193Provider): WalletClient {
+  return createWalletClient({
+    account,
+    chain: hyperliquidL1,
+    transport: custom(provider),
+  });
 }
 
 async function signAction(
@@ -107,79 +92,32 @@ async function signAction(
   nonce: number,
 ) {
   const connectionId = actionHash(action, nonce);
-  const phantomAgent = { source: 'a', connectionId }; // 'a' = mainnet
+  const phantomAgent = { source: 'a' as const, connectionId }; // 'a' = mainnet
 
   const account = walletClient.account!;
-  const typedData = JSON.stringify({
-    types: {
-      EIP712Domain: [
-        { name: 'name', type: 'string' },
-        { name: 'version', type: 'string' },
-        { name: 'chainId', type: 'uint256' },
-        { name: 'verifyingContract', type: 'address' },
-      ],
-      Agent: [
-        { name: 'source', type: 'string' },
-        { name: 'connectionId', type: 'bytes32' },
-      ],
-    },
-    primaryType: 'Agent',
+
+  // Get the raw provider — must be set via setRawProvider before signing
+  if (!_rawProvider) {
+    throw new Error('Wallet provider not initialized. Please reconnect your wallet.');
+  }
+
+  // Create a dedicated signing client on chain 1337 with the raw provider.
+  // This ensures viem's internal chainId check passes (client chain 1337 == domain chain 1337)
+  // while the underlying provider is still the user's actual wallet (MetaMask etc.)
+  const signingClient = createSigningClient(account.address, _rawProvider);
+
+  const signature = await signingClient.signTypedData({
+    account: account.address,
     domain: PHANTOM_DOMAIN,
+    types: AGENT_TYPES,
+    primaryType: 'Agent' as const,
     message: phantomAgent,
   });
 
-  // Hyperliquid's EIP-712 domain uses chainId 1337. Viem wraps every provider
-  // and rejects signing when the domain chainId doesn't match the wallet's
-  // active chain (42161 for Arbitrum). We bypass viem entirely by calling
-  // eth_signTypedData_v4 on the raw browser wallet provider.
-
-  // Use cached provider if we have one, otherwise find the right one
-  let provider = _cachedProvider;
-  if (!provider) {
-    provider = await findProviderForAddress(account.address);
-  }
-  if (!provider) {
-    throw new Error('No wallet provider found. Please install a wallet extension.');
-  }
-
-  try {
-    const signature = await provider.request({
-      method: 'eth_signTypedData_v4',
-      params: [account.address, typedData],
-    }) as string;
-
-    // Cache this provider — it works
-    _cachedProvider = provider;
-
-    const r = `0x${signature.slice(2, 66)}`;
-    const s = `0x${signature.slice(66, 130)}`;
-    const v = parseInt(signature.slice(130, 132), 16);
-    return { r, s, v };
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : JSON.stringify(e);
-
-    // If the cached provider failed with chainId or auth error, clear cache
-    // and retry with a fresh provider lookup
-    if (_cachedProvider && (msg.includes('chainId') || msg.includes('4100') || msg.includes('not been authorized'))) {
-      _cachedProvider = null;
-      const freshProvider = await findProviderForAddress(account.address);
-      if (freshProvider && freshProvider !== provider) {
-        const signature = await freshProvider.request({
-          method: 'eth_signTypedData_v4',
-          params: [account.address, typedData],
-        }) as string;
-
-        _cachedProvider = freshProvider;
-
-        const r = `0x${signature.slice(2, 66)}`;
-        const s = `0x${signature.slice(66, 130)}`;
-        const v = parseInt(signature.slice(130, 132), 16);
-        return { r, s, v };
-      }
-    }
-
-    throw e;
-  }
+  const r = `0x${signature.slice(2, 66)}`;
+  const s = `0x${signature.slice(66, 130)}`;
+  const v = parseInt(signature.slice(130, 132), 16);
+  return { r, s, v };
 }
 
 // ── Types ────────────────────────────────────────────────────────
