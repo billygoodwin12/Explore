@@ -1,34 +1,20 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { useAccount, useWalletClient } from 'wagmi';
 import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
-import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals, setRawProvider } from '@/lib/hyperliquid/exchange';
+import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals } from '@/lib/hyperliquid/exchange';
 import Chart from '@/components/chart/Chart';
-import type { EIP1193Provider } from 'viem';
 
 const SLIPPAGE = 0.03;
 
 export default function TradePage() {
   const { markets, loading } = useMarketData();
-  const { isConnected, connector } = useAccount();
+  const { isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
-
-  // When the wallet connects, extract the raw EIP-1193 provider from the
-  // connector and cache it for Hyperliquid L1 signing. The raw provider
-  // from connector.getProvider() is the actual wallet (MetaMask, etc.),
-  // not wrapped by viem's transport. We create a separate viem WalletClient
-  // with chain 1337 + this raw provider for signing, so viem's chainId
-  // validation passes (client chain 1337 == domain chain 1337).
-  useEffect(() => {
-    if (!connector) return;
-    connector.getProvider().then((p) => {
-      setRawProvider(p as EIP1193Provider);
-    }).catch(() => {});
-  }, [connector]);
   const { positions, accountValue, withdrawable, spotUsdcTotal, spotUsdcAvailable, refresh: refreshPositions } = usePositions();
   const { usdcBalance, depositing, deposit, isReady: depositReady, isWrongChain, switchToArbitrum } = useDeposit();
 

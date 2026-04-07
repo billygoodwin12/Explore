@@ -1,5 +1,5 @@
 import { encode } from '@msgpack/msgpack';
-import { keccak256, createWalletClient, custom, type WalletClient, type EIP1193Provider } from 'viem';
+import { keccak256, type WalletClient } from 'viem';
 
 const MAINNET_EXCHANGE = 'https://api.hyperliquid.xyz/exchange';
 const MAINNET_INFO = 'https://api.hyperliquid.xyz/info';
@@ -16,19 +16,6 @@ const AGENT_TYPES = {
     { name: 'source', type: 'string' },
     { name: 'connectionId', type: 'bytes32' },
   ],
-} as const;
-
-/**
- * Minimal chain definition for Hyperliquid's L1 signing.
- * Orders are NOT EVM transactions — they're signed actions POSTed to the
- * HyperCore exchange API. But viem requires the WalletClient's chain to
- * match the EIP-712 domain chainId, so we define a chain with id 1337.
- */
-const hyperliquidL1 = {
-  id: 1337,
-  name: 'Hyperliquid L1',
-  nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-  rpcUrls: { default: { http: ['https://api.hyperliquid.xyz/evm'] } },
 } as const;
 
 /** Remove trailing zeros from stringified numbers (Hyperliquid requirement) */
@@ -59,33 +46,18 @@ function actionHash(action: Record<string, unknown>, nonce: number): `0x${string
   return keccak256(data);
 }
 
-/** Cached raw EIP-1193 provider from the connected wallet's connector */
-let _rawProvider: EIP1193Provider | null = null;
-
 /**
- * Cache the raw provider from the wagmi connector.
- * Call this with the result of connector.getProvider() after wallet connection.
+ * Sign a Hyperliquid L1 action using EIP-712 typed data.
+ *
+ * Hyperliquid orders are NOT EVM transactions — they're signed actions POSTed
+ * to HyperCore's exchange API. The EIP-712 domain uses chainId 1337 (the
+ * "phantom agent" scheme), even though the wallet is connected to Arbitrum.
+ *
+ * viem's signTypedData does NOT validate that domain.chainId matches the
+ * wallet's active chain — it just passes the typed data through to the
+ * wallet's eth_signTypedData_v4 handler. This is confirmed by reading viem's
+ * source and is the same approach used by the official Hyperliquid TS SDKs.
  */
-export function setRawProvider(provider: EIP1193Provider) {
-  _rawProvider = provider;
-}
-
-/**
- * Create a viem WalletClient configured for Hyperliquid L1 signing (chainId 1337).
- * This client uses the raw EIP-1193 provider from the connected wallet,
- * wrapped in a custom transport. Since the client's chain is 1337 and the
- * EIP-712 domain is also 1337, viem's chainId validation passes.
- * The raw provider (MetaMask/Phantom/Coinbase) receives the signing request
- * without any intermediate validation layer rejecting the chainId.
- */
-function createSigningClient(account: `0x${string}`, provider: EIP1193Provider): WalletClient {
-  return createWalletClient({
-    account,
-    chain: hyperliquidL1,
-    transport: custom(provider),
-  });
-}
-
 async function signAction(
   walletClient: WalletClient,
   action: Record<string, unknown>,
@@ -94,20 +66,8 @@ async function signAction(
   const connectionId = actionHash(action, nonce);
   const phantomAgent = { source: 'a' as const, connectionId }; // 'a' = mainnet
 
-  const account = walletClient.account!;
-
-  // Get the raw provider — must be set via setRawProvider before signing
-  if (!_rawProvider) {
-    throw new Error('Wallet provider not initialized. Please reconnect your wallet.');
-  }
-
-  // Create a dedicated signing client on chain 1337 with the raw provider.
-  // This ensures viem's internal chainId check passes (client chain 1337 == domain chain 1337)
-  // while the underlying provider is still the user's actual wallet (MetaMask etc.)
-  const signingClient = createSigningClient(account.address, _rawProvider);
-
-  const signature = await signingClient.signTypedData({
-    account: account.address,
+  const signature = await walletClient.signTypedData({
+    account: walletClient.account!,
     domain: PHANTOM_DOMAIN,
     types: AGENT_TYPES,
     primaryType: 'Agent' as const,
