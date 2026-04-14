@@ -65,8 +65,15 @@ export default function TradePage() {
       const sizeInAsset = parseFloat(sizeUsd) / selected.price;
       const size = sizeInAsset.toFixed(szDecimals);
 
+      // Hyperliquid enforces a $10 minimum NOTIONAL per order (not IM).
+      if (parseFloat(sizeUsd) < 10) {
+        setOrderStatus({ type: 'error', msg: 'Minimum order size is $10 notional (Hyperliquid rule).' });
+        setSubmitting(false);
+        return;
+      }
+
       if (parseFloat(size) === 0) {
-        setOrderStatus({ type: 'error', msg: `Size too small. Min ~$${(Math.pow(10, -szDecimals) * selected.price).toFixed(2)}` });
+        setOrderStatus({ type: 'error', msg: `Size too small. Min lot ~$${(Math.pow(10, -szDecimals) * selected.price).toFixed(2)}` });
         setSubmitting(false);
         return;
       }
@@ -467,7 +474,10 @@ export default function TradePage() {
 
           {/* Size input */}
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Size (USD)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D }}>Order size (notional USD)</div>
+              <div style={{ fontSize: 9, fontFamily: M, color: C.muted }}>min $10</div>
+            </div>
             <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '0 10px' }}>
               <span style={{ fontSize: 11, color: C.muted, fontFamily: M, lineHeight: '36px' }}>$</span>
               <input
@@ -480,11 +490,23 @@ export default function TradePage() {
                 style={{ flex: 1, border: 'none', background: 'transparent', padding: '9px 6px', fontSize: 13, fontFamily: M, fontWeight: 600, color: C.primary, outline: 'none' }}
               />
             </div>
-            {sizeUsd && parseFloat(sizeUsd) > 0 && (
-              <div style={{ fontSize: 10, fontFamily: M, color: C.muted, marginTop: 4 }}>
-                ~{(parseFloat(sizeUsd) / selected.price).toFixed(4)} {selected.sym}
-              </div>
-            )}
+            {sizeUsd && parseFloat(sizeUsd) > 0 && (() => {
+              const notional = parseFloat(sizeUsd);
+              const levNum = parseInt(lev) || 1;
+              const im = notional / levNum;
+              return (
+                <div style={{ marginTop: 6, padding: '6px 8px', background: C.bg, borderRadius: 6, border: `1px solid ${C.borderLight}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: M, color: C.muted, marginBottom: 2 }}>
+                    <span>Asset size</span>
+                    <span style={{ color: C.secondary }}>{(notional / selected.price).toFixed(4)} {selected.sym}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: M, color: C.muted }}>
+                    <span>Initial margin</span>
+                    <span style={{ color: C.primary, fontWeight: 600 }}>${im.toFixed(2)}</span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Quick size */}
