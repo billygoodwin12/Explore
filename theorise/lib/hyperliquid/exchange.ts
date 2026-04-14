@@ -92,6 +92,11 @@ async function signAction(
   console.log('[Hyperliquid] Typed data:', typedData);
   console.log('[Hyperliquid] Account:', account.address);
 
+  // Log what window.ethereum actually is
+  console.log('[Hyperliquid] window.ethereum:', win.ethereum);
+  console.log('[Hyperliquid] isMetaMask:', win.ethereum.isMetaMask);
+  console.log('[Hyperliquid] providers:', win.ethereum.providers);
+
   let signature: string;
   try {
     signature = await win.ethereum.request({
@@ -99,9 +104,21 @@ async function signAction(
       params: [account.address, JSON.stringify(typedData)],
     });
     console.log('[Hyperliquid] Signature received:', signature);
-  } catch (e) {
-    console.error('[Hyperliquid] Signing failed:', e);
-    throw e;
+  } catch (e: unknown) {
+    // Errors from wallet providers often have non-enumerable properties.
+    // Extract everything we can.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const err = e as any;
+    console.error('[Hyperliquid] Signing failed - raw error:', e);
+    console.error('[Hyperliquid] error.message:', err?.message);
+    console.error('[Hyperliquid] error.code:', err?.code);
+    console.error('[Hyperliquid] error.data:', err?.data);
+    console.error('[Hyperliquid] error.stack:', err?.stack);
+    console.error('[Hyperliquid] error keys (own):', Object.getOwnPropertyNames(err || {}));
+    console.error('[Hyperliquid] error.toString():', err?.toString?.());
+    // Build a useful error message
+    const msg = err?.message || err?.code || err?.toString?.() || 'Unknown signing error';
+    throw new Error(`Signing failed: ${msg}`);
   }
 
   const r = `0x${signature.slice(2, 66)}`;
