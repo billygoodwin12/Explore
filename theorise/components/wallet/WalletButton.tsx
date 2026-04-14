@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 import { C, M } from '@/styles/tokens';
 
@@ -8,11 +7,6 @@ export default function WalletButton() {
   const { address, isConnected } = useAccount();
   const { connect, connectors, isPending, error } = useConnect();
   const { disconnect } = useDisconnect();
-  const [showMenu, setShowMenu] = useState(false);
-
-  // Filter out generic "Injected" if named wallets (MetaMask, Phantom) are detected
-  const namedWallets = connectors.filter(c => c.name !== 'Injected');
-  const displayConnectors = namedWallets.length > 0 ? namedWallets : connectors;
 
   const displayAddress = address
     ? `${address.slice(0, 6)}...${address.slice(-4)}`
@@ -48,11 +42,14 @@ export default function WalletButton() {
     );
   }
 
+  // MVP: MetaMask only — single connector
+  const metaMaskConnector = connectors[0];
+
   return (
     <div style={{ position: 'relative' }}>
       <button
-        onClick={() => setShowMenu(!showMenu)}
-        disabled={isPending}
+        onClick={() => metaMaskConnector && connect({ connector: metaMaskConnector })}
+        disabled={isPending || !metaMaskConnector}
         style={{
           padding: '7px 16px',
           borderRadius: 8,
@@ -67,89 +64,24 @@ export default function WalletButton() {
           opacity: isPending ? 0.7 : 1,
         }}
       >
-        {isPending ? 'Connecting...' : 'Connect Wallet'}
+        {isPending ? 'Connecting...' : 'Connect MetaMask'}
       </button>
-
-      {showMenu && (
-        <>
-          <div
-            onClick={() => setShowMenu(false)}
-            style={{ position: 'fixed', inset: 0, zIndex: 99 }}
-          />
-          <div style={{
-            position: 'absolute',
-            top: 'calc(100% + 8px)',
-            right: 0,
-            background: C.card,
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            padding: 8,
-            minWidth: 200,
-            zIndex: 100,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-          }}>
-            <div style={{
-              fontSize: 11,
-              fontFamily: M,
-              color: C.secondary,
-              padding: '4px 8px 8px',
-              borderBottom: `1px solid ${C.borderLight}`,
-              marginBottom: 4,
-            }}>
-              Select a wallet
-            </div>
-            {displayConnectors.map((connector) => (
-              <button
-                key={connector.uid}
-                onClick={() => {
-                  connect({ connector });
-                  setShowMenu(false);
-                }}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  padding: '10px 12px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  fontFamily: M,
-                  fontWeight: 500,
-                  color: C.primary,
-                  textAlign: 'left',
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
-                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-              >
-                {connector.name}
-              </button>
-            ))}
-            {displayConnectors.length === 0 && (
-              <div style={{
-                padding: '10px 12px',
-                fontSize: 12,
-                fontFamily: M,
-                color: C.muted,
-              }}>
-                No wallets detected. Install MetaMask to get started.
-              </div>
-            )}
-            {error && (
-              <div style={{
-                padding: '8px 12px',
-                fontSize: 11,
-                fontFamily: M,
-                color: C.red,
-                borderTop: `1px solid ${C.borderLight}`,
-                marginTop: 4,
-              }}>
-                {error.message.slice(0, 80)}
-              </div>
-            )}
-          </div>
-        </>
+      {error && (
+        <div style={{
+          position: 'absolute',
+          top: 'calc(100% + 8px)',
+          right: 0,
+          padding: '8px 12px',
+          fontSize: 11,
+          fontFamily: M,
+          color: C.red,
+          background: C.card,
+          border: `1px solid ${C.border}`,
+          borderRadius: 6,
+          maxWidth: 240,
+        }}>
+          {error.message.slice(0, 100)}
+        </div>
       )}
     </div>
   );

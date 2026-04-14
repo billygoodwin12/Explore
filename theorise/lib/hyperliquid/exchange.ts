@@ -47,16 +47,11 @@ function actionHash(action: Record<string, unknown>, nonce: number): `0x${string
 }
 
 /**
- * Sign a Hyperliquid L1 action using EIP-712 typed data.
+ * MVP signing — bare metal MetaMask only.
  *
- * Hyperliquid orders are NOT EVM transactions — they're signed actions POSTed
- * to HyperCore's exchange API. The EIP-712 domain uses chainId 1337 (the
- * "phantom agent" scheme), even though the wallet is connected to Arbitrum.
- *
- * viem's signTypedData does NOT validate that domain.chainId matches the
- * wallet's active chain — it just passes the typed data through to the
- * wallet's eth_signTypedData_v4 handler. This is confirmed by reading viem's
- * source and is the same approach used by the official Hyperliquid TS SDKs.
+ * Calls eth_signTypedData_v4 directly on window.ethereum (which is MetaMask
+ * since we disabled multiInjectedProviderDiscovery and only configured the
+ * metaMask connector). No viem wrapper, no provider discovery, no fallbacks.
  */
 async function signAction(
   walletClient: WalletClient,
@@ -66,13 +61,48 @@ async function signAction(
   const connectionId = actionHash(action, nonce);
   const phantomAgent = { source: 'a' as const, connectionId }; // 'a' = mainnet
 
-  const signature = await walletClient.signTypedData({
-    account: walletClient.account!,
+  const account = walletClient.account!;
+
+  // Build the typed data exactly as MetaMask expects
+  const typedData = {
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      Agent: [
+        { name: 'source', type: 'string' },
+        { name: 'connectionId', type: 'bytes32' },
+      ],
+    },
+    primaryType: 'Agent',
     domain: PHANTOM_DOMAIN,
-    types: AGENT_TYPES,
-    primaryType: 'Agent' as const,
     message: phantomAgent,
-  });
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const win = window as any;
+  if (!win.ethereum) {
+    throw new Error('MetaMask not detected. Please install MetaMask.');
+  }
+
+  console.log('[Hyperliquid] Signing action:', action);
+  console.log('[Hyperliquid] Typed data:', typedData);
+  console.log('[Hyperliquid] Account:', account.address);
+
+  let signature: string;
+  try {
+    signature = await win.ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [account.address, JSON.stringify(typedData)],
+    });
+    console.log('[Hyperliquid] Signature received:', signature);
+  } catch (e) {
+    console.error('[Hyperliquid] Signing failed:', e);
+    throw e;
+  }
 
   const r = `0x${signature.slice(2, 66)}`;
   const s = `0x${signature.slice(66, 130)}`;
