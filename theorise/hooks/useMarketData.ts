@@ -32,6 +32,7 @@ export interface MarketData {
   funding: number;
   oi: string;
   maxLeverage: number;
+  szDecimals: number;
 }
 
 function formatOI(usdValue: number): string {
@@ -63,7 +64,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
   if (!res.ok) throw new Error(`API error: ${res.status}`);
 
   const [meta, ctxs] = await res.json();
-  const universe: { name: string; maxLeverage: number; isDelisted?: boolean }[] = meta.universe;
+  const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
 
   const markets: MarketData[] = [];
 
@@ -88,6 +89,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
       funding: parseFloat(ctx.funding),
       oi: formatOI(oi),
       maxLeverage: asset.maxLeverage,
+      szDecimals: asset.szDecimals,
     });
   }
 

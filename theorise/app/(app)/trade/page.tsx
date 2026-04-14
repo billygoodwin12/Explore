@@ -6,7 +6,7 @@ import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
-import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals } from '@/lib/hyperliquid/exchange';
+import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex } from '@/lib/hyperliquid/exchange';
 import { ensureAgentApproved } from '@/lib/hyperliquid/agentWallet';
 import Chart from '@/components/chart/Chart';
 
@@ -23,7 +23,8 @@ export default function TradePage() {
   const [side, setSide] = useState<'long' | 'short'>('long');
   const [lev, setLev] = useState('3x');
   const [cat, setCat] = useState('all');
-  const [sizeUsd, setSizeUsd] = useState('');
+  const [sizeAsset, setSizeAsset] = useState('');
+  const [reduceOnly, setReduceOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [orderStatus, setOrderStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -36,7 +37,10 @@ export default function TradePage() {
   const list = cat === 'all' ? markets : markets.filter(p => p.cat === cat);
 
   const handleSubmit = useCallback(async () => {
-    if (!walletClient || !selected || !sizeUsd) return;
+    if (!walletClient || !selected || !sizeAsset) return;
+    const sizeAssetNum = parseFloat(sizeAsset);
+    if (!Number.isFinite(sizeAssetNum) || sizeAssetNum <= 0) return;
+
     if (!confirm) {
       setConfirm(true);
       return;
@@ -50,30 +54,37 @@ export default function TradePage() {
       const agent = await ensureAgentApproved(walletClient);
 
       const assetIndex = await getAssetIndex(selected.sym);
-      const szDecimals = await getSzDecimals(selected.sym);
       const leverage = parseInt(lev);
       const isBuy = side === 'long';
+
+      // Truncate to the asset's lot precision so what we submit matches
+      // exactly what the user sees in the Order Value readout.
+      const szDecimals = selected.szDecimals;
+      const factor = Math.pow(10, szDecimals);
+      const truncated = Math.floor(sizeAssetNum * factor) / factor;
+      const size = truncated.toFixed(szDecimals);
+
+      if (truncated <= 0) {
+        setOrderStatus({ type: 'error', msg: `Size below lot precision (10^-${szDecimals} ${selected.sym}).` });
+        setSubmitting(false);
+        return;
+      }
+
+      // Hyperliquid enforces a $10 minimum NOTIONAL per order (not IM).
+      const notional = truncated * selected.price;
+      if (notional < 10) {
+        setOrderStatus({
+          type: 'error',
+          msg: `Minimum order is $10 notional. Current: $${notional.toFixed(2)} — increase size.`,
+        });
+        setSubmitting(false);
+        return;
+      }
 
       const levResult = await updateLeverage(agent, assetIndex, leverage);
       if (levResult.status !== 'ok') {
         const errMsg = typeof levResult.response === 'string' ? levResult.response : (levResult.error || JSON.stringify(levResult));
         setOrderStatus({ type: 'error', msg: `Leverage: ${errMsg}` });
-        setSubmitting(false);
-        return;
-      }
-
-      const sizeInAsset = parseFloat(sizeUsd) / selected.price;
-      const size = sizeInAsset.toFixed(szDecimals);
-
-      // Hyperliquid enforces a $10 minimum NOTIONAL per order (not IM).
-      if (parseFloat(sizeUsd) < 10) {
-        setOrderStatus({ type: 'error', msg: 'Minimum order size is $10 notional (Hyperliquid rule).' });
-        setSubmitting(false);
-        return;
-      }
-
-      if (parseFloat(size) === 0) {
-        setOrderStatus({ type: 'error', msg: `Size too small. Min lot ~$${(Math.pow(10, -szDecimals) * selected.price).toFixed(2)}` });
         setSubmitting(false);
         return;
       }
@@ -84,7 +95,7 @@ export default function TradePage() {
       const priceDecimals = selected.price > 1000 ? 0 : selected.price > 10 ? 1 : 4;
       const price = slippagePrice.toFixed(priceDecimals);
 
-      const result = await placeMarketOrder(agent, assetIndex, isBuy, size, price);
+      const result = await placeMarketOrder(agent, assetIndex, isBuy, size, price, reduceOnly);
 
       if (result.status === 'ok') {
         const resp = typeof result.response === 'object' ? result.response : undefined;
@@ -97,7 +108,7 @@ export default function TradePage() {
         } else {
           setOrderStatus({ type: 'success', msg: 'Order submitted' });
         }
-        setSizeUsd('');
+        setSizeAsset('');
         refreshPositions();
       } else {
         const errMsg = typeof result.response === 'string' ? result.response : (result.error || JSON.stringify(result.response || result));
@@ -117,7 +128,7 @@ export default function TradePage() {
     } finally {
       setSubmitting(false);
     }
-  }, [walletClient, selected, sizeUsd, side, lev, confirm, refreshPositions]);
+  }, [walletClient, selected, sizeAsset, side, lev, confirm, reduceOnly, refreshPositions]);
 
   const handleClose = useCallback(async (pos: typeof positions[0]) => {
     if (!walletClient) return;
@@ -472,54 +483,64 @@ export default function TradePage() {
             ))}
           </div>
 
-          {/* Size input */}
+          {/* Size input — denominated in the base asset */}
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 5 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D }}>Order size (notional USD)</div>
-              <div style={{ fontSize: 9, fontFamily: M, color: C.muted }}>min $10</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D }}>Size</div>
+              <div style={{ fontSize: 9, fontFamily: M, color: C.muted }}>min $10 notional</div>
             </div>
-            <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '0 10px' }}>
-              <span style={{ fontSize: 11, color: C.muted, fontFamily: M, lineHeight: '36px' }}>$</span>
+            <div style={{ display: 'flex', background: C.bg, border: `1px solid ${C.borderLight}`, borderRadius: 7, padding: '0 10px', alignItems: 'center' }}>
               <input
-                placeholder="0.00"
-                value={sizeUsd}
-                onChange={e => { setSizeUsd(e.target.value); setConfirm(false); }}
+                placeholder={`0.${'0'.repeat(Math.max(0, selected.szDecimals - 1))}1`}
+                value={sizeAsset}
+                onChange={e => { setSizeAsset(e.target.value); setConfirm(false); }}
                 type="number"
                 min="0"
-                step="any"
-                style={{ flex: 1, border: 'none', background: 'transparent', padding: '9px 6px', fontSize: 13, fontFamily: M, fontWeight: 600, color: C.primary, outline: 'none' }}
+                step={Math.pow(10, -selected.szDecimals)}
+                style={{ flex: 1, border: 'none', background: 'transparent', padding: '9px 0', fontSize: 13, fontFamily: M, fontWeight: 600, color: C.primary, outline: 'none' }}
               />
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: M, marginLeft: 6 }}>{selected.sym}</span>
             </div>
-            {sizeUsd && parseFloat(sizeUsd) > 0 && (() => {
-              const notional = parseFloat(sizeUsd);
-              const levNum = parseInt(lev) || 1;
-              const im = notional / levNum;
-              return (
-                <div style={{ marginTop: 6, padding: '6px 8px', background: C.bg, borderRadius: 6, border: `1px solid ${C.borderLight}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: M, color: C.muted, marginBottom: 2 }}>
-                    <span>Asset size</span>
-                    <span style={{ color: C.secondary }}>{(notional / selected.price).toFixed(4)} {selected.sym}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: M, color: C.muted }}>
-                    <span>Initial margin</span>
-                    <span style={{ color: C.primary, fontWeight: 600 }}>${im.toFixed(2)}</span>
-                  </div>
-                </div>
-              );
-            })()}
           </div>
 
-          {/* Quick size */}
+          {/* Quick-size: percent of available balance → asset units */}
           <div style={{ display: 'flex', gap: 3, marginBottom: 14 }}>
-            {['25', '50', '100', '250'].map(v => (
-              <button key={v} onClick={() => { setSizeUsd(v); setConfirm(false); }} style={{
-                flex: 1, padding: '5px 0', borderRadius: 5, border: `1px solid ${C.borderLight}`,
-                cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: M,
-                background: sizeUsd === v ? C.primary : C.bg,
-                color: sizeUsd === v ? 'white' : C.secondary,
-              }}>${v}</button>
+            {[10, 25, 50, 75, 100].map(pct => (
+              <button
+                key={pct}
+                onClick={() => {
+                  const avail = parseFloat(withdrawable);
+                  const levNum = parseInt(lev) || 1;
+                  if (!Number.isFinite(avail) || avail <= 0) return;
+                  const targetNotional = (avail * (pct / 100)) * levNum;
+                  const assetAmt = targetNotional / selected.price;
+                  // Truncate to lot precision
+                  const factor = Math.pow(10, selected.szDecimals);
+                  const truncated = Math.floor(assetAmt * factor) / factor;
+                  setSizeAsset(truncated > 0 ? truncated.toFixed(selected.szDecimals) : '');
+                  setConfirm(false);
+                }}
+                style={{
+                  flex: 1, padding: '5px 0', borderRadius: 5, border: `1px solid ${C.borderLight}`,
+                  cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: M,
+                  background: C.bg, color: C.secondary,
+                }}
+              >
+                {pct}%
+              </button>
             ))}
           </div>
+
+          {/* Reduce-only toggle */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, cursor: 'pointer', userSelect: 'none' }}>
+            <input
+              type="checkbox"
+              checked={reduceOnly}
+              onChange={e => { setReduceOnly(e.target.checked); setConfirm(false); }}
+              style={{ cursor: 'pointer' }}
+            />
+            <span style={{ fontSize: 11, fontFamily: M, color: C.secondary, fontWeight: 600 }}>Reduce only</span>
+          </label>
 
           {/* Leverage */}
           <div style={{ marginBottom: 18 }}>
@@ -551,36 +572,78 @@ export default function TradePage() {
 
           {/* Submit */}
           <div style={{ marginTop: 'auto' }}>
-            {!isConnected ? (
-              <div style={{ textAlign: 'center', fontSize: 11, fontFamily: M, color: C.muted, padding: '12px 0' }}>
-                Connect wallet to trade
-              </div>
-            ) : (
-              <>
-                {confirm && (
+            {(() => {
+              const sizeNum = parseFloat(sizeAsset);
+              const validSize = Number.isFinite(sizeNum) && sizeNum > 0;
+              const levNum = parseInt(lev) || 1;
+              const orderValue = validSize ? sizeNum * selected.price : 0;
+              const marginRequired = validSize ? orderValue / levNum : 0;
+              const belowMin = validSize && orderValue < 10;
+              const submitDisabled = !validSize || submitting || belowMin;
+
+              return (
+                <>
+                  {/* Derived quote-currency readout */}
                   <div style={{
-                    marginBottom: 8, padding: '8px 10px', borderRadius: 7, fontSize: 10, fontFamily: M,
-                    background: '#FFF8E6', border: '1px solid #F0D060', color: '#8B6E00',
+                    borderTop: `1px solid ${C.borderLight}`,
+                    paddingTop: 10, marginBottom: 10, fontSize: 11, fontFamily: M,
                   }}>
-                    MAINNET — This will trade real funds. Click again to confirm.
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ color: C.muted }}>Liquidation Price</span>
+                      <span style={{ color: C.secondary, fontWeight: 600 }}>N/A</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ color: C.muted }}>Order Value</span>
+                      <span style={{ color: C.primary, fontWeight: 600 }}>
+                        {validSize ? `${orderValue.toFixed(2)} USDC` : '—'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: C.muted }}>Margin Required</span>
+                      <span style={{ color: C.primary, fontWeight: 600 }}>
+                        {validSize ? `${marginRequired.toFixed(2)} USDC` : '—'}
+                      </span>
+                    </div>
+                    {belowMin && (
+                      <div style={{ marginTop: 6, fontSize: 10, color: C.red }}>
+                        Below $10 notional minimum.
+                      </div>
+                    )}
                   </div>
-                )}
-                <button
-                  onClick={handleSubmit}
-                  disabled={submitting || !sizeUsd || parseFloat(sizeUsd) <= 0}
-                  style={{
-                    width: '100%', padding: '12px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
-                    fontSize: 13, fontWeight: 700, fontFamily: D,
-                    background: confirm ? '#D4A017' : (side === 'long' ? C.green : C.red),
-                    color: 'white',
-                    opacity: submitting || !sizeUsd || parseFloat(sizeUsd) <= 0 ? 0.5 : 1,
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  {submitting ? 'Submitting...' : confirm ? 'Confirm Order' : `${side === 'long' ? 'Long' : 'Short'} ${selected.sym} ${lev}`}
-                </button>
-              </>
-            )}
+
+                  {!isConnected ? (
+                    <div style={{ textAlign: 'center', fontSize: 11, fontFamily: M, color: C.muted, padding: '12px 0' }}>
+                      Connect wallet to trade
+                    </div>
+                  ) : (
+                    <>
+                      {confirm && (
+                        <div style={{
+                          marginBottom: 8, padding: '8px 10px', borderRadius: 7, fontSize: 10, fontFamily: M,
+                          background: '#FFF8E6', border: '1px solid #F0D060', color: '#8B6E00',
+                        }}>
+                          MAINNET — This will trade real funds. Click again to confirm.
+                        </div>
+                      )}
+                      <button
+                        onClick={handleSubmit}
+                        disabled={submitDisabled}
+                        style={{
+                          width: '100%', padding: '12px 0', borderRadius: 9, border: 'none', cursor: 'pointer',
+                          fontSize: 13, fontWeight: 700, fontFamily: D,
+                          background: confirm ? '#D4A017' : (side === 'long' ? C.green : C.red),
+                          color: 'white',
+                          opacity: submitDisabled ? 0.5 : 1,
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        {submitting ? 'Submitting...' : confirm ? 'Confirm Order' : `${side === 'long' ? 'Long' : 'Short'} ${selected.sym} ${lev}`}
+                      </button>
+                    </>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
       </div>
