@@ -1,9 +1,11 @@
 import { encode } from '@msgpack/msgpack';
 import { keccak256, type WalletClient } from 'viem';
+import type { PrivateKeyAccount } from 'viem/accounts';
 
 const MAINNET_EXCHANGE = 'https://api.hyperliquid.xyz/exchange';
 const MAINNET_INFO = 'https://api.hyperliquid.xyz/info';
 
+// ── Phantom agent domain (L1 actions, signed locally by agent key) ──
 const PHANTOM_DOMAIN = {
   name: 'Exchange',
   version: '1',
@@ -17,6 +19,22 @@ const AGENT_TYPES = {
     { name: 'connectionId', type: 'bytes32' },
   ],
 } as const;
+
+// ── User-signed action domain (signed by MetaMask) ──
+// chainId is filled in at sign-time from the wallet's active chain so
+// MetaMask's domain-chainId validator is satisfied.
+const USER_SIGN_DOMAIN_BASE = {
+  name: 'HyperliquidSignTransaction',
+  version: '1',
+  verifyingContract: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+} as const;
+
+const APPROVE_AGENT_TYPE = [
+  { name: 'hyperliquidChain', type: 'string' },
+  { name: 'agentAddress', type: 'address' },
+  { name: 'agentName', type: 'string' },
+  { name: 'nonce', type: 'uint64' },
+];
 
 /** Remove trailing zeros from stringified numbers (Hyperliquid requirement) */
 function normalizeNumber(s: string): string {
@@ -47,120 +65,21 @@ function actionHash(action: Record<string, unknown>, nonce: number): `0x${string
 }
 
 /**
- * MVP signing — bare metal MetaMask only.
- *
- * Calls eth_signTypedData_v4 directly on window.ethereum (which is MetaMask
- * since we disabled multiInjectedProviderDiscovery and only configured the
- * metaMask connector). No viem wrapper, no provider discovery, no fallbacks.
+ * Sign an L1 action (orders, cancels, leverage, …) locally with the
+ * agent's private key. No wallet, no chainId validation, no prompts.
  */
-async function signAction(
-  walletClient: WalletClient,
+async function signL1Action(
+  agent: PrivateKeyAccount,
   action: Record<string, unknown>,
   nonce: number,
 ) {
   const connectionId = actionHash(action, nonce);
-  const phantomAgent = { source: 'a' as const, connectionId }; // 'a' = mainnet
-
-  const account = walletClient.account!;
-
-  // Build the typed data exactly as MetaMask expects
-  const typedData = {
-    types: {
-      EIP712Domain: [
-        { name: 'name', type: 'string' },
-        { name: 'version', type: 'string' },
-        { name: 'chainId', type: 'uint256' },
-        { name: 'verifyingContract', type: 'address' },
-      ],
-      Agent: [
-        { name: 'source', type: 'string' },
-        { name: 'connectionId', type: 'bytes32' },
-      ],
-    },
-    primaryType: 'Agent',
+  const signature = await agent.signTypedData({
     domain: PHANTOM_DOMAIN,
-    message: phantomAgent,
-  };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const win = window as any;
-  if (!win.ethereum) {
-    throw new Error('MetaMask not detected. Please install MetaMask.');
-  }
-
-  console.log('[Hyperliquid] Signing action:', action);
-  console.log('[Hyperliquid] Typed data:', typedData);
-  console.log('[Hyperliquid] Account:', account.address);
-
-  // Log what window.ethereum actually is
-  console.log('[Hyperliquid] window.ethereum:', win.ethereum);
-  console.log('[Hyperliquid] isMetaMask:', win.ethereum.isMetaMask);
-  console.log('[Hyperliquid] providers:', win.ethereum.providers);
-
-  let signature: string;
-  try {
-    signature = await win.ethereum.request({
-      method: 'eth_signTypedData_v4',
-      params: [account.address, JSON.stringify(typedData)],
-    });
-    console.log('[Hyperliquid] Signature received:', signature);
-  } catch (e: unknown) {
-    // Errors from wallet providers often have non-enumerable properties.
-    // Extract everything we can and bake it INTO the thrown message so it
-    // appears in the Next.js error overlay (not just the browser console).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const err = e as any;
-
-    const details: Record<string, unknown> = {
-      type: typeof e,
-      ctor: err?.constructor?.name,
-      message: err?.message,
-      code: err?.code,
-      data: err?.data,
-      reason: err?.reason,
-      shortMessage: err?.shortMessage,
-      cause: err?.cause,
-      ownKeys: Object.getOwnPropertyNames(err || {}),
-      proto: err && Object.getPrototypeOf(err)?.constructor?.name,
-      toString: err?.toString?.(),
-    };
-
-    // Walk the cause chain too
-    let cur = err?.cause;
-    let depth = 0;
-    while (cur && depth < 4) {
-      details[`cause${depth}`] = {
-        message: cur?.message,
-        code: cur?.code,
-        data: cur?.data,
-        ownKeys: Object.getOwnPropertyNames(cur || {}),
-        toString: cur?.toString?.(),
-      };
-      cur = cur?.cause;
-      depth++;
-    }
-
-    // Try JSON-stringifying the raw error including non-enumerable props
-    let jsonDump = '';
-    try {
-      const allProps: Record<string, unknown> = {};
-      for (const k of Object.getOwnPropertyNames(err || {})) {
-        allProps[k] = err[k];
-      }
-      jsonDump = JSON.stringify(allProps, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
-    } catch {
-      jsonDump = '<unstringifiable>';
-    }
-
-    console.error('[Hyperliquid] Signing failed - details:', details);
-    console.error('[Hyperliquid] Signing failed - jsonDump:', jsonDump);
-    console.error('[Hyperliquid] Signing failed - raw error object:', e);
-
-    const summary = JSON.stringify(details, (_k, v) =>
-      typeof v === 'bigint' ? v.toString() : v,
-    );
-    throw new Error(`Signing failed → ${summary} | dump=${jsonDump}`);
-  }
+    types: AGENT_TYPES,
+    primaryType: 'Agent',
+    message: { source: 'a', connectionId },
+  });
 
   const r = `0x${signature.slice(2, 66)}`;
   const s = `0x${signature.slice(66, 130)}`;
@@ -286,11 +205,95 @@ export async function getSzDecimals(coin: string): Promise<number> {
   return asset?.szDecimals ?? 2;
 }
 
-// ── Exchange endpoints ───────────────────────────────────────────
+// ── User-signed actions (MetaMask) ───────────────────────────────
+
+/**
+ * Approve a local agent wallet for trading on behalf of the user.
+ * Signed by MetaMask using the user-signed domain whose chainId is
+ * the wallet's active chain — so MetaMask's domain validator passes.
+ */
+export async function approveAgent(
+  walletClient: WalletClient,
+  agentAddress: string,
+  agentName: string = 'theorise',
+): Promise<OrderResult> {
+  const account = walletClient.account!;
+  const activeChainId = walletClient.chain?.id ?? 42161;
+  const sigChainHex = `0x${activeChainId.toString(16)}` as const;
+  const nonce = Date.now();
+
+  // Body sent over the wire
+  const action = {
+    type: 'approveAgent',
+    hyperliquidChain: 'Mainnet',
+    signatureChainId: sigChainHex,
+    agentAddress,
+    agentName,
+    nonce,
+  };
+
+  // Typed-data payload for MetaMask
+  const typedData = {
+    types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' },
+        { name: 'version', type: 'string' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      'HyperliquidTransaction:ApproveAgent': APPROVE_AGENT_TYPE,
+    },
+    primaryType: 'HyperliquidTransaction:ApproveAgent',
+    domain: {
+      ...USER_SIGN_DOMAIN_BASE,
+      chainId: activeChainId,
+    },
+    message: {
+      hyperliquidChain: 'Mainnet',
+      agentAddress,
+      agentName,
+      nonce,
+    },
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const win = window as any;
+  if (!win.ethereum) {
+    throw new Error('MetaMask not detected. Please install MetaMask.');
+  }
+
+  console.log('[Hyperliquid] approveAgent typed data:', typedData);
+
+  let signature: string;
+  try {
+    signature = await win.ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [account.address, JSON.stringify(typedData)],
+    });
+  } catch (e: unknown) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const err = e as any;
+    const msg = err?.message || err?.code || err?.toString?.() || 'Unknown signing error';
+    throw new Error(`Agent approval signing failed: ${msg}`);
+  }
+
+  const r = `0x${signature.slice(2, 66)}`;
+  const s = `0x${signature.slice(66, 130)}`;
+  const v = parseInt(signature.slice(130, 132), 16);
+
+  const res = await fetch(MAINNET_EXCHANGE, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, nonce, signature: { r, s, v } }),
+  });
+  return await res.json();
+}
+
+// ── L1 actions (signed locally by the agent key) ─────────────────
 
 /** Place a market order (IOC at slippage price) */
 export async function placeMarketOrder(
-  walletClient: WalletClient,
+  agent: PrivateKeyAccount,
   assetIndex: number,
   isBuy: boolean,
   size: string,
@@ -314,7 +317,7 @@ export async function placeMarketOrder(
     grouping: 'na',
   };
 
-  const signature = await signAction(walletClient, action, nonce);
+  const signature = await signL1Action(agent, action, nonce);
 
   const res = await fetch(MAINNET_EXCHANGE, {
     method: 'POST',
@@ -327,7 +330,7 @@ export async function placeMarketOrder(
 
 /** Close a position (market order, reduce-only) */
 export async function closePosition(
-  walletClient: WalletClient,
+  agent: PrivateKeyAccount,
   coin: string,
   currentSize: number,
   currentPrice: number,
@@ -340,12 +343,12 @@ export async function closePosition(
     ? (currentPrice * 1.03).toFixed(currentPrice > 1000 ? 0 : currentPrice > 10 ? 1 : 4)
     : (currentPrice * 0.97).toFixed(currentPrice > 1000 ? 0 : currentPrice > 10 ? 1 : 4);
 
-  return placeMarketOrder(walletClient, assetIndex, isBuy, absSize, slippagePrice, true);
+  return placeMarketOrder(agent, assetIndex, isBuy, absSize, slippagePrice, true);
 }
 
 /** Update leverage for an asset */
 export async function updateLeverage(
-  walletClient: WalletClient,
+  agent: PrivateKeyAccount,
   assetIndex: number,
   leverage: number,
   isCross: boolean = true,
@@ -359,7 +362,7 @@ export async function updateLeverage(
     leverage: leverage,
   };
 
-  const signature = await signAction(walletClient, action, nonce);
+  const signature = await signL1Action(agent, action, nonce);
 
   const res = await fetch(MAINNET_EXCHANGE, {
     method: 'POST',
@@ -372,7 +375,7 @@ export async function updateLeverage(
 
 /** Cancel an order */
 export async function cancelOrder(
-  walletClient: WalletClient,
+  agent: PrivateKeyAccount,
   assetIndex: number,
   oid: number,
 ): Promise<OrderResult> {
@@ -383,7 +386,7 @@ export async function cancelOrder(
     cancels: [{ a: assetIndex, o: oid }],
   };
 
-  const signature = await signAction(walletClient, action, nonce);
+  const signature = await signL1Action(agent, action, nonce);
 
   const res = await fetch(MAINNET_EXCHANGE, {
     method: 'POST',

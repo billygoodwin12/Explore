@@ -7,6 +7,7 @@ import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
 import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex, getSzDecimals } from '@/lib/hyperliquid/exchange';
+import { ensureAgentApproved } from '@/lib/hyperliquid/agentWallet';
 import Chart from '@/components/chart/Chart';
 
 const SLIPPAGE = 0.03;
@@ -46,12 +47,14 @@ export default function TradePage() {
     setConfirm(false);
 
     try {
+      const agent = await ensureAgentApproved(walletClient);
+
       const assetIndex = await getAssetIndex(selected.sym);
       const szDecimals = await getSzDecimals(selected.sym);
       const leverage = parseInt(lev);
       const isBuy = side === 'long';
 
-      const levResult = await updateLeverage(walletClient, assetIndex, leverage);
+      const levResult = await updateLeverage(agent, assetIndex, leverage);
       if (levResult.status !== 'ok') {
         const errMsg = typeof levResult.response === 'string' ? levResult.response : (levResult.error || JSON.stringify(levResult));
         setOrderStatus({ type: 'error', msg: `Leverage: ${errMsg}` });
@@ -74,7 +77,7 @@ export default function TradePage() {
       const priceDecimals = selected.price > 1000 ? 0 : selected.price > 10 ? 1 : 4;
       const price = slippagePrice.toFixed(priceDecimals);
 
-      const result = await placeMarketOrder(walletClient, assetIndex, isBuy, size, price);
+      const result = await placeMarketOrder(agent, assetIndex, isBuy, size, price);
 
       if (result.status === 'ok') {
         const resp = typeof result.response === 'object' ? result.response : undefined;
@@ -113,8 +116,9 @@ export default function TradePage() {
     if (!walletClient) return;
     setClosingCoin(pos.coin);
     try {
+      const agent = await ensureAgentApproved(walletClient);
       const midPrice = markets.find(m => m.sym === pos.coin)?.price || parseFloat(pos.entryPx);
-      await closePosition(walletClient, pos.coin, parseFloat(pos.szi), midPrice);
+      await closePosition(agent, pos.coin, parseFloat(pos.szi), midPrice);
       refreshPositions();
     } catch {
       // error handled silently
