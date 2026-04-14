@@ -106,19 +106,60 @@ async function signAction(
     console.log('[Hyperliquid] Signature received:', signature);
   } catch (e: unknown) {
     // Errors from wallet providers often have non-enumerable properties.
-    // Extract everything we can.
+    // Extract everything we can and bake it INTO the thrown message so it
+    // appears in the Next.js error overlay (not just the browser console).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const err = e as any;
-    console.error('[Hyperliquid] Signing failed - raw error:', e);
-    console.error('[Hyperliquid] error.message:', err?.message);
-    console.error('[Hyperliquid] error.code:', err?.code);
-    console.error('[Hyperliquid] error.data:', err?.data);
-    console.error('[Hyperliquid] error.stack:', err?.stack);
-    console.error('[Hyperliquid] error keys (own):', Object.getOwnPropertyNames(err || {}));
-    console.error('[Hyperliquid] error.toString():', err?.toString?.());
-    // Build a useful error message
-    const msg = err?.message || err?.code || err?.toString?.() || 'Unknown signing error';
-    throw new Error(`Signing failed: ${msg}`);
+
+    const details: Record<string, unknown> = {
+      type: typeof e,
+      ctor: err?.constructor?.name,
+      message: err?.message,
+      code: err?.code,
+      data: err?.data,
+      reason: err?.reason,
+      shortMessage: err?.shortMessage,
+      cause: err?.cause,
+      ownKeys: Object.getOwnPropertyNames(err || {}),
+      proto: err && Object.getPrototypeOf(err)?.constructor?.name,
+      toString: err?.toString?.(),
+    };
+
+    // Walk the cause chain too
+    let cur = err?.cause;
+    let depth = 0;
+    while (cur && depth < 4) {
+      details[`cause${depth}`] = {
+        message: cur?.message,
+        code: cur?.code,
+        data: cur?.data,
+        ownKeys: Object.getOwnPropertyNames(cur || {}),
+        toString: cur?.toString?.(),
+      };
+      cur = cur?.cause;
+      depth++;
+    }
+
+    // Try JSON-stringifying the raw error including non-enumerable props
+    let jsonDump = '';
+    try {
+      const allProps: Record<string, unknown> = {};
+      for (const k of Object.getOwnPropertyNames(err || {})) {
+        allProps[k] = err[k];
+      }
+      jsonDump = JSON.stringify(allProps, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    } catch {
+      jsonDump = '<unstringifiable>';
+    }
+
+    console.error('[Hyperliquid] Signing failed - details:', details);
+    console.error('[Hyperliquid] Signing failed - jsonDump:', jsonDump);
+    console.error('[Hyperliquid] Signing failed - raw error object:', e);
+
+    const summary = JSON.stringify(details, (_k, v) =>
+      typeof v === 'bigint' ? v.toString() : v,
+    );
+    throw new Error(`Signing failed → ${summary} | dump=${jsonDump}`);
   }
 
   const r = `0x${signature.slice(2, 66)}`;
