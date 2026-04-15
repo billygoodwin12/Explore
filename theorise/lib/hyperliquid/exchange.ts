@@ -129,12 +129,32 @@ export interface ClearinghouseState {
 
 // ── Info endpoints ───────────────────────────────────────────────
 
-export async function getClearinghouseState(address: string): Promise<ClearinghouseState> {
+export async function getClearinghouseState(
+  address: string,
+  dex?: string,
+): Promise<ClearinghouseState> {
+  const body: Record<string, unknown> = { type: 'clearinghouseState', user: address };
+  if (dex) body.dex = dex;
   const res = await fetch(MAINNET_INFO, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'clearinghouseState', user: address }),
+    body: JSON.stringify(body),
   });
+  return await res.json();
+}
+
+export interface PerpDex {
+  name: string;
+  fullName: string;
+}
+
+export async function getPerpDexs(): Promise<(PerpDex | null)[]> {
+  const res = await fetch(MAINNET_INFO, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'perpDexs' }),
+  });
+  if (!res.ok) return [null];
   return await res.json();
 }
 
@@ -331,12 +351,11 @@ export async function placeMarketOrder(
 /** Close a position (market order, reduce-only) */
 export async function closePosition(
   agent: PrivateKeyAccount,
-  coin: string,
+  assetIndex: number,
+  szDecimals: number,
   currentSize: number,
   currentPrice: number,
 ): Promise<OrderResult> {
-  const assetIndex = await getAssetIndex(coin);
-  const szDecimals = await getSzDecimals(coin);
   const isBuy = currentSize < 0; // if short, buy to close
   const absSize = Math.abs(currentSize).toFixed(szDecimals);
   const slippagePrice = isBuy

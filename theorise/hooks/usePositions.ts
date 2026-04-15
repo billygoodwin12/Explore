@@ -2,7 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAccount } from 'wagmi';
-import { getClearinghouseState, getSpotClearinghouseState, type Position } from '@/lib/hyperliquid/exchange';
+import {
+  getClearinghouseState,
+  getSpotClearinghouseState,
+  getPerpDexs,
+  type Position,
+  type PerpDex,
+} from '@/lib/hyperliquid/exchange';
 
 export function usePositions() {
   const { address } = useAccount();
@@ -28,15 +34,39 @@ export function usePositions() {
 
     try {
       setLoading(true);
-      const [perpsState, spotState] = await Promise.all([
+      const perpDexsRaw = await getPerpDexs().catch(() => [] as (PerpDex | null)[]);
+      const hip3Dexs: PerpDex[] = [];
+      for (const d of perpDexsRaw) {
+        if (d) hip3Dexs.push(d);
+      }
+
+      const [perpsState, spotState, ...hip3States] = await Promise.all([
         getClearinghouseState(address),
         getSpotClearinghouseState(address),
+        ...hip3Dexs.map(d =>
+          getClearinghouseState(address, d.name)
+            .then(s => ({ dex: d.name, state: s }))
+            .catch(() => null),
+        ),
       ]);
 
-      // Perps
-      const open = perpsState.assetPositions
+      // Default-dex perps
+      const open: Position[] = perpsState.assetPositions
         .map(ap => ap.position)
         .filter(p => parseFloat(p.szi) !== 0);
+
+      // HIP-3 perps — normalize coin to "dex:local" form if not already prefixed
+      for (const r of hip3States) {
+        if (!r) continue;
+        const { dex, state } = r as { dex: string; state: typeof perpsState };
+        for (const ap of state.assetPositions) {
+          const p = ap.position;
+          if (parseFloat(p.szi) === 0) continue;
+          const coin = p.coin.includes(':') ? p.coin : `${dex}:${p.coin}`;
+          open.push({ ...p, coin });
+        }
+      }
+
       setPositions(open);
       setAccountValue(perpsState.marginSummary.accountValue);
       setWithdrawable(perpsState.withdrawable);

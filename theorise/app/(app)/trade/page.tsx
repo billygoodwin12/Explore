@@ -141,8 +141,15 @@ export default function TradePage() {
     setClosingCoin(pos.coin);
     try {
       const agent = await ensureAgentApproved(walletClient);
-      const midPrice = markets.find(m => m.sym === pos.coin)?.price || parseFloat(pos.entryPx);
-      await closePosition(agent, pos.coin, parseFloat(pos.szi), midPrice);
+      const market = markets.find(m => m.sym === pos.coin);
+      if (!market) throw new Error(`Market not found for ${pos.coin}`);
+      await closePosition(
+        agent,
+        market.assetIndex,
+        market.szDecimals,
+        parseFloat(pos.szi),
+        market.price,
+      );
       refreshPositions();
     } catch {
       // error handled silently
@@ -316,11 +323,23 @@ export default function TradePage() {
                   const szi = parseFloat(p.szi);
                   const pnl = parseFloat(p.unrealizedPnl);
                   const roe = parseFloat(p.returnOnEquity) * 100;
-                  const markPrice = markets.find(m => m.sym === p.coin)?.price;
+                  const mkt = markets.find(m => m.sym === p.coin);
+                  const markPrice = mkt?.price;
+                  const label = mkt?.displaySym ?? p.coin;
+                  const isHip3 = !!mkt?.dex;
                   return (
                     <tr key={p.coin} style={{ borderTop: `1px solid ${C.borderLight}` }}>
                       <td style={{ padding: '6px 0', fontWeight: 600, color: C.primary }}>
-                        {p.coin}{' '}
+                        {label}
+                        {isHip3 && (
+                          <span style={{
+                            marginLeft: 6, padding: '1px 4px', borderRadius: 3,
+                            border: `1px solid ${C.borderLight}`, color: C.muted,
+                            fontSize: 9, fontWeight: 600,
+                          }}>
+                            HIP-3
+                          </span>
+                        )}{' '}
                         <span style={{ color: szi > 0 ? C.green : C.red, fontSize: 10 }}>
                           {szi > 0 ? 'LONG' : 'SHORT'}
                         </span>
