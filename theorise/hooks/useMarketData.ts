@@ -32,6 +32,7 @@ export interface MarketData {
   chg: number;
   funding: number;
   oi: string;
+  volume: number;      // 24h notional volume (USD), for sorting
   maxLeverage: number;
   szDecimals: number;
   assetIndex: number;  // Pre-computed asset ID for /exchange orders
@@ -56,13 +57,19 @@ function sortMarkets(markets: MarketData[]): MarketData[] {
     // Default dex first
     if (!a.dex && b.dex) return -1;
     if (a.dex && !b.dex) return 1;
-    // Within default dex, priority coins first
-    const ai = priority.indexOf(a.sym);
-    const bi = priority.indexOf(b.sym);
-    if (ai !== -1 && bi !== -1) return ai - bi;
-    if (ai !== -1) return -1;
-    if (bi !== -1) return 1;
-    return a.displaySym.localeCompare(b.displaySym);
+
+    // Within default dex: priority coins first, then curated order
+    if (!a.dex && !b.dex) {
+      const ai = priority.indexOf(a.sym);
+      const bi = priority.indexOf(b.sym);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return a.displaySym.localeCompare(b.displaySym);
+    }
+
+    // Within HIP-3: sort by 24h notional volume descending
+    return b.volume - a.volume;
   });
 }
 
@@ -114,6 +121,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
       const prevDayPx = parseFloat(ctx.prevDayPx);
       const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
       const oi = parseFloat(ctx.openInterest) * midPx;
+      const volume = parseFloat(ctx.dayNtlVlm || '0');
 
       all.push({
         sym: asset.name,
@@ -124,6 +132,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
         chg: Math.round(chg * 100) / 100,
         funding: parseFloat(ctx.funding),
         oi: formatOI(oi),
+        volume,
         maxLeverage: asset.maxLeverage,
         szDecimals: asset.szDecimals,
         assetIndex: i, // default dex → raw universe index
@@ -153,6 +162,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
         const prevDayPx = parseFloat(ctx.prevDayPx);
         const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
         const oi = parseFloat(ctx.openInterest || '0') * midPx;
+        const volume = parseFloat(ctx.dayNtlVlm || '0');
 
         const displaySym = stripDexPrefix(asset.name);
 
@@ -165,6 +175,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
           chg: Math.round(chg * 100) / 100,
           funding: parseFloat(ctx.funding || '0'),
           oi: formatOI(oi),
+          volume,
           maxLeverage: asset.maxLeverage,
           szDecimals: asset.szDecimals,
           assetIndex: 100000 + (d - 1) * 10000 + i,
