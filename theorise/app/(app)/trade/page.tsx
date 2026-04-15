@@ -81,12 +81,18 @@ export default function TradePage() {
         return;
       }
 
-      const levResult = await updateLeverage(agent, assetIndex, leverage);
-      if (levResult.status !== 'ok') {
-        const errMsg = typeof levResult.response === 'string' ? levResult.response : (levResult.error || JSON.stringify(levResult));
-        setOrderStatus({ type: 'error', msg: `Leverage: ${errMsg}` });
-        setSubmitting(false);
-        return;
+      // Hyperliquid rejects `updateLeverage` on HIP-3 perp asset ids
+      // ("Invalid spot") — their own UI skips the call on HIP-3 dexes
+      // and the order lands with whatever leverage the account already
+      // has on that dex. Match that behavior.
+      if (!selected.dex) {
+        const levResult = await updateLeverage(agent, assetIndex, leverage);
+        if (levResult.status !== 'ok') {
+          const errMsg = typeof levResult.response === 'string' ? levResult.response : (levResult.error || JSON.stringify(levResult));
+          setOrderStatus({ type: 'error', msg: `Leverage: ${errMsg}` });
+          setSubmitting(false);
+          return;
+        }
       }
 
       const slippagePrice = isBuy
@@ -529,6 +535,11 @@ export default function TradePage() {
               <span>1×</span>
               <span>{maxLev}×</span>
             </div>
+            {selected.dex && (
+              <div style={{ fontSize: 9, fontFamily: M, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>
+                HIP-3 dex: leverage is controlled per-dex on Hyperliquid, not per-order. Slider here only affects the Margin Required preview below.
+              </div>
+            )}
           </div>
 
           {/* Order status */}
