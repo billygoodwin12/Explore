@@ -144,7 +144,8 @@ async function fetchMarkets(): Promise<MarketData[]> {
 
   // ── HIP-3 perp dexes ──────────────────────────────────────────
   // perpDexs[0] is null (default dex); non-null entries are HIP-3.
-  // Asset ID for dex d (1-indexed), local idx i = 100000 + (d-1)*10000 + i
+  // Asset ID formula (from nktkas/hyperliquid SDK): 100000 + d*10000 + i
+  // where d is the raw index in perpDexs (xyz at index 1 → 110000..).
   for (let d = 0; d < perpDexs.length; d++) {
     const dex = perpDexs[d];
     if (!dex) continue;
@@ -178,7 +179,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
           volume,
           maxLeverage: asset.maxLeverage,
           szDecimals: asset.szDecimals,
-          assetIndex: 100000 + (d - 1) * 10000 + i,
+          assetIndex: 100000 + d * 10000 + i,
           dex: dex.name,
         });
       }
