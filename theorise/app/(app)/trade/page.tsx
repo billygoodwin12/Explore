@@ -6,9 +6,10 @@ import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
-import { placeMarketOrder, updateLeverage, closePosition, getAssetIndex } from '@/lib/hyperliquid/exchange';
+import { placeMarketOrder, updateLeverage, closePosition } from '@/lib/hyperliquid/exchange';
 import { ensureAgentApproved } from '@/lib/hyperliquid/agentWallet';
 import Chart from '@/components/chart/Chart';
+import AssetIcon from '@/components/AssetIcon';
 
 const SLIPPAGE = 0.03;
 
@@ -21,10 +22,9 @@ export default function TradePage() {
 
   const [selectedSym, setSelectedSym] = useState('BTC');
   const [side, setSide] = useState<'long' | 'short'>('long');
-  const [lev, setLev] = useState('3x');
-  const [cat, setCat] = useState('all');
+  const [lev, setLev] = useState<number>(3);
+  const [cat, setCat] = useState<'all' | 'crypto' | 'hip3'>('all');
   const [sizeAsset, setSizeAsset] = useState('');
-  const [reduceOnly, setReduceOnly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [orderStatus, setOrderStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -53,8 +53,8 @@ export default function TradePage() {
     try {
       const agent = await ensureAgentApproved(walletClient);
 
-      const assetIndex = await getAssetIndex(selected.sym);
-      const leverage = parseInt(lev);
+      const assetIndex = selected.assetIndex;
+      const leverage = Math.min(Math.max(1, lev), selected.maxLeverage || 20);
       const isBuy = side === 'long';
 
       // Truncate to the asset's lot precision so what we submit matches
@@ -95,7 +95,7 @@ export default function TradePage() {
       const priceDecimals = selected.price > 1000 ? 0 : selected.price > 10 ? 1 : 4;
       const price = slippagePrice.toFixed(priceDecimals);
 
-      const result = await placeMarketOrder(agent, assetIndex, isBuy, size, price, reduceOnly);
+      const result = await placeMarketOrder(agent, assetIndex, isBuy, size, price);
 
       if (result.status === 'ok') {
         const resp = typeof result.response === 'object' ? result.response : undefined;
@@ -128,7 +128,7 @@ export default function TradePage() {
     } finally {
       setSubmitting(false);
     }
-  }, [walletClient, selected, sizeAsset, side, lev, confirm, reduceOnly, refreshPositions]);
+  }, [walletClient, selected, sizeAsset, side, lev, confirm, refreshPositions]);
 
   const handleClose = useCallback(async (pos: typeof positions[0]) => {
     if (!walletClient) return;
@@ -174,11 +174,9 @@ export default function TradePage() {
 
   if (!selected) return null;
 
-  const levOptions = (() => {
-    const max = selected.maxLeverage || 20;
-    const all = [1, 2, 3, 5, 10, 20, 40];
-    return all.filter(l => l <= max).map(l => `${l}x`);
-  })();
+  const maxLev = selected.maxLeverage || 20;
+  // Clamp selected leverage to the market's max whenever the market changes
+  const effectiveLev = Math.min(Math.max(1, lev), maxLev);
 
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -190,13 +188,13 @@ export default function TradePage() {
             Markets
           </div>
           <div style={{ display: 'flex', gap: 3 }}>
-            {['all', 'crypto'].map(c => (
+            {(['all', 'crypto', 'hip3'] as const).map(c => (
               <button key={c} onClick={() => setCat(c)} style={{
                 padding: '5px 10px', borderRadius: 6, border: 'none', cursor: 'pointer',
-                fontSize: 11, fontWeight: 600, textTransform: 'capitalize', fontFamily: D,
+                fontSize: 11, fontWeight: 600, fontFamily: D,
                 background: cat === c ? C.primary : C.bg,
                 color: cat === c ? 'white' : C.secondary,
-              }}>{c}</button>
+              }}>{c === 'hip3' ? 'HIP-3' : c === 'all' ? 'All' : 'Crypto'}</button>
             ))}
           </div>
         </div>
@@ -210,11 +208,16 @@ export default function TradePage() {
               border: `1px solid ${selected.sym === p.sym ? C.border : 'transparent'}`,
               transition: 'all 0.1s',
             }}>
-              <div style={{ width: 34, height: 34, borderRadius: 8, background: C.bg, border: `1px solid ${C.borderLight}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: C.secondary, fontFamily: M, flexShrink: 0 }}>
-                {p.sym}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.primary, fontFamily: D }}>{p.name}</div>
+              <AssetIcon sym={p.displaySym} size={34} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: C.primary, fontFamily: D, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                  {p.dex && (
+                    <span style={{ fontSize: 8, fontWeight: 700, fontFamily: M, padding: '1px 4px', borderRadius: 3, background: C.borderLight, color: C.muted, letterSpacing: '0.04em', flexShrink: 0 }}>
+                      HIP-3
+                    </span>
+                  )}
+                </div>
                 <div style={{ fontSize: 10, color: C.muted, fontFamily: M }}>
                   Fund: {p.funding >= 0 ? '+' : ''}{(p.funding * 100).toFixed(4)}%
                 </div>
@@ -235,13 +238,16 @@ export default function TradePage() {
         {/* Market header */}
         <div style={{ padding: '14px 20px', background: C.card, borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 10, background: C.bg, border: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 800, fontFamily: M, color: C.primary }}>
-              {selected.sym}
-            </div>
+            <AssetIcon sym={selected.displaySym} size={40} />
             <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.primary, fontFamily: D }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.primary, fontFamily: D, display: 'flex', alignItems: 'center', gap: 6 }}>
                 {selected.name}{' '}
                 <span style={{ fontSize: 12, fontWeight: 500, color: C.muted }}>Perp</span>
+                {selected.dex && (
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: M, padding: '2px 6px', borderRadius: 4, background: C.borderLight, color: C.muted }}>
+                    HIP-3
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 14, fontSize: 10, fontFamily: M, color: C.secondary, marginTop: 1 }}>
                 <span>OI ${selected.oi}</span>
@@ -503,59 +509,25 @@ export default function TradePage() {
             </div>
           </div>
 
-          {/* Quick-size: percent of available balance → asset units */}
-          <div style={{ display: 'flex', gap: 3, marginBottom: 14 }}>
-            {[10, 25, 50, 75, 100].map(pct => (
-              <button
-                key={pct}
-                onClick={() => {
-                  const avail = parseFloat(withdrawable);
-                  const levNum = parseInt(lev) || 1;
-                  if (!Number.isFinite(avail) || avail <= 0) return;
-                  const targetNotional = (avail * (pct / 100)) * levNum;
-                  const assetAmt = targetNotional / selected.price;
-                  // Truncate to lot precision
-                  const factor = Math.pow(10, selected.szDecimals);
-                  const truncated = Math.floor(assetAmt * factor) / factor;
-                  setSizeAsset(truncated > 0 ? truncated.toFixed(selected.szDecimals) : '');
-                  setConfirm(false);
-                }}
-                style={{
-                  flex: 1, padding: '5px 0', borderRadius: 5, border: `1px solid ${C.borderLight}`,
-                  cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: M,
-                  background: C.bg, color: C.secondary,
-                }}
-              >
-                {pct}%
-              </button>
-            ))}
-          </div>
 
-          {/* Reduce-only toggle */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, cursor: 'pointer', userSelect: 'none' }}>
-            <input
-              type="checkbox"
-              checked={reduceOnly}
-              onChange={e => { setReduceOnly(e.target.checked); setConfirm(false); }}
-              style={{ cursor: 'pointer' }}
-            />
-            <span style={{ fontSize: 11, fontFamily: M, color: C.secondary, fontWeight: 600 }}>Reduce only</span>
-          </label>
-
-          {/* Leverage */}
+          {/* Leverage slider */}
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, marginBottom: 5, fontFamily: D }}>Leverage</div>
-            <div style={{ display: 'flex', gap: 2, background: C.bg, borderRadius: 7, padding: 2, border: `1px solid ${C.borderLight}` }}>
-              {levOptions.map(l => (
-                <button key={l} onClick={() => { setLev(l); setConfirm(false); }} style={{
-                  flex: 1, padding: '6px 0', borderRadius: 5, border: 'none', cursor: 'pointer',
-                  fontSize: 10, fontWeight: 700, fontFamily: M,
-                  background: lev === l ? C.card : 'transparent',
-                  color: lev === l ? C.primary : C.muted,
-                  boxShadow: lev === l ? '0 1px 3px rgba(0,0,0,0.05)' : 'none',
-                  transition: 'all 0.1s',
-                }}>{l}</button>
-              ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D }}>Leverage</div>
+              <div style={{ fontSize: 12, fontWeight: 700, fontFamily: M, color: C.primary }}>{effectiveLev}×</div>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={maxLev}
+              step={1}
+              value={effectiveLev}
+              onChange={e => { setLev(parseInt(e.target.value)); setConfirm(false); }}
+              style={{ width: '100%', accentColor: C.primary }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, fontFamily: M, color: C.muted, marginTop: 2 }}>
+              <span>1×</span>
+              <span>{maxLev}×</span>
             </div>
           </div>
 
@@ -575,7 +547,7 @@ export default function TradePage() {
             {(() => {
               const sizeNum = parseFloat(sizeAsset);
               const validSize = Number.isFinite(sizeNum) && sizeNum > 0;
-              const levNum = parseInt(lev) || 1;
+              const levNum = effectiveLev;
               const orderValue = validSize ? sizeNum * selected.price : 0;
               const marginRequired = validSize ? orderValue / levNum : 0;
               const belowMin = validSize && orderValue < 10;
@@ -637,7 +609,7 @@ export default function TradePage() {
                           transition: 'all 0.15s',
                         }}
                       >
-                        {submitting ? 'Submitting...' : confirm ? 'Confirm Order' : `${side === 'long' ? 'Long' : 'Short'} ${selected.sym} ${lev}`}
+                        {submitting ? 'Submitting...' : confirm ? 'Confirm Order' : `${side === 'long' ? 'Long' : 'Short'} ${selected.displaySym} ${effectiveLev}×`}
                       </button>
                     </>
                   )}

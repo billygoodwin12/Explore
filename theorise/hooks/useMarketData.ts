@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 const API_URL = 'https://api.hyperliquid.xyz/info';
 const WS_URL = 'wss://api.hyperliquid.xyz/ws';
 
-/** Assets we care about — maps Hyperliquid name → display config */
+/** Curated default-dex assets — tight list, friendly display names. */
 const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity' | 'index' }> = {
   BTC:   { name: 'Bitcoin',    cat: 'crypto' },
   ETH:   { name: 'Ethereum',   cat: 'crypto' },
@@ -21,18 +21,26 @@ const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity'
   APT:   { name: 'Aptos',      cat: 'crypto' },
 };
 
-const TRACKED_SYMS = Object.keys(TRACKED_ASSETS);
+export type MarketCategory = 'crypto' | 'commodity' | 'index' | 'hip3';
 
 export interface MarketData {
-  sym: string;
-  name: string;
-  cat: 'crypto' | 'commodity' | 'index';
+  sym: string;         // Universe name (e.g. "BTC", "xyz:NVDA")
+  displaySym: string;  // Short symbol for UI (e.g. "BTC", "NVDA")
+  name: string;        // Display name (e.g. "Bitcoin", "NVIDIA")
+  cat: MarketCategory;
   price: number;
   chg: number;
   funding: number;
   oi: string;
   maxLeverage: number;
   szDecimals: number;
+  assetIndex: number;  // Pre-computed asset ID for /exchange orders
+  dex?: string;        // undefined = default dex; "xyz" = HIP-3 dex name
+}
+
+interface PerpDex {
+  name: string;
+  fullName: string;
 }
 
 function formatOI(usdValue: number): string {
@@ -45,55 +53,130 @@ function formatOI(usdValue: number): string {
 function sortMarkets(markets: MarketData[]): MarketData[] {
   const priority = ['BTC', 'ETH', 'SOL'];
   return [...markets].sort((a, b) => {
+    // Default dex first
+    if (!a.dex && b.dex) return -1;
+    if (a.dex && !b.dex) return 1;
+    // Within default dex, priority coins first
     const ai = priority.indexOf(a.sym);
     const bi = priority.indexOf(b.sym);
     if (ai !== -1 && bi !== -1) return ai - bi;
     if (ai !== -1) return -1;
     if (bi !== -1) return 1;
-    return 0;
+    return a.displaySym.localeCompare(b.displaySym);
   });
 }
 
-async function fetchMarkets(): Promise<MarketData[]> {
+/** Strip a dex prefix like "xyz:NVDA" → "NVDA" */
+function stripDexPrefix(name: string): string {
+  const colon = name.indexOf(':');
+  return colon >= 0 ? name.slice(colon + 1) : name;
+}
+
+async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
   const res = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'metaAndAssetCtxs' }),
+    body: JSON.stringify({ type: 'perpDexs' }),
   });
+  if (!res.ok) return [null];
+  return await res.json();
+}
 
+async function fetchMetaCtxs(dex?: string) {
+  const body: Record<string, unknown> = { type: 'metaAndAssetCtxs' };
+  if (dex) body.dex = dex;
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return await res.json();
+}
 
-  const [meta, ctxs] = await res.json();
-  const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
+async function fetchMarkets(): Promise<MarketData[]> {
+  const perpDexs = await fetchPerpDexs();
 
-  const markets: MarketData[] = [];
+  const all: MarketData[] = [];
 
-  for (let i = 0; i < universe.length; i++) {
-    const asset = universe[i];
-    const ctx = ctxs[i];
-    const tracked = TRACKED_ASSETS[asset.name];
+  // ── Default dex ───────────────────────────────────────────────
+  try {
+    const [meta, ctxs] = await fetchMetaCtxs();
+    const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
 
-    if (!tracked || asset.isDelisted) continue;
+    for (let i = 0; i < universe.length; i++) {
+      const asset = universe[i];
+      const ctx = ctxs[i];
+      const tracked = TRACKED_ASSETS[asset.name];
+      if (!tracked || asset.isDelisted) continue;
 
-    const midPx = parseFloat(ctx.midPx || ctx.markPx);
-    const prevDayPx = parseFloat(ctx.prevDayPx);
-    const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
-    const oi = parseFloat(ctx.openInterest) * midPx;
+      const midPx = parseFloat(ctx.midPx || ctx.markPx);
+      const prevDayPx = parseFloat(ctx.prevDayPx);
+      const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
+      const oi = parseFloat(ctx.openInterest) * midPx;
 
-    markets.push({
-      sym: asset.name,
-      name: tracked.name,
-      cat: tracked.cat,
-      price: midPx,
-      chg: Math.round(chg * 100) / 100,
-      funding: parseFloat(ctx.funding),
-      oi: formatOI(oi),
-      maxLeverage: asset.maxLeverage,
-      szDecimals: asset.szDecimals,
-    });
+      all.push({
+        sym: asset.name,
+        displaySym: asset.name,
+        name: tracked.name,
+        cat: tracked.cat,
+        price: midPx,
+        chg: Math.round(chg * 100) / 100,
+        funding: parseFloat(ctx.funding),
+        oi: formatOI(oi),
+        maxLeverage: asset.maxLeverage,
+        szDecimals: asset.szDecimals,
+        assetIndex: i, // default dex → raw universe index
+      });
+    }
+  } catch (e) {
+    console.error('[markets] default dex fetch failed', e);
   }
 
-  return sortMarkets(markets);
+  // ── HIP-3 perp dexes ──────────────────────────────────────────
+  // perpDexs[0] is null (default dex); non-null entries are HIP-3.
+  // Asset ID for dex d (1-indexed), local idx i = 100000 + (d-1)*10000 + i
+  for (let d = 0; d < perpDexs.length; d++) {
+    const dex = perpDexs[d];
+    if (!dex) continue;
+    try {
+      const [meta, ctxs] = await fetchMetaCtxs(dex.name);
+      const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
+
+      for (let i = 0; i < universe.length; i++) {
+        const asset = universe[i];
+        const ctx = ctxs[i];
+        if (asset.isDelisted) continue;
+
+        const midPx = parseFloat(ctx.midPx || ctx.markPx);
+        if (!Number.isFinite(midPx) || midPx <= 0) continue;
+        const prevDayPx = parseFloat(ctx.prevDayPx);
+        const chg = prevDayPx > 0 ? ((midPx - prevDayPx) / prevDayPx) * 100 : 0;
+        const oi = parseFloat(ctx.openInterest || '0') * midPx;
+
+        const displaySym = stripDexPrefix(asset.name);
+
+        all.push({
+          sym: asset.name,
+          displaySym,
+          name: displaySym,
+          cat: 'hip3',
+          price: midPx,
+          chg: Math.round(chg * 100) / 100,
+          funding: parseFloat(ctx.funding || '0'),
+          oi: formatOI(oi),
+          maxLeverage: asset.maxLeverage,
+          szDecimals: asset.szDecimals,
+          assetIndex: 100000 + (d - 1) * 10000 + i,
+          dex: dex.name,
+        });
+      }
+    } catch (e) {
+      console.error(`[markets] hip3 dex ${dex.name} fetch failed`, e);
+    }
+  }
+
+  return sortMarkets(all);
 }
 
 export function useMarketData() {
