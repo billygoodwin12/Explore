@@ -14,6 +14,7 @@ let currentEquity: number = 0;
 
 export function setMidnightEquity(equity: number): void {
   midnightEquity = equity;
+  currentEquity = equity;
   logger.info({ equity }, "Midnight equity snapshot set");
 }
 

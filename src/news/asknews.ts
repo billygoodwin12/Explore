@@ -18,6 +18,9 @@ async function ensureToken(): Promise<string> {
   if (accessToken && Date.now() < tokenExpiresAt) return accessToken;
 
   const env = getEnv();
+  if (!env.ASKNEWS_CLIENT_ID || !env.ASKNEWS_CLIENT_SECRET) {
+    throw new Error("AskNews credentials not configured — skipping news");
+  }
   const res = await fetch("https://api.asknews.app/v1/auth/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
