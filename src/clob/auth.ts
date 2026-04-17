@@ -24,9 +24,9 @@ const L1_AUTH_TYPES = {
   ],
 };
 
-export async function deriveL2Credentials(
+async function buildL1AuthHeaders(
   privateKey: string,
-): Promise<L2Credentials> {
+): Promise<{ address: string; headers: Record<string, string> }> {
   const wallet = new Wallet(privateKey);
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce = 0;
@@ -38,25 +38,47 @@ export async function deriveL2Credentials(
     message: "This message attests that I control the given wallet",
   });
 
-  const env = getEnv();
-  const res = await fetch(`https://clob.polymarket.com/auth/derive-api-key`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      address: wallet.address,
-      signature,
-      timestamp,
-      nonce,
-    }),
-  });
+  return {
+    address: wallet.address,
+    headers: {
+      POLY_ADDRESS: wallet.address,
+      POLY_SIGNATURE: signature,
+      POLY_TIMESTAMP: timestamp,
+      POLY_NONCE: String(nonce),
+    },
+  };
+}
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to derive API key: ${res.status} ${body}`);
+export async function deriveL2Credentials(
+  privateKey: string,
+): Promise<L2Credentials> {
+  const { address, headers } = await buildL1AuthHeaders(privateKey);
+
+  // Try derive first (returns existing key if one exists)
+  const deriveRes = await fetch(
+    `https://clob.polymarket.com/auth/derive-api-key`,
+    { method: "GET", headers },
+  );
+
+  if (deriveRes.ok) {
+    const data = (await deriveRes.json()) as L2Credentials;
+    logger.info("L2 credentials derived from existing key");
+    return data;
   }
 
-  const data = (await res.json()) as L2Credentials;
-  logger.info("L2 credentials derived successfully");
+  // If no existing key, create a new one
+  const createRes = await fetch(
+    `https://clob.polymarket.com/auth/api-key`,
+    { method: "POST", headers },
+  );
+
+  if (!createRes.ok) {
+    const body = await createRes.text();
+    throw new Error(`Failed to create API key: ${createRes.status} ${body}`);
+  }
+
+  const data = (await createRes.json()) as L2Credentials;
+  logger.info("L2 credentials created successfully");
   return data;
 }
 
