@@ -1,2 +1,9 @@
 .next/
 node_modules/
+dist/
+dashboard/dist/
+.env
+.env.local
+*.log
+.DS_Store
+coverage/
