@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { C, D, M, fmtK } from '@/styles/tokens';
+import VaultWizard from '@/components/vaults/create/VaultWizard';
+import { useVaultCreateStore } from '@/stores/vault-create-store';
 
 const VAULTS = [
   { name: 'Iran Oil Shock',     creator: '@MacroMike',    verified: 'twitter', positions: ['CL Long 5x', 'GC Long 3x', 'ETH Short 2x'],  perf: 14.2,  tvl: 82400,  depositors: 23,  expires: '6d 14h',  fee: 15 },
@@ -82,6 +84,14 @@ function VaultCard({ v, i }: { v: typeof VAULTS[number]; i: number }) {
 
 export default function VaultsPage() {
   const [sort, setSort] = useState('trending');
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const resetWizard = useVaultCreateStore(s => s.reset);
+
+  const openWizard = () => {
+    resetWizard();
+    setWizardOpen(true);
+  };
+  const closeWizard = () => setWizardOpen(false);
 
   const sorted = [...VAULTS].sort((a, b) => {
     if (sort === 'performance') return b.perf - a.perf;
@@ -119,6 +129,7 @@ export default function VaultsPage() {
             </div>
           </div>
           <button
+            onClick={openWizard}
             style={{
               padding: '12px 28px', borderRadius: 9, border: 'none', cursor: 'pointer',
               fontSize: 14, fontWeight: 700, fontFamily: D,
@@ -170,6 +181,8 @@ export default function VaultsPage() {
       <div style={{ padding: '0 28px 28px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         {sorted.map((v, i) => <VaultCard key={v.name} v={v} i={i} />)}
       </div>
+
+      {wizardOpen && <VaultWizard onClose={closeWizard} />}
     </div>
   );
 }
