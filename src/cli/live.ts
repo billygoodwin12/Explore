@@ -6,7 +6,7 @@ import { cancelAllOrders } from "../clob/orders.js";
 import { onChainCancelOrders } from "../chain/cancel-fallback.js";
 import { MarketCache } from "../gamma/cache.js";
 import { selectUniverse, type SelectedMarket } from "../strategy/selector.js";
-import { executeQuoteCycle, type ActiveQuote, type MarketQuoteTarget } from "../strategy/quoter.js";
+import { executeQuoteCycle, computeQuote, type ActiveQuote, type MarketQuoteTarget } from "../strategy/quoter.js";
 import { setMidnightEquity, checkDrawdown, updateCurrentEquity, resetMidnightEquity } from "../risk/drawdown.js";
 import { ClobHeartbeat } from "../risk/heartbeat.js";
 import { reconcilePositions } from "../risk/reconcile.js";
@@ -113,22 +113,39 @@ async function main() {
         plannedSpread: 0.02,
       };
 
-      const current = activeQuotes.get(market.conditionId) ?? {
-        bid: null,
-        ask: null,
-      };
-
       try {
-        const result = await executeQuoteCycle(
-          target,
-          adapter,
-          current.bid,
-          current.ask,
-        );
-        activeQuotes.set(market.conditionId, {
-          bid: result.newBid,
-          ask: result.newAsk,
-        });
+        if (dryRun) {
+          // Paper mode: fetch book + compute quotes, but don't place
+          const book = await adapter.getOrderBook(target.tokenId);
+          const decision = await computeQuote(target, book);
+          logger.info(
+            {
+              slug: market.slug,
+              bid: decision.bid,
+              ask: decision.ask,
+              mid: book.bids[0] && book.asks[0]
+                ? ((book.bids[0].price + book.asks[0].price) / 2).toFixed(3)
+                : "N/A",
+              reason: decision.reasonCode,
+            },
+            "Paper quote",
+          );
+        } else {
+          const current = activeQuotes.get(market.conditionId) ?? {
+            bid: null,
+            ask: null,
+          };
+          const result = await executeQuoteCycle(
+            target,
+            adapter,
+            current.bid,
+            current.ask,
+          );
+          activeQuotes.set(market.conditionId, {
+            bid: result.newBid,
+            ask: result.newAsk,
+          });
+        }
       } catch (err) {
         logger.error({ err, slug: market.slug }, "Quote cycle error");
       }

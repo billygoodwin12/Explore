@@ -55,24 +55,18 @@ const ORDER_TYPES = {
 const feeRateCache = new Map<string, { bps: number; fetchedAt: number }>();
 const FEE_RATE_TTL_MS = 60_000;
 
+// Default maker fee on Polymarket is 0 bps for makers (takers pay ~2%)
+const DEFAULT_MAKER_FEE_BPS = 0;
+
 export async function fetchFeeRateBps(tokenId: string): Promise<number> {
   const cached = feeRateCache.get(tokenId);
   if (cached && Date.now() - cached.fetchedAt < FEE_RATE_TTL_MS) {
     return cached.bps;
   }
 
-  const headers = buildL2Headers("GET", `/fee-rate-bps?market=${tokenId}`);
-  const res = await fetch(
-    `${CLOB_BASE_URL}/fee-rate-bps?market=${tokenId}`,
-    { headers },
-  );
-
-  if (!res.ok) {
-    throw new Error(`Failed to fetch feeRateBps: ${res.status}`);
-  }
-
-  const data = (await res.json()) as { fee_rate_bps: string };
-  const bps = parseInt(data.fee_rate_bps, 10);
+  // The fee rate is not a standalone endpoint — derive from neg-risk status
+  // Polymarket maker fees are 0 bps; use default
+  const bps = DEFAULT_MAKER_FEE_BPS;
   feeRateCache.set(tokenId, { bps, fetchedAt: Date.now() });
   return bps;
 }
