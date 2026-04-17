@@ -79,21 +79,27 @@ export class ClobWebSocket {
   private connectShard(id: number, subs: WsSubscription[]): void {
     if (this.closed) return;
 
-    const ws = new WebSocket(WS_URL);
+    // Polymarket WS uses channel-specific URLs
+    const channel = subs[0]?.channel ?? "market";
+    const baseUrl = "wss://ws-subscriptions-clob.polymarket.com/ws";
+    const wsUrl = `${baseUrl}/${channel}`;
+
+    const ws = new WebSocket(wsUrl);
     this.shards.set(id, ws);
 
     ws.on("open", () => {
-      logger.info({ shardId: id }, "WS shard connected");
+      logger.info({ shardId: id, channel }, "WS shard connected");
       this.reconnectDelay = 1000;
 
       for (const sub of subs) {
-        const msg: Record<string, unknown> = {
-          type: "subscribe",
-          channel: sub.channel,
-        };
-        if (sub.assets) msg.assets_id = sub.assets;
-        if (sub.market) msg.market = sub.market;
-        ws.send(JSON.stringify(msg));
+        if (sub.assets && sub.assets.length > 0) {
+          ws.send(JSON.stringify({
+            auth: {},
+            type: "subscribe",
+            markets: sub.assets,
+            assets_id: sub.assets,
+          }));
+        }
       }
     });
 

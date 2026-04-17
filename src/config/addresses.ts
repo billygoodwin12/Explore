@@ -9,7 +9,7 @@ export const ADDRS = {
 export const CLOB_BASE_URL = "https://clob.polymarket.com";
 export const GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 export const DATA_BASE_URL = "https://data-api.polymarket.com";
-export const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/";
+export const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 export const GEOBLOCK_URL = "https://polymarket.com/api/geoblock";
 export const CONTRACT_ADDRESSES_DOC_URL =
   "https://docs.polymarket.com/resources/contract-addresses";

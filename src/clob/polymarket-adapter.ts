@@ -14,28 +14,33 @@ import { logger } from "../logger.js";
 
 export class PolymarketClobAdapter implements ClobAdapter {
   async getOrderBook(tokenId: string): Promise<OrderBook> {
-    const headers = buildL2Headers("GET", `/book?token_id=${tokenId}`);
-    const res = await fetch(`${CLOB_BASE_URL}/book?token_id=${tokenId}`, {
-      headers,
-    });
-    if (!res.ok) throw new Error(`Book fetch failed: ${res.status}`);
+    // /book is a public endpoint — no auth headers needed
+    const res = await fetch(
+      `${CLOB_BASE_URL}/book?token_id=${tokenId}`,
+    );
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Book fetch failed: ${res.status} ${body}`);
+    }
 
     const data = (await res.json()) as {
-      bids: Array<{ price: string; size: string }>;
-      asks: Array<{ price: string; size: string }>;
-      timestamp: string;
+      bids?: Array<{ price: string; size: string }>;
+      asks?: Array<{ price: string; size: string }>;
+      timestamp?: string;
+      market?: string;
     };
 
     return {
-      bids: data.bids.map((b) => ({
+      bids: (data.bids ?? []).map((b) => ({
         price: parseFloat(b.price),
         size: parseFloat(b.size),
       })),
-      asks: data.asks.map((a) => ({
+      asks: (data.asks ?? []).map((a) => ({
         price: parseFloat(a.price),
         size: parseFloat(a.size),
       })),
-      timestamp: BigInt(data.timestamp),
+      timestamp: BigInt(data.timestamp ?? "0"),
     };
   }
 
