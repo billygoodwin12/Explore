@@ -83,14 +83,23 @@ function parseTokens(raw: Record<string, unknown>): Array<{ token_id: string; ou
     }));
   }
 
-  // Fall back to clobTokenIds — may be a comma-separated string or array of strings
+  // Fall back to clobTokenIds — JSON string array like '["id1", "id2"]'
   const clobIds = raw.clobTokenIds;
   if (typeof clobIds === "string" && clobIds.length > 0) {
-    return clobIds.split(",").map((id, i) => ({
-      token_id: id.trim(),
-      outcome: i === 0 ? "Yes" : "No",
-      price: 0,
-    }));
+    try {
+      const parsed = JSON.parse(clobIds) as string[];
+      if (Array.isArray(parsed)) {
+        const outcomes = raw.outcomes ? JSON.parse(String(raw.outcomes)) as string[] : [];
+        const prices = raw.outcomePrices ? JSON.parse(String(raw.outcomePrices)) as string[] : [];
+        return parsed.map((id, i) => ({
+          token_id: String(id),
+          outcome: outcomes[i] ?? (i === 0 ? "Yes" : "No"),
+          price: prices[i] ? parseFloat(prices[i]!) : 0,
+        }));
+      }
+    } catch {
+      // fall through
+    }
   }
   if (Array.isArray(clobIds)) {
     return clobIds.map((id: unknown, i: number) => ({
@@ -103,26 +112,47 @@ function parseTokens(raw: Record<string, unknown>): Array<{ token_id: string; ou
   return [];
 }
 
-function parseRewards(raw: unknown): GammaMarket["rewards"] {
-  if (!raw || typeof raw !== "object") return null;
+function parseRewards(raw: Record<string, unknown>): GammaMarket["rewards"] {
+  // Gamma has rewards as top-level fields: clobRewards, rewardsMinSize, rewardsMaxSpread
+  const clobRewards = raw.clobRewards;
+  const rewardsMaxSpread = Number(raw.rewardsMaxSpread ?? 0);
+  const rewardsMinSize = Number(raw.rewardsMinSize ?? 0);
 
-  // Gamma may return rewards as a JSON string
-  let parsed = raw as Record<string, unknown>;
-  if (typeof raw === "string") {
+  // clobRewards might be a nested object or a JSON string
+  let dailyRate = 0;
+  if (clobRewards && typeof clobRewards === "object") {
+    dailyRate = Number((clobRewards as Record<string, unknown>).dailyRate ?? 0);
+  } else if (typeof clobRewards === "string") {
     try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return null;
+      const parsed = JSON.parse(clobRewards);
+      dailyRate = Number(parsed.dailyRate ?? 0);
+    } catch {}
+  } else if (typeof clobRewards === "number") {
+    dailyRate = clobRewards;
+  }
+
+  // Also check for a nested rewards object
+  if (dailyRate === 0 && raw.rewards) {
+    let rewardsObj = raw.rewards as Record<string, unknown>;
+    if (typeof raw.rewards === "string") {
+      try { rewardsObj = JSON.parse(raw.rewards); } catch { return null; }
+    }
+    dailyRate = Number(rewardsObj.dailyRate ?? rewardsObj.daily_rate ?? 0);
+    if (dailyRate > 0) {
+      return {
+        dailyRate,
+        maxIncentiveSpread: Number(rewardsObj.maxIncentiveSpread ?? rewardsObj.max_incentive_spread ?? rewardsMaxSpread ?? 0),
+        minIncentiveSize: Number(rewardsObj.minIncentiveSize ?? rewardsObj.min_incentive_size ?? rewardsMinSize ?? 0),
+      };
     }
   }
 
-  const dailyRate = Number(parsed.dailyRate ?? parsed.daily_rate ?? 0);
-  if (dailyRate === 0) return null;
+  if (rewardsMaxSpread === 0 && rewardsMinSize === 0 && dailyRate === 0) return null;
 
   return {
     dailyRate,
-    maxIncentiveSpread: Number(parsed.maxIncentiveSpread ?? parsed.max_incentive_spread ?? 0),
-    minIncentiveSize: Number(parsed.minIncentiveSize ?? parsed.min_incentive_size ?? 0),
+    maxIncentiveSpread: rewardsMaxSpread,
+    minIncentiveSize: rewardsMinSize,
   };
 }
 
@@ -133,13 +163,13 @@ function parseGammaMarket(raw: Record<string, unknown>): GammaMarket {
     slug: String(raw.slug ?? ""),
     question: String(raw.question ?? ""),
     category: String(raw.category ?? ""),
-    endDate: String(raw.endDate ?? raw.end_date_iso ?? ""),
+    endDate: String(raw.endDate ?? raw.endDateIso ?? raw.end_date_iso ?? ""),
     active: Boolean(raw.active),
     closed: Boolean(raw.closed),
     negRisk: Boolean(raw.negRisk ?? raw.neg_risk),
     tokens: parseTokens(raw),
-    rewards: parseRewards(raw.rewards),
-    volume: Number(raw.volume ?? 0),
-    liquidity: Number(raw.liquidity ?? 0),
+    rewards: parseRewards(raw),
+    volume: Number(raw.volumeNum ?? raw.volume ?? 0),
+    liquidity: Number(raw.liquidityNum ?? raw.liquidity ?? 0),
   };
 }
