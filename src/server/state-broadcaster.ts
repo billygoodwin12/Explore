@@ -1,9 +1,12 @@
 import type { WebSocket } from "ws";
 import { getRedis, getRedisSubscriber, REDIS_CHANNELS, REDIS_KEYS, getAppState } from "../persist/redis.js";
+import { getDb } from "../persist/db.js";
+import { copiedPositions, followedWallets, fills as fillsTable } from "../persist/schema.js";
+import { eq, sql } from "drizzle-orm";
 import { logger } from "../logger.js";
 
 export interface DashboardMessage {
-  type: "snapshot" | "fill" | "news" | "risk" | "system";
+  type: "snapshot" | "fill" | "signal" | "risk" | "system";
   payload: unknown;
 }
 
@@ -15,10 +18,7 @@ export class StateBroadcaster {
   addClient(ws: WebSocket): void {
     this.clients.add(ws);
     ws.on("close", () => this.clients.delete(ws));
-    logger.info(
-      { clientCount: this.clients.size },
-      "Dashboard client connected",
-    );
+    logger.info({ clientCount: this.clients.size }, "Dashboard client connected");
   }
 
   removeClient(ws: WebSocket): void {
@@ -28,9 +28,7 @@ export class StateBroadcaster {
   broadcast(msg: DashboardMessage): void {
     const data = JSON.stringify(msg);
     for (const client of this.clients) {
-      if (client.readyState === 1) {
-        client.send(data);
-      }
+      if (client.readyState === 1) client.send(data);
     }
   }
 
@@ -45,16 +43,15 @@ export class StateBroadcaster {
     sub.on("message", (channel, message) => {
       try {
         const payload = JSON.parse(message);
-        const typeMap: Record<string, DashboardMessage["type"]> = {
-          [REDIS_CHANNELS.FILLS]: "fill",
-          [REDIS_CHANNELS.NEWS]: "news",
-          [REDIS_CHANNELS.RISK]: "risk",
-          [REDIS_CHANNELS.SYSTEM]: "system",
-          [REDIS_CHANNELS.QUOTES]: "system",
-        };
-
-        const type = typeMap[channel] ?? "system";
-        this.broadcast({ type, payload });
+        if (channel === REDIS_CHANNELS.NEWS && payload.type === "signal") {
+          this.broadcast({ type: "signal", payload });
+        } else if (channel === REDIS_CHANNELS.FILLS) {
+          this.broadcast({ type: "fill", payload });
+        } else if (channel === REDIS_CHANNELS.RISK) {
+          this.broadcast({ type: "risk", payload });
+        } else if (channel === REDIS_CHANNELS.SYSTEM) {
+          this.broadcast({ type: "system", payload });
+        }
       } catch (err) {
         logger.error({ err, channel }, "Failed to broadcast message");
       }
@@ -76,39 +73,82 @@ export class StateBroadcaster {
 
     try {
       const redis = getRedis();
+      const db = getDb();
       const appState = await getAppState();
 
-      const [universeRaw, portfolioRaw, rewardsRaw, healthRaw] =
-        await Promise.all([
-          redis.get(REDIS_KEYS.UNIVERSE),
-          redis.get(REDIS_KEYS.PORTFOLIO),
-          redis.get(REDIS_KEYS.REWARDS),
-          redis.get(REDIS_KEYS.SYSTEM_HEALTH),
-        ]);
+      const portfolioRaw = await redis.get(REDIS_KEYS.PORTFOLIO);
+      const portfolio = portfolioRaw ? JSON.parse(portfolioRaw) : {
+        totalEquityUsdc: 0,
+        totalDeployedUsdc: 0,
+        realizedPnl: 0,
+        unrealizedPnl: 0,
+      };
 
-      const universe = universeRaw ? JSON.parse(universeRaw) : [];
-      const portfolio = portfolioRaw
-        ? JSON.parse(portfolioRaw)
-        : { equity_usdc: 0, daily_pnl_usdc: 0, daily_pnl_pct: 0, cumulative_pnl_usdc: 0 };
-      const rewards = rewardsRaw
-        ? JSON.parse(rewardsRaw)
-        : { est_today_usdc: 0, history_7d: [], cumulative_usdc: 0, annualized_yield_pct: 0 };
-      const system = healthRaw
-        ? JSON.parse(healthRaw)
-        : {};
+      const wallets = await db
+        .select()
+        .from(followedWallets)
+        .where(eq(followedWallets.status, "TRACKING"));
 
+      const openPositions = await db
+        .select()
+        .from(copiedPositions)
+        .where(eq(copiedPositions.status, "OPEN"));
+
+      const wallet_states = wallets.map((w) => ({
+        address: w.address,
+        username: w.username,
+        rank: w.leaderboardRank ?? 0,
+        composite_score: w.compositeScore ?? 0,
+        their_pnl_30d: w.leaderboardPnl ?? 0,
+        our_active_copies: openPositions.filter((p) => p.whaleAddress === w.address).length,
+        our_pnl_from_wallet: 0,
+        last_trade_ts: 0,
+        status: w.status,
+      }));
+
+      const positions = openPositions.map((p) => {
+        const holdSec = Math.floor((Date.now() - Number(p.openedAt)) / 1000);
+        const ourEntry = Number(p.ourEntryPrice ?? p.whaleEntryPrice);
+        const mark = ourEntry;
+        const shares = Number(p.sizeShares ?? 0);
+        const unrealized = p.side === "BUY"
+          ? (mark - ourEntry) * shares
+          : (ourEntry - mark) * shares;
+        const sizeUsdc = Number(p.sizeUsdc);
+        return {
+          copy_id: p.copyId,
+          market_slug: p.conditionId,
+          market_name: p.conditionId,
+          side: p.side,
+          copied_from: p.whaleAddress,
+          copied_from_name: null,
+          our_entry_price: ourEntry,
+          whale_entry_price: Number(p.whaleEntryPrice),
+          current_price: mark,
+          size_usdc: sizeUsdc,
+          unrealized_pnl_usdc: unrealized,
+          unrealized_pnl_pct: sizeUsdc > 0 ? unrealized / sizeUsdc : 0,
+          trailing_stop_price: p.trailingStopPrice ? Number(p.trailingStopPrice) : null,
+          hold_time_s: holdSec,
+        };
+      });
+
+      const totalEquity = portfolio.totalEquityUsdc ?? 0;
       const snapshot = {
         status: appState.mode,
-        equity_usdc: portfolio.equity_usdc,
-        daily_pnl_usdc: portfolio.daily_pnl_usdc,
-        daily_pnl_pct: portfolio.daily_pnl_pct,
-        cumulative_pnl_usdc: portfolio.cumulative_pnl_usdc,
-        drawdown_pct: portfolio.drawdown_pct ?? 0,
+        equity_usdc: totalEquity,
+        daily_pnl_usdc: portfolio.realizedPnl + portfolio.unrealizedPnl,
+        daily_pnl_pct: totalEquity > 0 ? (portfolio.realizedPnl + portfolio.unrealizedPnl) / totalEquity : 0,
+        cumulative_pnl_usdc: portfolio.realizedPnl + portfolio.unrealizedPnl,
+        drawdown_pct: 0,
         uptime_s: Math.floor((Date.now() - this.startTime) / 1000),
         last_heartbeat_ts: Date.now(),
-        markets: universe,
-        rewards,
-        system,
+        followed_wallets: wallet_states,
+        positions,
+        system: {
+          postgres_connected: true,
+          redis_connected: true,
+        },
       };
 
       this.broadcast({ type: "snapshot", payload: snapshot });

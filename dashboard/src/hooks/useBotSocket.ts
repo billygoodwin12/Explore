@@ -18,7 +18,7 @@ type Action =
   | { type: "CONNECTED" }
   | { type: "DISCONNECTED" };
 
-const MAX_EVENTS = 100;
+const MAX_EVENTS = 200;
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -46,6 +46,43 @@ const initialState: State = {
 
 let eventCounter = 0;
 
+function shortAddr(a: string): string {
+  return `${a.slice(0, 6)}...${a.slice(-4)}`;
+}
+
+function formatSignalMessage(payload: any): { msg: string; severity: EventLogEntry["severity"] } {
+  const who = payload.whaleUsername ?? shortAddr(payload.whaleAddress ?? "0x0");
+  const market = payload.marketTitle ?? payload.marketSlug ?? "?";
+  const side = payload.side ?? "?";
+  const whalePrice = payload.whalePrice ?? 0;
+  const whaleSize = payload.whaleSizeUsdc ?? 0;
+
+  if (payload.disposition === "COPIED") {
+    const size = payload.ourSizeUsdc?.toFixed(0) ?? "?";
+    const price = payload.ourFillPrice?.toFixed(3) ?? "?";
+    return {
+      msg: `COPIED ${side} $${size} @ ${price} on "${market}" (from ${who})`,
+      severity: "success",
+    };
+  }
+  if (payload.disposition === "SKIPPED") {
+    return {
+      msg: `SKIPPED ${side} on "${market}" — ${payload.reason} (from ${who} $${whaleSize.toFixed(0)})`,
+      severity: "warning",
+    };
+  }
+  if (payload.disposition === "MISSED") {
+    return {
+      msg: `MISSED ${side} on "${market}" — ${payload.reason ?? "unfilled"}`,
+      severity: "error",
+    };
+  }
+  return {
+    msg: `SIGNAL ${side} on "${market}" from ${who}`,
+    severity: "info",
+  };
+}
+
 export function useBotSocket() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const wsRef = useRef<WebSocket | null>(null);
@@ -69,50 +106,48 @@ export function useBotSocket() {
           case "snapshot":
             dispatch({ type: "SNAPSHOT", payload: msg.payload });
             break;
-          case "fill":
+          case "signal": {
+            const p: any = msg.payload;
+            const { msg: text, severity } = formatSignalMessage(p);
             dispatch({
               type: "EVENT",
               payload: {
                 id: String(++eventCounter),
-                timestamp: msg.payload.timestamp,
-                severity: "info",
-                message: `FILLED ${msg.payload.side} ${msg.payload.size} @ ${msg.payload.price} on "${msg.payload.market}"`,
+                timestamp: p.timestamp,
+                severity,
+                message: text,
               },
             });
             break;
-          case "news":
+          }
+          case "fill": {
+            const p: any = msg.payload;
+            const txt = p.type === "EXIT"
+              ? `EXIT ${p.exitType} @ ${p.exitPrice?.toFixed(3)} pnl $${p.realizedPnl?.toFixed(2)}`
+              : `FILL ${p.side} $${p.size?.toFixed(0)} @ ${p.price?.toFixed(3)} on "${p.market}"`;
             dispatch({
               type: "EVENT",
               payload: {
                 id: String(++eventCounter),
-                timestamp: msg.payload.timestamp,
-                severity:
-                  msg.payload.severity === "high" ? "error" : "warning",
-                message: `NEWS [${msg.payload.severity}] "${msg.payload.headline}" → ${msg.payload.affectedSlugs.length} markets`,
+                timestamp: p.timestamp,
+                severity: "success",
+                message: txt,
               },
             });
             break;
+          }
           case "risk":
             dispatch({
               type: "EVENT",
               payload: {
                 id: String(++eventCounter),
-                timestamp: msg.payload.timestamp,
+                timestamp: (msg.payload as any).timestamp ?? Date.now(),
                 severity: "error",
-                message: `RISK: ${msg.payload.type}${msg.payload.drawdown != null ? ` ${(msg.payload.drawdown * 100).toFixed(1)}%` : ""}`,
+                message: `RISK: ${(msg.payload as any).type}`,
               },
             });
             break;
           case "system":
-            dispatch({
-              type: "EVENT",
-              payload: {
-                id: String(++eventCounter),
-                timestamp: Date.now(),
-                severity: "info",
-                message: `SYSTEM: ${JSON.stringify(msg.payload)}`,
-              },
-            });
             break;
         }
       } catch {}

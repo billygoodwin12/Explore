@@ -1,14 +1,10 @@
-import type { InventoryState } from "../strategy/inventory.js";
 import { getEnv } from "../config/index.js";
 
 export interface Portfolio {
   totalEquityUsdc: number;
-  totalAtRiskUsdc: number;
-  inventories: Map<string, InventoryState>;
+  totalDeployedUsdc: number;
+  openPositionsByMarket: Map<string, number>;
 }
-
-const PER_MARKET_CAP_PCT = 0.30;
-const GLOBAL_CAP_PCT = 0.70;
 
 export interface OrderCandidate {
   conditionId: string;
@@ -21,25 +17,21 @@ export function canPlace(
   portfolio: Portfolio,
 ): { allowed: boolean; reason: string } {
   const env = getEnv();
-  const maxCapital = env.MAX_CAPITAL_USDC;
+  const globalCapUsdc = env.MAX_CAPITAL_USDC * (env.MAX_CAPITAL_AT_RISK_PCT / 100);
 
-  if (portfolio.totalAtRiskUsdc + order.sizeUsdc > maxCapital * GLOBAL_CAP_PCT) {
+  if (portfolio.totalDeployedUsdc + order.sizeUsdc > globalCapUsdc) {
     return {
       allowed: false,
-      reason: `Global cap exceeded: ${portfolio.totalAtRiskUsdc + order.sizeUsdc} > ${maxCapital * GLOBAL_CAP_PCT}`,
+      reason: `Global cap exceeded: ${portfolio.totalDeployedUsdc + order.sizeUsdc} > ${globalCapUsdc}`,
     };
   }
 
-  const inv = portfolio.inventories.get(order.conditionId);
-  if (inv) {
-    const marketExposure = inv.capitalDeployed + order.sizeUsdc;
-    const perMarketCap = maxCapital * PER_MARKET_CAP_PCT;
-    if (marketExposure > perMarketCap) {
-      return {
-        allowed: false,
-        reason: `Per-market cap exceeded: ${marketExposure} > ${perMarketCap}`,
-      };
-    }
+  const perMarket = portfolio.openPositionsByMarket.get(order.conditionId) ?? 0;
+  if (perMarket >= env.MAX_BUYS_PER_TOKEN) {
+    return {
+      allowed: false,
+      reason: `Per-market cap reached: ${perMarket}/${env.MAX_BUYS_PER_TOKEN}`,
+    };
   }
 
   if (portfolio.totalEquityUsdc <= 0) {
@@ -47,14 +39,4 @@ export function canPlace(
   }
 
   return { allowed: true, reason: "OK" };
-}
-
-export function computeTotalAtRisk(
-  inventories: Map<string, InventoryState>,
-): number {
-  let total = 0;
-  for (const inv of inventories.values()) {
-    total += inv.capitalDeployed;
-  }
-  return total;
 }

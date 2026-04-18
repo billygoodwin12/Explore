@@ -6,6 +6,8 @@ import { fileURLToPath } from "url";
 import { getEnv } from "../config/index.js";
 import { setAppState, getAppState } from "../persist/redis.js";
 import { cancelAllOrders } from "../clob/orders.js";
+import { PolymarketClobAdapter } from "../clob/polymarket-adapter.js";
+import { sellAllPositions } from "../executor/position-mgr.js";
 import { StateBroadcaster } from "./state-broadcaster.js";
 import { logger } from "../logger.js";
 
@@ -66,11 +68,13 @@ export async function createServer(broadcaster: StateBroadcaster) {
               pausedAt: Date.now(),
             });
             try {
-              await cancelAllOrders();
+              if (!env.DRY_RUN) await cancelAllOrders();
+              const adapter = new PolymarketClobAdapter();
+              const count = await sellAllPositions(adapter, "MANUAL_KILL");
+              logger.warn({ count }, "KILL: positions sold and orders cancelled");
             } catch (err) {
-              logger.error({ err }, "Cancel all failed during kill");
+              logger.error({ err }, "Kill command failed");
             }
-            logger.warn("Dashboard command: KILL — all orders cancelled");
             break;
           }
           default:

@@ -1,4 +1,4 @@
-export { canPlace, computeTotalAtRisk } from "./limits.js";
+export { canPlace } from "./limits.js";
 export type { Portfolio, OrderCandidate } from "./limits.js";
 export {
   checkDrawdown,

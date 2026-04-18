@@ -1,9 +1,7 @@
 import { type Address, parseAbi } from "viem";
 import { ADDRS } from "../config/addresses.js";
 import { getPublicClient, getAccount } from "../chain/client.js";
-import { fetchPositions } from "../data/client.js";
-import { getDb } from "../persist/db.js";
-import { positionsSnapshot } from "../persist/schema.js";
+import { fetchWalletPositions } from "../data/positions.js";
 import { getRedis, REDIS_CHANNELS } from "../persist/redis.js";
 import { logger } from "../logger.js";
 
@@ -26,14 +24,11 @@ export async function reconcilePositions(
 ): Promise<ReconcileResult[]> {
   const publicClient = getPublicClient();
   const account = getAccount();
-  const address = account.address;
 
-  const apiPositions = await fetchPositions(address);
+  const apiPositions = await fetchWalletPositions(account.address);
   const apiByAsset = new Map(apiPositions.map((p) => [p.asset, p]));
 
   const results: ReconcileResult[] = [];
-  const db = getDb();
-  const now = BigInt(Date.now());
 
   for (const tokenId of tokenIds) {
     const onChainBalance = await publicClient.readContract({
@@ -55,15 +50,6 @@ export async function reconcilePositions(
       apiBalance,
       drift,
       alert,
-    });
-
-    await db.insert(positionsSnapshot).values({
-      timestamp: now,
-      conditionId: tokenId,
-      tokenId,
-      onChainBalance,
-      apiBalance,
-      drift,
     });
 
     if (alert) {

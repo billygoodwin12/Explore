@@ -1,7 +1,7 @@
 export type DashboardMessage =
   | { type: "snapshot"; payload: BotSnapshot }
   | { type: "fill"; payload: FillEvent }
-  | { type: "news"; payload: NewsAlert }
+  | { type: "signal"; payload: SignalEvent }
   | { type: "risk"; payload: RiskEvent }
   | { type: "system"; payload: SystemStatus };
 
@@ -17,49 +17,66 @@ export interface BotSnapshot {
   drawdown_pct: number;
   uptime_s: number;
   last_heartbeat_ts: number;
-  markets: MarketState[];
-  rewards: RewardsState;
+  followed_wallets: WalletState[];
+  positions: CopiedPosition[];
   system: SystemStatus;
 }
 
-export interface MarketState {
-  slug: string;
-  name: string;
-  our_bid: number | null;
-  our_ask: number | null;
-  mid: number;
-  spread_bps: number;
-  max_incentive_spread_bps: number;
-  inventory_yes: number;
-  inventory_no: number;
-  net_delta_usdc: number;
-  reward_score: number;
-  est_daily_reward_usdc: number;
-  spread_pnl_24h_usdc: number;
-  status: "QUOTING" | "COOLING" | "WITHDRAWN";
+export interface WalletState {
+  address: string;
+  username: string | null;
+  rank: number;
+  composite_score: number;
+  their_pnl_30d: number;
+  our_active_copies: number;
+  our_pnl_from_wallet: number;
+  last_trade_ts: number;
+  status: "TRACKING" | "PAUSED" | "DORMANT";
 }
 
-export interface RewardsState {
-  est_today_usdc: number;
-  history_7d: number[];
-  cumulative_usdc: number;
-  annualized_yield_pct: number;
+export interface CopiedPosition {
+  copy_id: string;
+  market_slug: string;
+  market_name: string;
+  side: "BUY" | "SELL";
+  copied_from: string;
+  copied_from_name: string | null;
+  our_entry_price: number;
+  whale_entry_price: number;
+  current_price: number;
+  size_usdc: number;
+  unrealized_pnl_usdc: number;
+  unrealized_pnl_pct: number;
+  trailing_stop_price: number | null;
+  hold_time_s: number;
 }
 
 export interface FillEvent {
-  side: string;
-  size: number;
-  price: number;
-  market: string;
+  copyId?: string;
+  side?: string;
+  size?: number;
+  price?: number;
+  market?: string;
+  type?: string;
+  exitType?: string;
+  exitPrice?: number;
+  realizedPnl?: number;
   timestamp: number;
 }
 
-export interface NewsAlert {
-  headline: string;
-  severity: "low" | "medium" | "high";
-  affectedSlugs: string[];
-  direction: string;
-  rationale: string;
+export interface SignalEvent {
+  type: string;
+  whaleAddress?: string;
+  whaleUsername?: string | null;
+  marketSlug?: string;
+  marketTitle?: string;
+  side?: "BUY" | "SELL";
+  whalePrice?: number;
+  whaleSizeUsdc?: number;
+  disposition?: "COPIED" | "SKIPPED" | "MISSED";
+  reason?: string;
+  ourFillPrice?: number;
+  ourSizeUsdc?: number;
   timestamp: number;
 }
 
@@ -74,11 +91,9 @@ export interface SystemStatus {
   clob_latency_p50?: number;
   clob_latency_p99?: number;
   ws_connected?: boolean;
-  ws_shard_count?: number;
   rpc_block_lag?: number;
-  llm_calls_per_hour?: number;
-  llm_avg_latency_ms?: number;
-  llm_last_error?: string;
+  poll_stats?: { total: number; fast: number; slow: number };
+  rate_limit_pct?: number;
   postgres_connected?: boolean;
   redis_connected?: boolean;
 }
