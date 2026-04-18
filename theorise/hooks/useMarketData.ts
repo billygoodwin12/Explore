@@ -79,12 +79,32 @@ function stripDexPrefix(name: string): string {
   return colon >= 0 ? name.slice(colon + 1) : name;
 }
 
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+async function postInfo(body: Record<string, unknown>, attempts = 3): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if ((res.status === 429 || res.status >= 500) && i < attempts - 1) {
+        await sleep(600 * (i + 1) + Math.random() * 400);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await sleep(600 * (i + 1));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('Hyperliquid fetch failed');
+}
+
 async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'perpDexs' }),
-  });
+  const res = await postInfo({ type: 'perpDexs' });
   if (!res.ok) return [null];
   return await res.json();
 }
@@ -92,11 +112,7 @@ async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
 async function fetchMetaCtxs(dex?: string) {
   const body: Record<string, unknown> = { type: 'metaAndAssetCtxs' };
   if (dex) body.dex = dex;
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await postInfo(body);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return await res.json();
 }
@@ -139,7 +155,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
       });
     }
   } catch (e) {
-    console.error('[markets] default dex fetch failed', e);
+    console.warn('[markets] default dex fetch failed', e);
   }
 
   // ── HIP-3 perp dexes ──────────────────────────────────────────
@@ -184,7 +200,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
         });
       }
     } catch (e) {
-      console.error(`[markets] hip3 dex ${dex.name} fetch failed`, e);
+      console.warn(`[markets] hip3 dex ${dex.name} fetch failed`, e);
     }
   }
 
@@ -202,10 +218,13 @@ export function useMarketData() {
   const refresh = useCallback(async () => {
     try {
       const data = await fetchMarkets();
-      marketsRef.current = data;
-      setMarkets(data);
+      if (data.length > 0) {
+        marketsRef.current = data;
+        setMarkets(data);
+      }
       setError(null);
     } catch (e) {
+      // Keep previous marketsRef on failure — don't clear UI.
       setError(e instanceof Error ? e.message : 'Failed to fetch');
     } finally {
       setLoading(false);
@@ -216,8 +235,8 @@ export function useMarketData() {
   useEffect(() => {
     refresh();
 
-    // Refresh full data every 30s for funding/OI updates
-    const fullRefresh = setInterval(refresh, 30_000);
+    // Refresh full data every 60s for funding/OI updates
+    const fullRefresh = setInterval(refresh, 60_000);
 
     let ws: WebSocket;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
