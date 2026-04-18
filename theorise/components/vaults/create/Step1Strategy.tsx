@@ -1,10 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
 import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
-import AddPositionPicker, { type PickedInstrument } from './AddPositionPicker';
 import {
   useVaultCreateStore,
   calcMinDeploy,
@@ -133,20 +131,9 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
   positions: VaultPosition[]; deploySize: number; onSizeChange: (val: number) => void;
 }) {
   const minDeploy = calcMinDeploy(positions);
-  // Stable slider max: derived only from minDeploy so dragging doesn't recompute the ceiling.
-  const maxSlider = Math.max(minDeploy * 200, 100_000);
-  const effectiveSize = Math.min(Math.max(deploySize, minDeploy), maxSlider);
+  const effectiveSize = Math.max(deploySize, minDeploy);
   const im = calcTotalIM(positions, effectiveSize);
-
-  const clamp = (v: number) => Math.min(Math.max(v, minDeploy), maxSlider);
-
-  // Uncontrolled-while-focused text state so users can type partial digits
-  // (e.g. "5" → "50" → "500") without each intermediate getting clamped up to minDeploy.
-  const [inputVal, setInputVal] = useState(String(effectiveSize));
-  const focusedRef = useRef(false);
-  useEffect(() => {
-    if (!focusedRef.current) setInputVal(String(effectiveSize));
-  }, [effectiveSize]);
+  const maxSlider = Math.max(effectiveSize * 4, minDeploy * 20, 10000);
 
   return (
     <div style={{
@@ -179,7 +166,7 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         <input
           type="range" min={minDeploy} max={maxSlider} step={10}
           value={effectiveSize}
-          onChange={e => onSizeChange(clamp(parseInt(e.target.value)))}
+          onChange={e => onSizeChange(Math.max(parseInt(e.target.value), minDeploy))}
           style={{ flex: 1, accentColor: C.accent }}
         />
         <span style={{ fontSize: 10, color: C.muted, fontFamily: M, whiteSpace: 'nowrap' }}>{fmt(maxSlider)}</span>
@@ -194,26 +181,14 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         }}>
           <span style={{ fontSize: 13, color: C.muted, fontFamily: M }}>$</span>
           <input
-            type="number"
-            value={inputVal}
-            min={minDeploy}
-            max={maxSlider}
-            step={10}
-            onFocus={() => { focusedRef.current = true; }}
-            onChange={e => setInputVal(e.target.value)}
-            onBlur={e => {
-              focusedRef.current = false;
-              const val = parseInt(e.target.value);
-              const next = clamp(Number.isFinite(val) ? val : minDeploy);
-              onSizeChange(next);
-              setInputVal(String(next));
-            }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            type="number" value={effectiveSize} min={minDeploy} step={10}
+            onChange={e => {
+              const val = parseInt(e.target.value) || 0;
+              if (val >= minDeploy) onSizeChange(val);
             }}
             style={{
               border: 'none', background: 'transparent', fontSize: 13,
-              fontFamily: M, color: C.primary, outline: 'none', padding: '8px 0', width: 110,
+              fontFamily: M, color: C.primary, outline: 'none', padding: '8px 0', width: 90,
             }}
           />
         </div>
@@ -336,7 +311,6 @@ function PortfolioImport({ existingSyms, onImport, markets }: {
 export default function Step1Strategy() {
   const { positions, deploySize, name, setPositions, setDeploySize, setName } = useVaultCreateStore();
   const { markets } = useMarketData();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const allocOk = totalAlloc(positions) === 100;
   const existingSyms = positions.map(p => p.sym);
 
@@ -362,28 +336,20 @@ export default function Step1Strategy() {
     }
   };
 
-  const addPositions = (incoming: { sym: string; name: string; dir?: Dir; lev?: Lev }[]) => {
-    if (!incoming.length) return;
-    const merged: VaultPosition[] = [
-      ...positions,
-      ...incoming.map(p => ({
-        sym: p.sym, name: p.name,
-        dir: p.dir ?? 'long' as Dir,
-        lev: p.lev ?? 3 as Lev,
-        alloc: 0,
-      })),
-    ];
-    const allocs = evenAlloc(merged.length);
-    setPositions(merged.map((p, i) => ({ ...p, alloc: allocs[i] })));
-  };
-
-  const handlePickerAdd = (picks: PickedInstrument[]) => {
-    addPositions(picks);
-    setPickerOpen(false);
+  const handleAdd = (sym?: string, name?: string, dir?: Dir, lev?: Lev) => {
+    const avail = markets
+      .filter(m => !existingSyms.includes(m.displaySym) && !existingSyms.includes(m.sym))
+      .map(m => ({ sym: m.displaySym, name: m.name }));
+    if (!avail.length && !sym) return;
+    const s = sym ?? avail[0].sym;
+    const n = name ?? avail[0].name;
+    const newPos: VaultPosition[] = [...positions, { sym: s, name: n, dir: dir ?? 'long', lev: lev ?? 3, alloc: 0 }];
+    const allocs = evenAlloc(newPos.length);
+    setPositions(newPos.map((p, i) => ({ ...p, alloc: allocs[i] })));
   };
 
   const handleImport = (sym: string, name: string, dir: Dir, lev: Lev) => {
-    addPositions([{ sym, name, dir, lev }]);
+    handleAdd(sym, name, dir, lev);
   };
 
   // Instrument picker for "+ Add position"
@@ -458,7 +424,7 @@ export default function Step1Strategy() {
 
       {availableInstruments.length > 0 && (
         <button
-          onClick={() => setPickerOpen(true)}
+          onClick={() => handleAdd()}
           style={{
             width: '100%', padding: 9, borderRadius: 8,
             border: `1px dashed ${C.border}`, background: 'transparent',
@@ -467,15 +433,6 @@ export default function Step1Strategy() {
         >
           + Add position
         </button>
-      )}
-
-      {pickerOpen && (
-        <AddPositionPicker
-          markets={markets}
-          existingSyms={existingSyms}
-          onClose={() => setPickerOpen(false)}
-          onAdd={handlePickerAdd}
-        />
       )}
 
       <PortfolioImport existingSyms={existingSyms} onImport={handleImport} markets={markets} />

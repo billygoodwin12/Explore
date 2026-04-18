@@ -25,46 +25,30 @@ const LOOKBACK: Record<Interval, number> = {
   '1d':  180 * 86400_000,
 };
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-async function fetchCandles(coin: string, interval: Interval, attempts = 3): Promise<Candle[]> {
+async function fetchCandles(coin: string, interval: Interval): Promise<Candle[]> {
   const now = Date.now();
   const start = now - LOOKBACK[interval];
-  const body = JSON.stringify({
-    type: 'candleSnapshot',
-    req: { coin, interval, startTime: start, endTime: now },
+
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      type: 'candleSnapshot',
+      req: { coin, interval, startTime: start, endTime: now },
+    }),
   });
 
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const res = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      });
-      if (res.status === 429 || res.status >= 500) {
-        if (i < attempts - 1) {
-          await sleep(600 * (i + 1) + Math.random() * 400);
-          continue;
-        }
-      }
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      const data = await res.json();
-      return data.map((c: { t: number; o: string; h: string; l: string; c: string; v: string }) => ({
-        time: Math.floor(c.t / 1000),
-        open: parseFloat(c.o),
-        high: parseFloat(c.h),
-        low: parseFloat(c.l),
-        close: parseFloat(c.c),
-        volume: parseFloat(c.v),
-      }));
-    } catch (e) {
-      lastErr = e;
-      if (i < attempts - 1) await sleep(600 * (i + 1));
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('Candle fetch failed');
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+  const data = await res.json();
+  return data.map((c: { t: number; o: string; h: string; l: string; c: string; v: string }) => ({
+    time: Math.floor(c.t / 1000),
+    open: parseFloat(c.o),
+    high: parseFloat(c.h),
+    low: parseFloat(c.l),
+    close: parseFloat(c.c),
+    volume: parseFloat(c.v),
+  }));
 }
 
 export function useCandleData(coin: string, interval: Interval) {
@@ -85,9 +69,6 @@ export function useCandleData(coin: string, interval: Interval) {
         if (cancelled) return;
         candlesRef.current = data;
         setCandles(data);
-      } catch (e) {
-        // Fall through: WebSocket will seed candles as updates arrive.
-        console.warn('[candles] initial fetch failed, falling back to WS stream', e);
       } finally {
         if (!cancelled) setLoading(false);
       }
