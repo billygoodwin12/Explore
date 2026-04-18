@@ -228,7 +228,7 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
                   {p.sym}
                 </span>
                 <span style={{ color: C.muted, fontFamily: M }}>
-                  {p.dir === 'long' ? 'L' : 'S'} {p.lev}x \u00b7 {p.alloc}%
+                  {p.dir === 'long' ? 'L' : 'S'} {p.lev}x {'\u00b7'} {p.alloc}%
                 </span>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -388,7 +388,7 @@ export default function Step1Strategy() {
         lineHeight: 1.6, marginBottom: 12,
       }}>
         Positions deploy as net new orders on Hyperliquid when your vault activates.
-        Import from your portfolio as a starting point \u2014 adjust leverage and sizing freely before deploying.
+        Import from your portfolio as a starting point {'\u2014'} adjust leverage and sizing freely before deploying.
       </div>
 
       <div style={{ marginBottom: 14 }}>
@@ -445,18 +445,16 @@ export default function Step1Strategy() {
         />
       ))}
 
-      {availableInstruments.length > 0 && (
-        <button
-          onClick={() => setPickerOpen(true)}
-          style={{
-            width: '100%', padding: 9, borderRadius: 8,
-            border: `1px dashed ${C.border}`, background: 'transparent',
-            cursor: 'pointer', fontSize: 12, color: C.secondary, fontFamily: D, marginTop: 2,
-          }}
-        >
-          + Add position
-        </button>
-      )}
+      <button
+        onClick={() => setPickerOpen(true)}
+        style={{
+          width: '100%', padding: 9, borderRadius: 8,
+          border: `1px dashed ${C.border}`, background: 'transparent',
+          cursor: 'pointer', fontSize: 12, color: C.secondary, fontFamily: D, marginTop: 2,
+        }}
+      >
+        + Add position
+      </button>
 
       <PortfolioImport existingSyms={existingSyms} onImport={handleImport} markets={markets} />
 

@@ -179,7 +179,7 @@ export default function AddPositionPicker({ available, onClose, onConfirm }: {
         </div>
 
         <div style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
-          {popular.length > 0 && <SectionLabel>Popular \u00b7 by 24h volume</SectionLabel>}
+          {popular.length > 0 && <SectionLabel>{`Popular \u00b7 by 24h volume`}</SectionLabel>}
           {popular.map(it => (
             <PickerRow key={it.sym} item={it} checked={selected.has(it.sym)} onToggle={toggle} />
           ))}
@@ -191,12 +191,17 @@ export default function AddPositionPicker({ available, onClose, onConfirm }: {
             <div style={{
               padding: '10px 13px', fontSize: 10, color: C.muted, fontFamily: D, textAlign: 'center',
             }}>
-              +{remainingHidden} more \u2014 search to find them
+              +{remainingHidden} more {'\u2014'} search to find them
             </div>
           )}
-          {totalShown === 0 && (
+          {totalShown === 0 && query && (
             <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: C.muted, fontFamily: D }}>
               No matches for &ldquo;{query}&rdquo;
+            </div>
+          )}
+          {totalShown === 0 && !query && (
+            <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: C.muted, fontFamily: D }}>
+              Loading instruments{'\u2026'}
             </div>
           )}
         </div>
