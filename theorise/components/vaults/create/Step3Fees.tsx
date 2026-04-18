@@ -3,35 +3,28 @@
 import { C, D, M } from '@/styles/tokens';
 import { useVaultCreateStore, calcTotalIM } from '@/stores/vault-create-store';
 
-const MODE_LABELS: Record<string, string> = {
-  HARD: 'Hard expiry',
-  SOFT: 'Soft expiry + 48hr window',
-  CREATOR: 'Creator close (24hr notice)',
-};
-
 const fmt = (n: number) => {
   const r = Math.round(n * 100) / 100;
   if (r >= 1000) return '$' + r.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
   return '$' + r.toFixed(2).replace(/\.00$/, '');
 };
 
-function SliderField({ label, value, min, max, step, onChange, helper, disabled }: {
+function SliderField({ label, value, min, max, step, onChange, helper }: {
   label: string; value: number; min: number; max: number; step: number;
-  onChange: (v: number) => void; helper?: string; disabled?: boolean;
+  onChange: (v: number) => void; helper?: string;
 }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D }}>{label}</div>
-        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: M, color: disabled ? C.muted : C.primary }}>
-          {disabled ? 'N/A' : `${value}%`}
+        <span style={{ fontSize: 12, fontWeight: 700, fontFamily: M, color: C.primary }}>
+          {`${value}%`}
         </span>
       </div>
       <input
-        type="range" min={min} max={max} step={step} value={disabled ? 0 : value}
+        type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(parseInt(e.target.value))}
-        disabled={disabled}
-        style={{ width: '100%', accentColor: disabled ? C.muted : C.accent, opacity: disabled ? 0.4 : 1 }}
+        style={{ width: '100%', accentColor: C.accent }}
       />
       {helper && (
         <div style={{ fontSize: 10, color: C.muted, fontFamily: D, marginTop: 4 }}>{helper}</div>
@@ -68,14 +61,6 @@ export default function Step3Fees() {
         onChange={s.setPerfFee}
         helper="Only charged on profit at settlement. You earn nothing if the vault loses."
       />
-      <SliderField
-        label="Early exit fee" value={s.exitFee} min={0} max={5} step={1}
-        onChange={s.setExitFee}
-        disabled={s.settlementMode === 'HARD'}
-        helper={s.settlementMode === 'HARD'
-          ? 'Not applicable for hard expiry vaults.'
-          : 'Applied to depositors who withdraw before settlement.'}
-      />
 
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.secondary, fontFamily: D, marginBottom: 6 }}>
@@ -108,10 +93,8 @@ export default function Step3Fees() {
       <ReviewRow label="Positions" value={posStr || '\u2014'} />
       <ReviewRow label="Your deployment" value={`${fmt(s.deploySize)} notional`} />
       <ReviewRow label="Your IM required" value={`${fmt(im)} USDC`} />
-      <ReviewRow label="Timeframe" value={s.timeframe} />
-      <ReviewRow label="Settlement" value={MODE_LABELS[s.settlementMode]} />
+      <ReviewRow label="Timeframe" value={`${s.timeframe} \u00B7 auto-close`} />
       <ReviewRow label="Performance fee" value={`${s.perfFee}%`} />
-      <ReviewRow label="Early exit fee" value={s.settlementMode === 'HARD' ? 'N/A' : `${s.exitFee}%`} />
       <ReviewRow label="Min deposit" value={`$${s.minDeposit} USDC`} />
 
       <div style={{

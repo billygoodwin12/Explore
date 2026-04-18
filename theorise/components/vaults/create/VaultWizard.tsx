@@ -12,7 +12,7 @@ import Step4Deployed from './Step4Deployed';
 
 const STEP_SUBTITLES = [
   'Step 1 of 4 \u2014 Build your strategy',
-  'Step 2 of 4 \u2014 Timeframe & settlement',
+  'Step 2 of 4 \u2014 Timeframe & theory',
   'Step 3 of 4 \u2014 Fees & review',
   'Vault deployed',
 ];
@@ -108,8 +108,9 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
               cursor: 'pointer', fontSize: 13, color: C.secondary,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
+            aria-label="Close"
           >
-            \u2715
+            {'\u2715'}
           </button>
         </div>
 
