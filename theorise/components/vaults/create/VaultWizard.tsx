@@ -12,7 +12,7 @@ import Step4Deployed from './Step4Deployed';
 
 const STEP_SUBTITLES = [
   'Step 1 of 4 \u2014 Build your strategy',
-  'Step 2 of 4 \u2014 Timeframe & settlement',
+  'Step 2 of 4 \u2014 Timeframe & theory',
   'Step 3 of 4 \u2014 Fees & review',
   'Vault deployed',
 ];
@@ -109,7 +109,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
-            \u2715
+            {'\u2715'}
           </button>
         </div>
 
@@ -147,7 +147,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
                 background: C.bg, color: C.secondary,
               }}
             >
-              {s.step === 1 ? 'Cancel' : '\u2190 Back'}
+              {s.step === 1 ? 'Cancel' : `${'\u2190'} Back`}
             </button>
             <button
               onClick={s.step === 3 ? handleDeploy : handleNext}
@@ -162,7 +162,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
                 transition: 'opacity 0.15s',
               }}
             >
-              {deploying ? 'Deploying...' : s.step === 3 ? 'Deploy vault' : 'Continue \u2192'}
+              {deploying ? 'Deploying...' : s.step === 3 ? 'Deploy vault' : `Continue ${'\u2192'}`}
             </button>
           </div>
         )}

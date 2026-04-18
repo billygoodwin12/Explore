@@ -27,7 +27,7 @@ export default function Step4Deployed() {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         margin: '0 auto 14px', fontSize: 22, color: C.green,
       }}>
-        \u2713
+        {'\u2713'}
       </div>
 
       <div style={{ fontSize: 16, fontWeight: 700, color: C.primary, fontFamily: D, marginBottom: 4 }}>
