@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
 import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
@@ -140,6 +140,14 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
 
   const clamp = (v: number) => Math.min(Math.max(v, minDeploy), maxSlider);
 
+  // Uncontrolled-while-focused text state so users can type partial digits
+  // (e.g. "5" → "50" → "500") without each intermediate getting clamped up to minDeploy.
+  const [inputVal, setInputVal] = useState(String(effectiveSize));
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!focusedRef.current) setInputVal(String(effectiveSize));
+  }, [effectiveSize]);
+
   return (
     <div style={{
       border: `1.5px solid ${C.accentMid}`, borderRadius: 12,
@@ -186,14 +194,22 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         }}>
           <span style={{ fontSize: 13, color: C.muted, fontFamily: M }}>$</span>
           <input
-            type="number" value={effectiveSize} min={minDeploy} max={maxSlider} step={10}
-            onChange={e => {
-              const val = parseInt(e.target.value);
-              if (Number.isFinite(val)) onSizeChange(clamp(val));
-            }}
+            type="number"
+            value={inputVal}
+            min={minDeploy}
+            max={maxSlider}
+            step={10}
+            onFocus={() => { focusedRef.current = true; }}
+            onChange={e => setInputVal(e.target.value)}
             onBlur={e => {
+              focusedRef.current = false;
               const val = parseInt(e.target.value);
-              onSizeChange(clamp(Number.isFinite(val) ? val : minDeploy));
+              const next = clamp(Number.isFinite(val) ? val : minDeploy);
+              onSizeChange(next);
+              setInputVal(String(next));
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
             }}
             style={{
               border: 'none', background: 'transparent', fontSize: 13,

@@ -1,10 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
 import type { MarketData } from '@/hooks/useMarketData';
 
 const POPULAR_COUNT = 5;
+const REST_CAP = 40; // cap "All instruments" when no search query
 
 const fmtVol = (v: number) => {
   if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
@@ -37,29 +38,36 @@ export default function AddPositionPicker({
     [markets, existingSyms],
   );
 
-  const popular = available.slice(0, POPULAR_COUNT);
-  const popularKeys = new Set(popular.map(m => m.sym));
+  const { filteredPopular, rest, restHiddenCount } = useMemo(() => {
+    const popular = available.slice(0, POPULAR_COUNT);
+    const popularKeys = new Set(popular.map(m => m.sym));
+    const q = query.trim().toLowerCase();
 
-  const q = query.trim().toLowerCase();
-  const rest = available.filter(m =>
-    !popularKeys.has(m.sym) &&
-    (q === '' ||
-      m.displaySym.toLowerCase().includes(q) ||
-      m.name.toLowerCase().includes(q)),
-  );
-  const filteredPopular = q === ''
-    ? popular
-    : popular.filter(m =>
-        m.displaySym.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-      );
+    const restAll = available.filter(m =>
+      !popularKeys.has(m.sym) &&
+      (q === '' ||
+        m.displaySym.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q)),
+    );
+    const restCapped = q === '' ? restAll.slice(0, REST_CAP) : restAll;
+    const hidden = q === '' ? Math.max(0, restAll.length - REST_CAP) : 0;
 
-  const toggle = (sym: string) => {
+    const fp = q === ''
+      ? popular
+      : popular.filter(m =>
+          m.displaySym.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
+        );
+
+    return { filteredPopular: fp, rest: restCapped, restHiddenCount: hidden };
+  }, [available, query]);
+
+  const toggle = useCallback((sym: string) => {
     setSelected(prev => {
       const next = new Set(prev);
       if (next.has(sym)) next.delete(sym); else next.add(sym);
       return next;
     });
-  };
+  }, []);
 
   const handleConfirm = () => {
     const picks: PickedInstrument[] = available
@@ -148,7 +156,7 @@ export default function AddPositionPicker({
                     key={m.sym}
                     market={m}
                     checked={selected.has(m.sym)}
-                    onToggle={() => toggle(m.sym)}
+                    onToggle={toggle}
                     highlight
                   />
                 ))}
@@ -170,10 +178,17 @@ export default function AddPositionPicker({
                     key={m.sym}
                     market={m}
                     checked={selected.has(m.sym)}
-                    onToggle={() => toggle(m.sym)}
+                    onToggle={toggle}
                   />
                 ))}
               </div>
+              {restHiddenCount > 0 && (
+                <div style={{
+                  padding: '8px 4px 4px', fontSize: 11, color: C.muted, fontFamily: D,
+                }}>
+                  + {restHiddenCount} more — type to search.
+                </div>
+              )}
             </div>
           )}
 
@@ -223,14 +238,14 @@ export default function AddPositionPicker({
   );
 }
 
-function PickerRow({
+const PickerRow = memo(function PickerRow({
   market, checked, onToggle, highlight,
 }: {
-  market: MarketData; checked: boolean; onToggle: () => void; highlight?: boolean;
+  market: MarketData; checked: boolean; onToggle: (sym: string) => void; highlight?: boolean;
 }) {
   return (
     <label
-      onClick={(e) => { e.preventDefault(); onToggle(); }}
+      onClick={(e) => { e.preventDefault(); onToggle(market.sym); }}
       style={{
         display: 'flex', alignItems: 'center', gap: 12,
         padding: '9px 12px', borderRadius: 8, cursor: 'pointer',
@@ -275,4 +290,4 @@ function PickerRow({
       </span>
     </label>
   );
-}
+});
