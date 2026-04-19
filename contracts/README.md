@@ -170,6 +170,27 @@ to move from spot → perp margin.
 | Mainnet | `0xb88339CB7199b77E23DB6E890353E22632Ba630f` | `0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24` |
 | Testnet | `0x2B3370eE501B4a559b57D449569354196457D8Ab` | `0x0B80659a4076E9E93C7DbE0f10675A16a3e5C206` |
 
+## Factory deploy runbook (HyperEVM mainnet)
+
+First real deploy. Keep `CORE_ROUTING=false` on the first factory — USDC stays
+idle inside each vault, so the only attack surface is the ERC20 transferFrom
+path we already battle-test. Flip `CORE_ROUTING=true` on a second factory once
+the scaling assumptions in the Phase B section are validated with a burn-in
+vault.
+
+```sh
+export HYPEREVM_RPC=https://rpc.hyperliquid.xyz/evm
+export PRIVATE_KEY=0x<funded hyperevm eoa, holds HYPE for gas>
+export PROTOCOL_TREASURY=0x<address that receives protocol fees>
+# CORE_ROUTING defaults to false; omit or set explicitly.
+forge script script/DeployFactory.s.sol \
+  --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY --broadcast
+```
+
+The script logs `VaultFactory:` — paste that into
+`theorise/.env.local` as `NEXT_PUBLIC_VAULT_FACTORY_ADDRESS` and restart the
+Next dev server. The wizard will pick it up on the next deploy click.
+
 ## Mainnet validation runbook
 
 The rest of the platform already trades on Hyperliquid mainnet, so the spike
