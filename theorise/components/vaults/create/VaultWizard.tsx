@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useAccount } from 'wagmi';
 import { C, D, M } from '@/styles/tokens';
 import { useVaultCreateStore, totalAlloc } from '@/stores/vault-create-store';
+import { useCreateVault } from '@/hooks/useCreateVault';
 import StepIndicator from './StepIndicator';
 import Step1Strategy from './Step1Strategy';
 import Step2Timeframe from './Step2Timeframe';
@@ -20,8 +21,10 @@ const STEP_SUBTITLES = [
 export default function VaultWizard({ onClose }: { onClose: () => void }) {
   const { address } = useAccount();
   const s = useVaultCreateStore();
+  const { create, creating } = useCreateVault();
   const [deploying, setDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const busy = deploying || creating;
 
   const allocOk = totalAlloc(s.positions) === 100;
   const hasPositions = s.positions.length > 0;
@@ -44,25 +47,38 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
     setDeploying(true);
     setError(null);
     try {
-      const res = await fetch('/api/vaults/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: s.name,
-          desc: s.desc,
-          positions: s.positions,
-          deploySize: s.deploySize,
-          timeframe: s.timeframe,
-          settlementMode: s.settlementMode,
-          perfFee: s.perfFee,
-          exitFee: s.exitFee,
-          minDeposit: s.minDeposit,
-          creatorAddress: address,
-        }),
+      const { vaultAddress, txHash } = await create({
+        positions: s.positions,
+        deploySize: s.deploySize,
+        timeframe: s.timeframe,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Deploy failed');
-      s.setVaultAddress(data.vaultAddress);
+
+      // Persist off-chain metadata (name, desc, fees) keyed by vault address.
+      // Failure here doesn't roll back the on-chain vault; just surface a warning.
+      try {
+        await fetch('/api/vaults/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vaultAddress,
+            txHash,
+            name: s.name,
+            desc: s.desc,
+            positions: s.positions,
+            deploySize: s.deploySize,
+            timeframe: s.timeframe,
+            settlementMode: s.settlementMode,
+            perfFee: s.perfFee,
+            exitFee: s.exitFee,
+            minDeposit: s.minDeposit,
+            creatorAddress: address,
+          }),
+        });
+      } catch {
+        // metadata write is best-effort
+      }
+
+      s.setVaultAddress(vaultAddress);
       s.setStep(4);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Deploy failed');
@@ -151,18 +167,18 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
             </button>
             <button
               onClick={s.step === 3 ? handleDeploy : handleNext}
-              disabled={(s.step === 1 && !canAdvanceStep1) || deploying}
+              disabled={(s.step === 1 && !canAdvanceStep1) || busy}
               style={{
                 flex: 2, padding: '11px 0', borderRadius: 10, border: 'none',
-                cursor: (s.step === 1 && !canAdvanceStep1) || deploying ? 'not-allowed' : 'pointer',
+                cursor: (s.step === 1 && !canAdvanceStep1) || busy ? 'not-allowed' : 'pointer',
                 fontSize: 13, fontWeight: 700, fontFamily: D,
                 background: s.step === 3 ? C.green : C.primary,
                 color: '#fff',
-                opacity: (s.step === 1 && !canAdvanceStep1) || deploying ? 0.4 : 1,
+                opacity: (s.step === 1 && !canAdvanceStep1) || busy ? 0.4 : 1,
                 transition: 'opacity 0.15s',
               }}
             >
-              {deploying ? 'Deploying...' : s.step === 3 ? 'Deploy vault' : 'Continue \u2192'}
+              {busy ? 'Deploying...' : s.step === 3 ? 'Deploy vault' : 'Continue \u2192'}
             </button>
           </div>
         )}

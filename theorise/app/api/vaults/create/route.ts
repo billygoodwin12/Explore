@@ -9,7 +9,14 @@ const VaultPositionSchema = z.object({
   alloc: z.number().min(5).max(95),
 });
 
-const CreateVaultSchema = z.object({
+/**
+ * Post-deploy metadata sink. The vault itself is deployed on-chain by the wizard
+ * via useCreateVault → VaultFactory.createVault. This endpoint only captures the
+ * off-chain display bits (name, desc, fees) keyed by the already-deployed address.
+ */
+const VaultMetadataSchema = z.object({
+  vaultAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  txHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
   name: z.string().min(1).max(60),
   desc: z.string().max(2000).optional().default(''),
   positions: z.array(VaultPositionSchema).min(1).max(10),
@@ -25,7 +32,7 @@ const CreateVaultSchema = z.object({
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const parsed = CreateVaultSchema.parse(body);
+    const parsed = VaultMetadataSchema.parse(body);
 
     const allocTotal = parsed.positions.reduce((a, p) => a + p.alloc, 0);
     if (allocTotal !== 100) {
@@ -35,11 +42,15 @@ export async function POST(request: Request) {
       );
     }
 
-    // Stub: generate a mock vault address
-    // Real contract deployment wired in Step 10
-    const mockAddr = '0x' + Array.from({ length: 40 }, () =>
-      Math.floor(Math.random() * 16).toString(16),
-    ).join('');
+    // TODO(persistence): write to KV/Postgres keyed by vaultAddress.
+    // Currently a no-op — on-chain state is the source of truth for shares/IM,
+    // this only hides creator-facing display bits behind an address lookup.
+    console.log('[vaults/create] metadata', {
+      vaultAddress: parsed.vaultAddress,
+      txHash: parsed.txHash,
+      name: parsed.name,
+      creator: parsed.creatorAddress,
+    });
 
     const positionSummary = parsed.positions
       .map(p => `${p.sym} ${p.dir === 'long' ? 'Long' : 'Short'} ${p.lev}x (${p.alloc}%)`)
@@ -49,13 +60,13 @@ export async function POST(request: Request) {
       `\uD83D\uDCE6 ${parsed.name}`,
       positionSummary,
       `${parsed.timeframe} \u00B7 ${parsed.perfFee}% perf fee`,
-      `theorise.xyz/vaults/${mockAddr}`,
+      `theorise.xyz/vaults/${parsed.vaultAddress}`,
     ].join('\n');
 
     return NextResponse.json({
-      vaultAddress: mockAddr,
-      txHash: '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join(''),
-      vaultUrl: `theorise.xyz/vaults/${mockAddr}`,
+      ok: true,
+      vaultAddress: parsed.vaultAddress,
+      vaultUrl: `theorise.xyz/vaults/${parsed.vaultAddress}`,
       xShareText,
     });
   } catch (e) {
