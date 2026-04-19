@@ -24,6 +24,10 @@ contract VaultFactory {
     address public immutable coreDepositWallet;
     address public immutable protocolTreasury;
     bool public immutable coreRoutingEnabled;
+    /// Flat USDC fee (6dp) pulled from the creator at createVault and forwarded
+    /// to protocolTreasury. Covers our keeper gas + platform margin. Immutable
+    /// — flip by deploying a new factory.
+    uint256 public immutable deploymentFee;
 
     address[] public allVaults;
     mapping(address => address[]) public creatorVaults;
@@ -32,7 +36,8 @@ contract VaultFactory {
         address indexed vault,
         address indexed creator,
         uint64 expiryTs,
-        uint256 creatorIM
+        uint256 creatorIM,
+        uint256 deploymentFee
     );
 
     error ZeroAddress();
@@ -44,7 +49,8 @@ contract VaultFactory {
         address _usdc,
         address _coreDepositWallet,
         address _protocolTreasury,
-        bool _coreRoutingEnabled
+        bool _coreRoutingEnabled,
+        uint256 _deploymentFee
     ) {
         if (
             _implementation == address(0) ||
@@ -57,6 +63,7 @@ contract VaultFactory {
         coreDepositWallet = _coreDepositWallet;
         protocolTreasury = _protocolTreasury;
         coreRoutingEnabled = _coreRoutingEnabled;
+        deploymentFee = _deploymentFee;
     }
 
     function createVault(
@@ -68,10 +75,20 @@ contract VaultFactory {
         if (expiryTs <= block.timestamp) revert ExpiryInPast();
 
         vault = Clones.clone(implementation);
+
+        // Pull creatorIM → vault (skin-in-the-game, locked until settle).
         require(
             IERC20Factory(usdc).transferFrom(msg.sender, vault, creatorIM),
             "usdc transferFrom"
         );
+        // Pull deploymentFee → treasury (platform revenue). Kept out of vault
+        // share math so it doesn't dilute depositors.
+        if (deploymentFee > 0) {
+            require(
+                IERC20Factory(usdc).transferFrom(msg.sender, protocolTreasury, deploymentFee),
+                "usdc fee"
+            );
+        }
 
         Vault(vault).initialize(
             address(this),
@@ -87,7 +104,7 @@ contract VaultFactory {
 
         allVaults.push(vault);
         creatorVaults[msg.sender].push(vault);
-        emit VaultCreated(vault, msg.sender, expiryTs, creatorIM);
+        emit VaultCreated(vault, msg.sender, expiryTs, creatorIM, deploymentFee);
     }
 
     function allVaultsLength() external view returns (uint256) { return allVaults.length; }

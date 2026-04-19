@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAccount, usePublicClient, useWalletClient, useSwitchChain } from 'wagmi';
 import { decodeEventLog, parseUnits, type Address } from 'viem';
 import { hyperEvm } from '@/lib/wallet/config';
@@ -49,6 +49,27 @@ export function useCreateVault() {
   const { markets, loading: marketsLoading } = useMarketData();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deploymentFee, setDeploymentFee] = useState<bigint | null>(null);
+
+  // Pull the factory's immutable deployment fee once so the UI can show the
+  // creator exactly what they'll be charged on top of their IM.
+  useEffect(() => {
+    if (!publicClient || !isFactoryConfigured()) return;
+    let cancelled = false;
+    publicClient
+      .readContract({
+        address: VAULT_FACTORY_ADDRESS,
+        abi: vaultFactoryAbi,
+        functionName: 'deploymentFee',
+      })
+      .then((fee) => {
+        if (!cancelled) setDeploymentFee(fee as bigint);
+      })
+      .catch(() => {
+        if (!cancelled) setDeploymentFee(null);
+      });
+    return () => { cancelled = true; };
+  }, [publicClient]);
 
   const create = useCallback(async (input: CreateVaultInput): Promise<CreateVaultResult> => {
     setError(null);
@@ -98,7 +119,16 @@ export function useCreateVault() {
       // round to 6dp for parseUnits; USDC has 6 decimals on HyperEVM
       const creatorIM = parseUnits(creatorImUsdc.toFixed(6), 6);
 
-      // 4. Ensure USDC allowance for factory
+      // 4. Read current deployment fee straight from the contract (source of
+      //    truth — the cached value in state could be stale on first load).
+      const fee = await publicClient.readContract({
+        address: VAULT_FACTORY_ADDRESS,
+        abi: vaultFactoryAbi,
+        functionName: 'deploymentFee',
+      }) as bigint;
+      const totalNeeded = creatorIM + fee;
+
+      // Ensure USDC allowance covers IM + fee.
       const allowance = await publicClient.readContract({
         address: HYPEREVM_USDC,
         abi: erc20Abi,
@@ -106,12 +136,12 @@ export function useCreateVault() {
         args: [address, VAULT_FACTORY_ADDRESS],
       }) as bigint;
 
-      if (allowance < creatorIM) {
+      if (allowance < totalNeeded) {
         const approveHash = await walletClient.writeContract({
           address: HYPEREVM_USDC,
           abi: erc20Abi,
           functionName: 'approve',
-          args: [VAULT_FACTORY_ADDRESS, creatorIM],
+          args: [VAULT_FACTORY_ADDRESS, totalNeeded],
           chain: hyperEvm,
           account: address,
         });
@@ -160,5 +190,12 @@ export function useCreateVault() {
     }
   }, [address, chainId, publicClient, walletClient, switchChainAsync, markets, marketsLoading]);
 
-  return { create, creating, error, factoryReady: isFactoryConfigured() };
+  return {
+    create,
+    creating,
+    error,
+    factoryReady: isFactoryConfigured(),
+    /// Deployment fee in USDC 6dp, or null until it's been read from chain.
+    deploymentFee,
+  };
 }

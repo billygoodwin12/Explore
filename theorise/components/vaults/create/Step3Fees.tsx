@@ -2,6 +2,8 @@
 
 import { C, D, M } from '@/styles/tokens';
 import { useVaultCreateStore, calcTotalIM } from '@/stores/vault-create-store';
+import { useCreateVault } from '@/hooks/useCreateVault';
+import { formatUnits } from 'viem';
 
 const MODE_LABELS: Record<string, string> = {
   HARD: 'Hard expiry',
@@ -56,7 +58,10 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 
 export default function Step3Fees() {
   const s = useVaultCreateStore();
+  const { deploymentFee } = useCreateVault();
   const im = calcTotalIM(s.positions, s.deploySize);
+  const feeUsdc = deploymentFee !== null ? parseFloat(formatUnits(deploymentFee, 6)) : null;
+  const totalDue = feeUsdc !== null ? im + feeUsdc : null;
   const posStr = s.positions
     .map(p => `${p.sym} ${p.dir === 'long' ? 'L' : 'S'} ${p.lev}x ${p.alloc}%`)
     .join(', ');
@@ -108,6 +113,12 @@ export default function Step3Fees() {
       <ReviewRow label="Positions" value={posStr || '\u2014'} />
       <ReviewRow label="Your deployment" value={`${fmt(s.deploySize)} notional`} />
       <ReviewRow label="Your IM required" value={`${fmt(im)} USDC`} />
+      {feeUsdc !== null && feeUsdc > 0 && (
+        <ReviewRow label="Platform deployment fee" value={`${fmt(feeUsdc)} USDC`} />
+      )}
+      {totalDue !== null && feeUsdc !== null && feeUsdc > 0 && (
+        <ReviewRow label="Total due at deploy" value={`${fmt(totalDue)} USDC`} />
+      )}
       <ReviewRow label="Timeframe" value={s.timeframe} />
       <ReviewRow label="Settlement" value={MODE_LABELS[s.settlementMode]} />
       <ReviewRow label="Performance fee" value={`${s.perfFee}%`} />

@@ -43,8 +43,8 @@ export const erc20Abi = [
   },
 ] as const satisfies Abi;
 
-/// Minimal VaultFactory ABI — createVault + VaultCreated event.
-/// Matches contracts/src/VaultFactory.sol:createVault + Vault.Position tuple.
+/// Minimal VaultFactory ABI — createVault + deploymentFee view + VaultCreated.
+/// Matches contracts/src/VaultFactory.sol.
 export const vaultFactoryAbi = [
   {
     name: 'createVault',
@@ -68,6 +68,13 @@ export const vaultFactoryAbi = [
     outputs: [{ name: 'vault', type: 'address' }],
   },
   {
+    name: 'deploymentFee',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
     name: 'VaultCreated',
     type: 'event',
     anonymous: false,
@@ -76,6 +83,7 @@ export const vaultFactoryAbi = [
       { name: 'creator', type: 'address', indexed: true },
       { name: 'expiryTs', type: 'uint64', indexed: false },
       { name: 'creatorIM', type: 'uint256', indexed: false },
+      { name: 'deploymentFee', type: 'uint256', indexed: false },
     ],
   },
 ] as const satisfies Abi;

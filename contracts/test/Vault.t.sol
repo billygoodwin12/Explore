@@ -68,7 +68,7 @@ contract VaultTest is Test {
         usdc = new MockUSDC();
         impl = new Vault();
         // coreRoutingEnabled = false (Phase A behavior for the core test suite)
-        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false);
+        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false, 0);
 
         usdc.mint(creator, 1_000e6);
         usdc.mint(alice, 1_000e6);
@@ -193,7 +193,7 @@ contract VaultTest is Test {
         // Swap in a penalty-enabled impl to test the fee path.
         Vault penaltyImpl = new PenaltyVault();
         VaultFactory pf = new VaultFactory(
-            address(penaltyImpl), address(usdc), depositWallet, treasury, false
+            address(penaltyImpl), address(usdc), depositWallet, treasury, false, 0
         );
         vm.prank(creator);
         usdc.approve(address(pf), 100e6);

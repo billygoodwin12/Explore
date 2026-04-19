@@ -19,6 +19,9 @@ contract DeployFactory is Script {
     function run() external {
         bool isTestnet = vm.envOr("TESTNET", false);
         bool coreRoutingEnabled = vm.envOr("CORE_ROUTING", false);
+        // Flat USDC fee (6dp) the creator pays on every createVault. Goes to
+        // protocolTreasury. Default 0 so staging deploys cost nothing.
+        uint256 deploymentFee = vm.envOr("DEPLOYMENT_FEE", uint256(0));
 
         address usdc = isTestnet ? HLConstants.USDC_EVM_TESTNET : HLConstants.USDC_EVM_MAINNET;
         address depositWallet = isTestnet
@@ -33,7 +36,8 @@ contract DeployFactory is Script {
             usdc,
             depositWallet,
             treasury,
-            coreRoutingEnabled
+            coreRoutingEnabled,
+            deploymentFee
         );
         vm.stopBroadcast();
 
@@ -43,5 +47,6 @@ contract DeployFactory is Script {
         console.log("Deposit wallet:", depositWallet);
         console.log("Treasury      :", treasury);
         console.log("Core routing  :", coreRoutingEnabled);
+        console.log("Deployment fee (6dp USDC):", deploymentFee);
     }
 }

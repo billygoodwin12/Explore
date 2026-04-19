@@ -46,8 +46,8 @@ contract VaultPhaseBTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         impl = new Vault();
-        // coreRoutingEnabled = true
-        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, true);
+        // coreRoutingEnabled = true, deploymentFee = 0 (phase B tests care about routing, not fees)
+        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, true, 0);
 
         usdc.mint(creator, 1_000e6);
         usdc.mint(alice, 1_000e6);

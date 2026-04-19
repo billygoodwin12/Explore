@@ -181,11 +181,19 @@ vault.
 ```sh
 export HYPEREVM_RPC=https://rpc.hyperliquid.xyz/evm
 export PRIVATE_KEY=0x<funded hyperevm eoa, holds HYPE for gas>
-export PROTOCOL_TREASURY=0x<address that receives protocol fees>
+export PROTOCOL_TREASURY=0x<address that receives protocol fees + deployment fees>
 # CORE_ROUTING defaults to false; omit or set explicitly.
+# DEPLOYMENT_FEE is a USDC amount in 6dp. e.g. 5000000 = $5. Defaults to 0.
+export DEPLOYMENT_FEE=5000000
 forge script script/DeployFactory.s.sol \
   --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY --broadcast
 ```
+
+The fee is pulled from the creator on every `createVault` in the same tx as
+their IM (one USDC approve covers both) and forwarded straight to
+`PROTOCOL_TREASURY`. It's kept out of the vault's share accounting so it
+never dilutes depositors. To change the fee later, deploy a new factory —
+existing vaults are unaffected.
 
 The script logs `VaultFactory:` — paste that into
 `theorise/.env.local` as `NEXT_PUBLIC_VAULT_FACTORY_ADDRESS` and restart the

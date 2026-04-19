@@ -35,9 +35,13 @@ contract VaultFactoryTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         impl = new Vault();
-        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false);
+        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false, 0);
         usdc.mint(alice, 1_000e6);
         usdc.mint(bob, 1_000e6);
+    }
+
+    function _factoryWithFee(uint256 fee) internal returns (VaultFactory) {
+        return new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false, fee);
     }
 
     function test_createVault_clonesAndRegisters() public {
@@ -94,5 +98,48 @@ contract VaultFactoryTest is Test {
 
         assertEq(usdc.balanceOf(address(factory)), 0);
         assertEq(usdc.balanceOf(vault), 50e6);
+    }
+
+    function test_deploymentFee_forwardedToTreasury() public {
+        uint256 fee = 5e6; // $5
+        VaultFactory feeFactory = _factoryWithFee(fee);
+
+        vm.prank(alice);
+        usdc.approve(address(feeFactory), 50e6 + fee);
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+
+        vm.prank(alice);
+        address vault = feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+
+        // Vault got the IM; treasury got the fee; alice paid both.
+        assertEq(usdc.balanceOf(vault), 50e6);
+        assertEq(usdc.balanceOf(treasury), treasuryBefore + fee);
+        assertEq(usdc.balanceOf(alice), aliceBefore - 50e6 - fee);
+        assertEq(usdc.balanceOf(address(feeFactory)), 0);
+    }
+
+    function test_deploymentFee_zeroSkipsFeeTransfer() public {
+        // Default factory in setUp has fee=0. Prove the fee path is a no-op
+        // (already covered by existing tests, but pin the intent).
+        assertEq(factory.deploymentFee(), 0);
+
+        vm.prank(alice);
+        usdc.approve(address(factory), 50e6); // only IM approved
+        vm.prank(alice);
+        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        // Did not revert — fee transferFrom was skipped.
+    }
+
+    function test_deploymentFee_revertsIfApprovalTooLow() public {
+        uint256 fee = 5e6;
+        VaultFactory feeFactory = _factoryWithFee(fee);
+
+        vm.prank(alice);
+        usdc.approve(address(feeFactory), 50e6); // IM only, not IM+fee
+
+        vm.prank(alice);
+        vm.expectRevert(); // MockUSDC underflows on unapproved transferFrom
+        feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
     }
 }
