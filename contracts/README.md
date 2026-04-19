@@ -6,8 +6,58 @@ Smart contracts for the Theorise vault platform on HyperEVM.
 
 - `src/HLConstants.sol` — pinned addresses & action IDs for HyperCore <> HyperEVM.
 - `src/PerpOrderSpike.sol` — minimal contract proving the EVM → HyperCore order path.
-- `script/DeploySpike.s.sol` — Foundry deploy script.
+- `src/Vault.sol` — single-thesis vault (EIP-1167 clone target).
+- `src/VaultFactory.sol` — creator-facing deployer that clones `Vault`.
+- `script/DeploySpike.s.sol` — Foundry deploy script for the spike.
 - `test/PerpOrderSpike.t.sol` — encoding sanity checks (mocked CoreWriter).
+- `test/Vault.t.sol` — share math, creator lock, penalty split, state machine.
+- `test/VaultFactory.t.sol` — clone + registration flow.
+
+## Step 2 design — vault mechanics
+
+### Lifecycle (single-phase)
+
+```
+           deposit()                          settle() (permissionless after expiryTs)
+  ┌─────────────────────────┐               ┌────────────────────────────────────┐
+  │                         ▼               │                                    ▼
+  ▼                        OPEN ────────────┴───────────────────────────────── SETTLED
+creator's IM pulled       creator locked     unwind positions,                 claim() pro rata
+by factory, orders        depositors can     creator unlocked                  (no penalty)
+auto-routed               earlyWithdraw()
+                          with 50/50 penalty
+                          split (protocol / LPs)
+```
+
+### Scam-prevention rules codified in `Vault.sol`
+
+1. **Immutable position spec** stored + hashed at init. Creator cannot swap
+   assets or leverage mid-flight.
+2. **Creator's own IM is share-locked until settle()** — they earn alongside
+   depositors, can't rug.
+3. **Only two creator-callable entrypoints**: `deposit` and `earlyWithdraw` —
+   same as any depositor. No `placeOrder`, no `sweep`, no `rescue`.
+4. **`settle()` is permissionless** after `expiryTs`. A keeper cron runs it
+   automatically; if the keeper ever fails, any EOA can trigger it.
+5. **Phase B** will wrap `_deployToCore` / `_unwindFromCore` to whitelist
+   CoreWriter action bytes against `positionsHash`.
+
+### Share math — pessimistic NAV
+
+In Phase A, NAV = `totalIM` (running sum of deposited USDC, no mark-to-market).
+Phase B reads `accountMarginSummary` precompile to add unrealized PnL.
+Pessimistic NAV is deterministic and self-contained — it sidesteps the
+CoreWriter ~seconds delay between `sendRawAction` and HyperCore execution.
+
+### Early-exit penalty
+
+`earlyExitBps()` is a virtual function returning `0` in the v1 impl. To flip
+on later: subclass Vault, override `earlyExitBps` to return `200`, deploy new
+factory pointing at new impl. Existing vaults stay at 0 (immutable via impl).
+
+Split is hardcoded 50/50 between `protocolTreasury` and remaining LPs
+(the LP half stays inside the vault, so it shows up as higher per-share NAV
+for everyone who didn't exit).
 
 ## Step 1 findings (CoreWriter spike)
 

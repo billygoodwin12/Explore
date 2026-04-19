@@ -5,6 +5,10 @@ libs = ["lib"]
 solc_version = "0.8.26"
 optimizer = true
 optimizer_runs = 200
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"
+]
 
 [rpc_endpoints]
 hyperevm_testnet = "${HYPEREVM_TESTNET_RPC}"
