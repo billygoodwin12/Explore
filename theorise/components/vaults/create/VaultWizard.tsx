@@ -126,7 +126,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
-            \u2715
+            {'\u2715'}
           </button>
         </div>
 

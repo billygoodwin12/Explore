@@ -79,12 +79,25 @@ function stripDexPrefix(name: string): string {
   return colon >= 0 ? name.slice(colon + 1) : name;
 }
 
-async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
+// Info endpoint is shared and rate-limited. Retry on 429/5xx with exponential
+// backoff so a single throttled response doesn't leave the wizard with zero
+// markets (and a disabled "Add positions" button).
+async function postInfo(body: Record<string, unknown>, attempt = 0): Promise<Response> {
   const res = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'perpDexs' }),
+    body: JSON.stringify(body),
   });
+  if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+    const delay = 500 * 2 ** attempt;
+    await new Promise(r => setTimeout(r, delay));
+    return postInfo(body, attempt + 1);
+  }
+  return res;
+}
+
+async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
+  const res = await postInfo({ type: 'perpDexs' });
   if (!res.ok) return [null];
   return await res.json();
 }
@@ -92,11 +105,7 @@ async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
 async function fetchMetaCtxs(dex?: string) {
   const body: Record<string, unknown> = { type: 'metaAndAssetCtxs' };
   if (dex) body.dex = dex;
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await postInfo(body);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return await res.json();
 }
