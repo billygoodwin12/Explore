@@ -86,16 +86,23 @@ export default function AddPositionPicker({ available, onClose, onConfirm }: {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const items: PickerItem[] = useMemo(
-    () => available.map(m => ({
-      sym: m.displaySym,
-      name: m.name,
-      volume: m.volume,
-      cat: m.cat,
-      dex: m.dex,
-    })),
-    [available],
-  );
+  const items: PickerItem[] = useMemo(() => {
+    // Dedupe by displaySym — same ticker can be listed on multiple HIP-3 dexes.
+    // Keep the highest-volume variant so the user sees one canonical row.
+    const byName = new Map<string, PickerItem>();
+    for (const m of available) {
+      const next: PickerItem = {
+        sym: m.displaySym,
+        name: m.name,
+        volume: m.volume,
+        cat: m.cat,
+        dex: m.dex,
+      };
+      const prev = byName.get(m.displaySym);
+      if (!prev || next.volume > prev.volume) byName.set(m.displaySym, next);
+    }
+    return Array.from(byName.values());
+  }, [available]);
 
   const { popular, rest } = useMemo(() => {
     const byVolume = [...items].sort((a, b) => b.volume - a.volume);

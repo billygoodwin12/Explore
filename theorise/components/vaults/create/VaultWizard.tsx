@@ -11,6 +11,20 @@ import Step2Timeframe from './Step2Timeframe';
 import Step3Fees from './Step3Fees';
 import Step4Deployed from './Step4Deployed';
 
+// Viem bundles the full RPC request into error.message; we just want a short
+// human line. Detect the common user-rejection case and fall back to the
+// shortMessage / first line otherwise.
+function formatDeployError(e: unknown): string {
+  if (!(e instanceof Error)) return 'Deploy failed';
+  const msg = e.message ?? '';
+  if (/user (rejected|denied)/i.test(msg) || (e as { name?: string }).name === 'UserRejectedRequestError') {
+    return 'Transaction cancelled. Review and try again.';
+  }
+  const short = (e as { shortMessage?: string }).shortMessage;
+  if (short) return short;
+  return msg.split('\n')[0].slice(0, 180);
+}
+
 const STEP_SUBTITLES = [
   'Step 1 of 4 \u2014 Build your strategy',
   'Step 2 of 4 \u2014 Timeframe & settlement',
@@ -82,7 +96,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
       s.setVaultAddress(vaultAddress);
       s.setStep(4);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Deploy failed');
+      setError(formatDeployError(e));
     } finally {
       setDeploying(false);
     }
