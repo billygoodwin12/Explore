@@ -12,6 +12,7 @@ Smart contracts for the Theorise vault platform on HyperEVM.
 - `test/PerpOrderSpike.t.sol` — encoding sanity checks (mocked CoreWriter).
 - `test/Vault.t.sol` — share math, creator lock, penalty split, state machine.
 - `test/VaultFactory.t.sol` — clone + registration flow.
+- `test/VaultPhaseB.t.sol` — deposit-direction CoreWriter routing & scaling.
 
 ## Step 2 design — vault mechanics
 
@@ -39,15 +40,18 @@ auto-routed               earlyWithdraw()
    same as any depositor. No `placeOrder`, no `sweep`, no `rescue`.
 4. **`settle()` is permissionless** after `expiryTs`. A keeper cron runs it
    automatically; if the keeper ever fails, any EOA can trigger it.
-5. **Phase B** will wrap `_deployToCore` / `_unwindFromCore` to whitelist
-   CoreWriter action bytes against `positionsHash`.
+5. **CoreWriter action bytes are built by the contract** using values from
+   the stored spec — never caller-supplied. So "whitelisting" is achieved
+   by construction: the only bytes `_deployToCore` can emit are bridge +
+   spot→perp + IOC orders at `(asset, side, allocBps, lev)` from the spec.
 
 ### Share math — pessimistic NAV
 
-In Phase A, NAV = `totalIM` (running sum of deposited USDC, no mark-to-market).
-Phase B reads `accountMarginSummary` precompile to add unrealized PnL.
-Pessimistic NAV is deterministic and self-contained — it sidesteps the
-CoreWriter ~seconds delay between `sendRawAction` and HyperCore execution.
+NAV = `totalIM` (running sum of deposited USDC). A later phase can swap in
+`totalIM + unrealized PnL from accountMarginSummary precompile` once that
+struct layout is pinned from a live mainnet call. Pessimistic NAV is
+deterministic and sidesteps the CoreWriter ~seconds delay between
+`sendRawAction` and HyperCore execution.
 
 ### Early-exit penalty
 
@@ -58,6 +62,61 @@ factory pointing at new impl. Existing vaults stay at 0 (immutable via impl).
 Split is hardcoded 50/50 between `protocolTreasury` and remaining LPs
 (the LP half stays inside the vault, so it shows up as higher per-share NAV
 for everyone who didn't exit).
+
+## Phase B — deposit-direction CoreWriter wiring
+
+`_deployToCore(amount)` is no longer a stub. When `coreRoutingEnabled` is
+true on the factory, each `deposit()` (and the initial creator deposit at
+`createVault`) triggers three operations in sequence:
+
+1. ERC20 USDC transfer to `CORE_DEPOSIT_WALLET` (bridge EVM → HyperCore spot).
+2. CoreWriter action 7 (`USD_CLASS_TRANSFER`), `(ntl=amount, toPerp=true)`:
+   move the freshly-bridged spot USDC into the vault's perp margin account.
+3. For each position, CoreWriter action 1 (`LIMIT_ORDER`) as IOC with a ±5%
+   slippage cap. Order size is derived from the position's `allocBps` + `lev`
+   + current `markPx` (read from the precompile in the same tx).
+
+### Scaling assumptions (validate on mainnet before flipping the flag)
+
+- `markPx` precompile returns `uint64`, scaled by `10^(6 - szDecimals)`.
+- Order `limitPx` and `sz` are each scaled by `10^8`.
+- Derivation used in `_placeIocOrder`:
+  - `px_1e8 = markPx * 10^(szDecimals + 2)`
+  - `sz_1e8 = notional_6dp * 10^8 / (markPx * 10^szDecimals)`
+- `szDecimals` is supplied per-position at `createVault` (wizard passes it).
+
+Example: BTC at $67,000 with `szDecimals=5` gives `markPx = 670_000`. For a
+$100 creator IM, 50% alloc, 3× leverage → posNotional = $150 → order size
+`223_880` (≈ 0.0022388 BTC), limit price `7_035_000_000_000` (≈ $70,350,
+mark × 1.05 for a buy). `test/VaultPhaseB.t.sol` locks in these values.
+
+### Safety gate: `coreRoutingEnabled`
+
+`VaultFactory.coreRoutingEnabled` is an immutable bool passed at deploy.
+First mainnet deploys use `false` (vaults behave like Phase A — USDC stays
+idle in the vault, safe). Flip to `true` by deploying a new factory after
+validating the assumptions above on a burner vault.
+
+When routing is on:
+- `earlyWithdraw` reverts with `InsufficientBalance` because the USDC isn't
+  sitting in the vault anymore. (Phase C will add a proper early-exit path
+  that closes a proportional slice of the position and unbridges back.)
+- `claim` reverts with `InsufficientBalance` until the Core → EVM unbridge
+  (Phase C) repatriates USDC after settle.
+
+### Phase B open items (resolve on mainnet before flipping the flag)
+
+1. Confirm `markPx` precompile scaling on a live asset — is it really
+   `10^(6 - szDecimals)` or something else?
+2. Confirm order `sz` scaling — is the `10^8` from the docs literal, or is
+   it `szDecimals`-dependent?
+3. Confirm the action 7 USD-class transfer accepts `amount` in 6-dp USDC
+   units (what we pass) vs some other scaling.
+4. Measure the actual CoreWriter delay between `sendRawAction` and the
+   HyperCore execution block. Sets the keeper cooldown.
+5. Work out the Core → EVM unbridge mechanism. `spotSend` (action 6) with
+   a specific destination? Separate system precompile? Needed for Phase C
+   claim/unwind.
 
 ## Step 1 findings (CoreWriter spike)
 

@@ -13,12 +13,17 @@ interface IERC20Factory {
  * @title VaultFactory
  * @notice EIP-1167 minimal-proxy deployer for Theorise vaults.
  *         Holds no user funds; USDC flows straight from creator to the clone.
+ *
+ *         `coreRoutingEnabled` is pinned at factory construction — all vaults
+ *         this factory creates share the same setting. To flip on/off, deploy
+ *         a new factory pointing at the same impl.
  */
 contract VaultFactory {
     address public immutable implementation;
     address public immutable usdc;
     address public immutable coreDepositWallet;
     address public immutable protocolTreasury;
+    bool public immutable coreRoutingEnabled;
 
     address[] public allVaults;
     mapping(address => address[]) public creatorVaults;
@@ -38,7 +43,8 @@ contract VaultFactory {
         address _implementation,
         address _usdc,
         address _coreDepositWallet,
-        address _protocolTreasury
+        address _protocolTreasury,
+        bool _coreRoutingEnabled
     ) {
         if (
             _implementation == address(0) ||
@@ -50,12 +56,9 @@ contract VaultFactory {
         usdc = _usdc;
         coreDepositWallet = _coreDepositWallet;
         protocolTreasury = _protocolTreasury;
+        coreRoutingEnabled = _coreRoutingEnabled;
     }
 
-    /// @notice Creator approves `creatorIM` USDC to this factory, then calls
-    ///         createVault with their position spec + expiry.
-    /// @dev Pulls USDC, clones impl, forwards USDC to the clone, inits it —
-    ///      all in one tx so there's no front-run window on initialize().
     function createVault(
         Vault.Position[] calldata positions,
         uint64 expiryTs,
@@ -64,7 +67,6 @@ contract VaultFactory {
         if (positions.length == 0) revert NoPositions();
         if (expiryTs <= block.timestamp) revert ExpiryInPast();
 
-        // Pull creator's IM through the factory to the new clone.
         vault = Clones.clone(implementation);
         require(
             IERC20Factory(usdc).transferFrom(msg.sender, vault, creatorIM),
@@ -78,6 +80,7 @@ contract VaultFactory {
             coreDepositWallet,
             protocolTreasury,
             expiryTs,
+            coreRoutingEnabled,
             positions,
             creatorIM
         );

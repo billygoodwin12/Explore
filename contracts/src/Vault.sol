@@ -21,20 +21,26 @@ interface IERC20 {
  *         positions via CoreWriter. Creator capital is locked until settle.
  *
  * Lifecycle:
- *   OPEN   — deposits accepted, early exit allowed (depositors only).
+ *   OPEN    — deposits accepted, early exit allowed (depositors only).
  *   SETTLED — expiry passed and settle() called; only claim() allowed.
  *
- * Phase A (this commit): state machine + share math + access control.
- *   Actual CoreWriter routing + precompile NAV reads land in Phase B.
- *   _deployToCore() and _unwindFromCore() are overridable hooks that
- *   emit events in Phase A so tests can assert the accounting is right.
+ * Phase B gate: `coreRoutingEnabled` controls whether `_deployToCore` actually
+ *   fires CoreWriter actions. When false (safe default for v1 mainnet), USDC
+ *   stays idle in the vault and the vault behaves like Phase A. Flip to true
+ *   only after the deposit + unbridge path has been validated end-to-end on
+ *   mainnet (see README "Phase B open items").
+ *
+ * _unwindFromCore is intentionally still a stub in Phase B — unwind + Core->EVM
+ *   bridge back is Phase C, after we've observed the real Core->EVM mechanism
+ *   and CoreWriter delay timing on live mainnet.
  */
 contract Vault is ReentrancyGuard {
     struct Position {
-        uint32 asset;     // HyperCore asset id
-        bool isBuy;       // long=true, short=false
-        uint16 allocBps;  // 0-10000, positions must sum to 10000
-        uint8 lev;        // leverage multiplier
+        uint32 asset;       // HyperCore asset id
+        bool isBuy;         // long=true, short=false
+        uint16 allocBps;    // 0-10000, positions must sum to 10000
+        uint8 lev;          // leverage multiplier
+        uint8 szDecimals;   // base-asset decimals (BTC=5, ETH=4, ...) for order sizing
     }
 
     // ── Config (set once at init) ────────────────────────────────
@@ -44,6 +50,7 @@ contract Vault is ReentrancyGuard {
     address public coreDepositWallet;
     address public protocolTreasury;
     uint64 public expiryTs;
+    bool public coreRoutingEnabled;
 
     Position[] public positions;
     bytes32 public positionsHash;
@@ -54,8 +61,9 @@ contract Vault is ReentrancyGuard {
     uint256 public totalShares;
     mapping(address => uint256) public shares;
 
-    /// Pessimistic NAV: running sum of deposited IM. Phase B swaps in
-    /// `totalIM + unrealized PnL from accountMarginSummary precompile`.
+    /// Pessimistic NAV: running sum of deposited IM. A later phase can swap in
+    /// `totalIM + unrealized PnL from accountMarginSummary precompile` once
+    /// that struct layout is pinned from a live mainnet call.
     uint256 public totalIM;
 
     /// Creator's own deposit — locked until settle().
@@ -82,6 +90,9 @@ contract Vault is ReentrancyGuard {
     event Claimed(address indexed user, uint256 sharesBurned, uint256 amount);
     event DeployRequested(uint256 amount);
     event UnwindRequested();
+    event CoreBridged(uint256 amount);
+    event CoreSpotToPerp(uint64 ntl);
+    event CoreOrderPlaced(uint32 indexed asset, bool isBuy, uint64 limitPx, uint64 sz);
 
     // ── Errors ───────────────────────────────────────────────────
     error AlreadyInitialized();
@@ -94,11 +105,12 @@ contract Vault is ReentrancyGuard {
     error NotSettled();
     error AlreadySettled();
     error ZeroAmount();
+    error NoMarkPx();
+    error SizeOutOfRange();
+    error PriceOutOfRange();
+    error InsufficientBalance();
 
     // ── Init (clone pattern — no constructor logic) ──────────────
-    /// @dev Factory clones this impl, transfers `_creatorIM` USDC to the
-    ///      clone, then calls initialize in the same tx. The factory-passed
-    ///      address is checked against msg.sender to prevent front-run init.
     function initialize(
         address _factory,
         address _creator,
@@ -106,6 +118,7 @@ contract Vault is ReentrancyGuard {
         address _coreDepositWallet,
         address _protocolTreasury,
         uint64 _expiryTs,
+        bool _coreRoutingEnabled,
         Position[] calldata _positions,
         uint256 _creatorIM
     ) external {
@@ -120,6 +133,7 @@ contract Vault is ReentrancyGuard {
         coreDepositWallet = _coreDepositWallet;
         protocolTreasury = _protocolTreasury;
         expiryTs = _expiryTs;
+        coreRoutingEnabled = _coreRoutingEnabled;
 
         uint256 allocSum;
         for (uint256 i = 0; i < _positions.length; i++) {
@@ -165,13 +179,18 @@ contract Vault is ReentrancyGuard {
         uint256 gross = (shareAmount * totalIM) / totalShares;
         uint256 fee = (gross * earlyExitBps()) / BPS_DENOM;
         uint256 toTreasury = fee / 2;
-        uint256 toLPs = fee - toTreasury; // stays in vault, boosts NAV for remainers
+        uint256 toLPs = fee - toTreasury;
         uint256 userGets = gross - fee;
 
         shares[msg.sender] -= shareAmount;
         totalShares -= shareAmount;
-        // USDC that actually leaves the contract = userGets + toTreasury = gross - toLPs
+        // USDC leaving the contract = userGets + toTreasury = gross - toLPs
         totalIM -= (gross - toLPs);
+
+        // In Phase B with routing on, USDC is on HyperCore not in the vault.
+        // The early-exit path is therefore disabled at the caller level in Phase B
+        // via the `coreRoutingEnabled` flag — see guard below.
+        if (coreRoutingEnabled) revert InsufficientBalance();
 
         if (toTreasury > 0) _safeTransfer(protocolTreasury, toTreasury);
         _safeTransfer(msg.sender, userGets);
@@ -180,9 +199,6 @@ contract Vault is ReentrancyGuard {
     }
 
     // ── Settle (permissionless after expiry) ─────────────────────
-    /// @notice Anyone can call after expiryTs. A keeper runs this at the
-    ///         expiry block; if the keeper fails, a bounty-hunter picks it
-    ///         up. Either way depositors aren't trapped.
     function settle() external nonReentrant {
         if (settled) revert AlreadySettled();
         if (block.timestamp < expiryTs) revert NotExpired();
@@ -197,6 +213,11 @@ contract Vault is ReentrancyGuard {
         if (shareAmount == 0 || shareAmount > shares[msg.sender]) revert NoShares();
 
         uint256 amount = (shareAmount * totalIM) / totalShares;
+
+        // Guard: in Phase B with routing on, USDC hasn't returned from HyperCore
+        // until the Phase C unbridge completes. Claims will revert until then.
+        if (IERC20(usdc).balanceOf(address(this)) < amount) revert InsufficientBalance();
+
         shares[msg.sender] -= shareAmount;
         totalShares -= shareAmount;
         totalIM -= amount;
@@ -205,25 +226,114 @@ contract Vault is ReentrancyGuard {
         emit Claimed(msg.sender, shareAmount, amount);
     }
 
-    // ── CoreWriter hooks (stubs for Phase A, real bytes in Phase B) ──
+    // ── CoreWriter deposit-path routing (Phase B) ────────────────
     function _deployToCore(uint256 amount) internal virtual {
-        // Phase B:
-        //   1. IERC20(usdc).transfer(coreDepositWallet, amount)
-        //   2. action 7 (spot->perp): abi.encode(uint64(amount), true)
-        //   3. per position: action 1 IOC with sz = amount * allocBps/10000 * lev / markPx
-        //      All action bytes validated against positionsHash.
         emit DeployRequested(amount);
+        if (!coreRoutingEnabled || amount == 0) return;
+
+        // 1. Bridge ERC20 USDC EVM -> HyperCore spot.
+        //    Sender's (this contract's) HyperCore spot account gets credited.
+        require(IERC20(usdc).transfer(coreDepositWallet, amount), "bridge usdc");
+        emit CoreBridged(amount);
+
+        // 2. Move spot -> perp margin (action 7).
+        //    `ntl` is in HyperCore USD units (6dp) — amount fits directly.
+        if (amount > type(uint64).max) revert SizeOutOfRange();
+        _sendAction(
+            HLConstants.ACTION_USD_CLASS_TRANSFER,
+            abi.encode(uint64(amount), true)
+        );
+        emit CoreSpotToPerp(uint64(amount));
+
+        // 3. Fire one IOC limit order per position, sized proportionally.
+        uint256 n = positions.length;
+        for (uint256 i = 0; i < n; i++) {
+            Position memory p = positions[i];
+            uint256 posIM = (amount * p.allocBps) / BPS_DENOM;
+            if (posIM == 0) continue;
+            _placeIocOrder(p, posIM * uint256(p.lev), false);
+        }
     }
 
+    // ── CoreWriter unwind-path (Phase B stub) ────────────────────
+    /// @dev Phase C will fill this with: reduceOnly IOC close per position,
+    ///      perp->spot transfer, and Core->EVM bridge-back. We need live
+    ///      mainnet evidence of the Core->EVM mechanism before committing.
     function _unwindFromCore() internal virtual {
-        // Phase B:
-        //   1. per position: action 1 reduceOnly=true IOC at wide slippage.
-        //   2. action 7 (perp->spot).
-        //   3. bridge spot USDC back to this contract.
         emit UnwindRequested();
     }
 
-    // ── Minimal USDC helpers ─────────────────────────────────────
+    // ── Order placement helper ───────────────────────────────────
+    /// @param notional Target notional in USDC 6dp units.
+    /// @param reduceOnly true for unwinds (Phase C).
+    function _placeIocOrder(Position memory p, uint256 notional, bool reduceOnly) internal {
+        uint64 mark = _markPx(p.asset);
+        if (mark == 0) revert NoMarkPx();
+
+        // ── Scaling (see "hyper-evm-lib" convention; validate on mainnet) ──
+        // markPx is scaled by 10^(6 - szDecimals).
+        // Orders take limitPx + sz scaled by 10^8.
+        //   px_1e8 = markPx * 10^(szDecimals + 2)
+        //   sz_1e8 = notional_6dp * 10^8 / (markPx * 10^szDecimals)
+        uint256 tenSz = 10 ** uint256(p.szDecimals);
+        uint256 pxMark_1e8 = uint256(mark) * tenSz * 100; // mark * 10^(szDec+2)
+        uint256 pxLimit_1e8 = p.isBuy
+            ? (pxMark_1e8 * 105) / 100   // pay up to 5% above mark
+            : (pxMark_1e8 * 95) / 100;   // sell down to 5% below mark
+        if (pxLimit_1e8 == 0 || pxLimit_1e8 > type(uint64).max) revert PriceOutOfRange();
+
+        uint256 sz_1e8 = (notional * 1e8) / (uint256(mark) * tenSz);
+        if (sz_1e8 == 0 || sz_1e8 > type(uint64).max) revert SizeOutOfRange();
+
+        // Unwinds fire the opposite side.
+        bool side = reduceOnly ? !p.isBuy : p.isBuy;
+
+        _sendAction(
+            HLConstants.ACTION_LIMIT_ORDER,
+            abi.encode(
+                p.asset,
+                side,
+                uint64(pxLimit_1e8),
+                uint64(sz_1e8),
+                reduceOnly,
+                HLConstants.TIF_IOC,
+                uint128(0)
+            )
+        );
+        emit CoreOrderPlaced(p.asset, side, uint64(pxLimit_1e8), uint64(sz_1e8));
+    }
+
+    // ── CoreWriter send helper ───────────────────────────────────
+    function _sendAction(uint24 actionId, bytes memory payload) internal {
+        // Layout: 0x01 (version) || actionId (3B big-endian) || abi.encode(...)
+        bytes memory data = bytes.concat(bytes1(0x01), bytes3(actionId), payload);
+        ICoreWriter(HLConstants.CORE_WRITER).sendRawAction(data);
+    }
+
+    // ── Precompile read helpers ──────────────────────────────────
+    function _markPx(uint32 asset) internal view returns (uint64) {
+        (bool ok, bytes memory ret) = HLConstants.MARK_PX_PRECOMPILE.staticcall(
+            abi.encode(asset)
+        );
+        if (!ok || ret.length != 32) return 0;
+        return abi.decode(ret, (uint64));
+    }
+
+    /// @notice Raw margin summary for this vault on perp dex `perpDexIndex`
+    ///         (0 = default dex). Decode off-chain until the struct layout is
+    ///         pinned from a live mainnet call.
+    function accountMarginSummaryRaw(uint32 perpDexIndex) external view returns (bytes memory) {
+        (bool ok, bytes memory ret) = HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE.staticcall(
+            abi.encode(perpDexIndex, address(this))
+        );
+        require(ok, "marginSummary");
+        return ret;
+    }
+
+    /// @notice Current mark price for a perp asset (raw precompile value).
+    function markPx(uint32 asset) external view returns (uint64) { return _markPx(asset); }
+
+    // ── USDC helpers ─────────────────────────────────────────────
     function _safeTransfer(address to, uint256 amount) internal {
         require(IERC20(usdc).transfer(to, amount), "usdc transfer");
     }

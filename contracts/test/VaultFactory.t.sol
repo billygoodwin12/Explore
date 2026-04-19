@@ -29,13 +29,13 @@ contract VaultFactoryTest is Test {
 
     function _spec() internal pure returns (Vault.Position[] memory p) {
         p = new Vault.Position[](1);
-        p[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 10_000, lev: 5 });
+        p[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 10_000, lev: 5, szDecimals: 5 });
     }
 
     function setUp() public {
         usdc = new MockUSDC();
         impl = new Vault();
-        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury);
+        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false);
         usdc.mint(alice, 1_000e6);
         usdc.mint(bob, 1_000e6);
     }

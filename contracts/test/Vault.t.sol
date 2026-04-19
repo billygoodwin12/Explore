@@ -60,14 +60,15 @@ contract VaultTest is Test {
     // 50/50 BTC long + ETH long, 3x lev each
     function _baseSpec() internal pure returns (Vault.Position[] memory p) {
         p = new Vault.Position[](2);
-        p[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 5000, lev: 3 });
-        p[1] = Vault.Position({ asset: 1, isBuy: true, allocBps: 5000, lev: 3 });
+        p[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 5000, lev: 3, szDecimals: 5 });
+        p[1] = Vault.Position({ asset: 1, isBuy: true, allocBps: 5000, lev: 3, szDecimals: 4 });
     }
 
     function setUp() public {
         usdc = new MockUSDC();
         impl = new Vault();
-        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury);
+        // coreRoutingEnabled = false (Phase A behavior for the core test suite)
+        factory = new VaultFactory(address(impl), address(usdc), depositWallet, treasury, false);
 
         usdc.mint(creator, 1_000e6);
         usdc.mint(alice, 1_000e6);
@@ -99,8 +100,8 @@ contract VaultTest is Test {
 
     function test_initialize_revertsOnBadAllocSum() public {
         Vault.Position[] memory bad = new Vault.Position[](2);
-        bad[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 5000, lev: 3 });
-        bad[1] = Vault.Position({ asset: 1, isBuy: true, allocBps: 4000, lev: 3 }); // only 90%
+        bad[0] = Vault.Position({ asset: 0, isBuy: true, allocBps: 5000, lev: 3, szDecimals: 5 });
+        bad[1] = Vault.Position({ asset: 1, isBuy: true, allocBps: 4000, lev: 3, szDecimals: 4 }); // only 90%
 
         uint64 expiry = uint64(block.timestamp + 7 days);
         vm.prank(creator);
@@ -115,7 +116,7 @@ contract VaultTest is Test {
         vm.expectRevert(Vault.AlreadyInitialized.selector);
         v.initialize(
             address(factory), creator, address(usdc), depositWallet, treasury,
-            uint64(block.timestamp + 1 days), _baseSpec(), 1e6
+            uint64(block.timestamp + 1 days), false, _baseSpec(), 1e6
         );
     }
 
@@ -125,7 +126,7 @@ contract VaultTest is Test {
         vm.expectRevert(Vault.NotFactory.selector);
         fresh.initialize(
             address(0xdead), creator, address(usdc), depositWallet, treasury,
-            uint64(block.timestamp + 1 days), _baseSpec(), 1e6
+            uint64(block.timestamp + 1 days), false, _baseSpec(), 1e6
         );
     }
 
@@ -192,7 +193,7 @@ contract VaultTest is Test {
         // Swap in a penalty-enabled impl to test the fee path.
         Vault penaltyImpl = new PenaltyVault();
         VaultFactory pf = new VaultFactory(
-            address(penaltyImpl), address(usdc), depositWallet, treasury
+            address(penaltyImpl), address(usdc), depositWallet, treasury, false
         );
         vm.prank(creator);
         usdc.approve(address(pf), 100e6);
