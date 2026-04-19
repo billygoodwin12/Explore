@@ -1,7 +1,8 @@
 'use client';
 
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
-import { useVaultCreateStore, calcTotalIM } from '@/stores/vault-create-store';
+import { useVaultCreateStore, calcMinDeploy, calcTotalIM } from '@/stores/vault-create-store';
 
 const fmt = (n: number) => {
   const r = Math.round(n * 100) / 100;
@@ -50,9 +51,30 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 export default function Step3Fees() {
   const s = useVaultCreateStore();
   const im = calcTotalIM(s.positions, s.deploySize);
+  const minDeposit = calcMinDeploy(s.positions);
   const posStr = s.positions
     .map(p => `${p.sym} ${p.dir === 'long' ? 'L' : 'S'} ${p.lev}x ${p.alloc}%`)
     .join(', ');
+
+  const [inputVal, setInputVal] = useState(String(s.minDeposit));
+  const focusedRef = useRef(false);
+
+  // If the configured min is below what positions require, raise it.
+  useEffect(() => {
+    if (s.minDeposit < minDeposit) s.setMinDeposit(minDeposit);
+  }, [minDeposit, s]);
+
+  useEffect(() => {
+    if (!focusedRef.current) setInputVal(String(s.minDeposit));
+  }, [s.minDeposit]);
+
+  const commitMinDeposit = useCallback(() => {
+    focusedRef.current = false;
+    const parsed = parseInt(inputVal.replace(/[^0-9]/g, ''), 10);
+    const next = Number.isFinite(parsed) ? Math.max(parsed, minDeposit) : minDeposit;
+    s.setMinDeposit(next);
+    setInputVal(String(next));
+  }, [inputVal, minDeposit, s]);
 
   return (
     <div>
@@ -73,13 +95,21 @@ export default function Step3Fees() {
         }}>
           <span style={{ fontSize: 13, color: C.muted, fontFamily: M }}>$</span>
           <input
-            type="number" value={s.minDeposit} min={0} step={10}
-            onChange={e => s.setMinDeposit(parseInt(e.target.value) || 0)}
+            type="text"
+            inputMode="numeric"
+            value={inputVal}
+            onFocus={() => { focusedRef.current = true; }}
+            onChange={e => setInputVal(e.target.value)}
+            onBlur={commitMinDeposit}
+            onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
             style={{
               border: 'none', background: 'transparent', fontSize: 13,
               fontFamily: M, color: C.primary, outline: 'none', padding: '8px 0', width: 90,
             }}
           />
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, fontFamily: D, marginTop: 4 }}>
+          Must be {'\u2265'} ${minDeposit} so every position covers the $10 minimum order.
         </div>
       </div>
 
