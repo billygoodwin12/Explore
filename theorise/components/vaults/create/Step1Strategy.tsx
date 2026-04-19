@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
 import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
@@ -14,6 +15,7 @@ import {
   type Lev,
   type Dir,
 } from '@/stores/vault-create-store';
+import AddPositionPicker from './AddPositionPicker';
 
 const LEV_OPTS: Lev[] = [1, 2, 3, 5, 10, 20];
 const ALLOC_COLORS = ['#3D5A80', '#0D9B6B', '#D14343', '#F59E0B', '#7C3AED', '#0891B2'];
@@ -76,7 +78,7 @@ function PositionRow({
             display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
           }}
         >
-          ✕
+          {'\u2715'}
         </button>
       </div>
 
@@ -133,7 +135,23 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
   const minDeploy = calcMinDeploy(positions);
   const effectiveSize = Math.max(deploySize, minDeploy);
   const im = calcTotalIM(positions, effectiveSize);
-  const maxSlider = Math.max(effectiveSize * 4, minDeploy * 20, 10000);
+  // Stable max: doesn't depend on slider value, so dragging can't drive it upward.
+  const maxSlider = Math.max(minDeploy * 200, 100_000);
+
+  const [inputVal, setInputVal] = useState(String(effectiveSize));
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) setInputVal(String(effectiveSize));
+  }, [effectiveSize]);
+
+  const commitInput = useCallback(() => {
+    focusedRef.current = false;
+    const parsed = parseInt(inputVal.replace(/[^0-9]/g, ''), 10);
+    const next = Number.isFinite(parsed) ? Math.max(parsed, minDeploy) : minDeploy;
+    onSizeChange(next);
+    setInputVal(String(next));
+  }, [inputVal, minDeploy, onSizeChange]);
 
   return (
     <div style={{
@@ -165,7 +183,7 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         <span style={{ fontSize: 10, color: C.muted, fontFamily: M, whiteSpace: 'nowrap' }}>{fmt(minDeploy)}</span>
         <input
           type="range" min={minDeploy} max={maxSlider} step={10}
-          value={effectiveSize}
+          value={Math.min(effectiveSize, maxSlider)}
           onChange={e => onSizeChange(Math.max(parseInt(e.target.value), minDeploy))}
           style={{ flex: 1, accentColor: C.accent }}
         />
@@ -181,11 +199,13 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         }}>
           <span style={{ fontSize: 13, color: C.muted, fontFamily: M }}>$</span>
           <input
-            type="number" value={effectiveSize} min={minDeploy} step={10}
-            onChange={e => {
-              const val = parseInt(e.target.value) || 0;
-              if (val >= minDeploy) onSizeChange(val);
-            }}
+            type="text"
+            inputMode="numeric"
+            value={inputVal}
+            onFocus={() => { focusedRef.current = true; }}
+            onChange={e => setInputVal(e.target.value)}
+            onBlur={commitInput}
+            onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
             style={{
               border: 'none', background: 'transparent', fontSize: 13,
               fontFamily: M, color: C.primary, outline: 'none', padding: '8px 0', width: 90,
@@ -208,7 +228,7 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
                   {p.sym}
                 </span>
                 <span style={{ color: C.muted, fontFamily: M }}>
-                  {p.dir === 'long' ? 'L' : 'S'} {p.lev}x · {p.alloc}%
+                  {p.dir === 'long' ? 'L' : 'S'} {p.lev}x {'\u00b7'} {p.alloc}%
                 </span>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -311,6 +331,8 @@ function PortfolioImport({ existingSyms, onImport, markets }: {
 export default function Step1Strategy() {
   const { positions, deploySize, name, setPositions, setDeploySize, setName } = useVaultCreateStore();
   const { markets } = useMarketData();
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   const allocOk = totalAlloc(positions) === 100;
   const existingSyms = positions.map(p => p.sym);
 
@@ -336,23 +358,24 @@ export default function Step1Strategy() {
     }
   };
 
-  const handleAdd = (sym?: string, name?: string, dir?: Dir, lev?: Lev) => {
-    const avail = markets
-      .filter(m => !existingSyms.includes(m.displaySym) && !existingSyms.includes(m.sym))
-      .map(m => ({ sym: m.displaySym, name: m.name }));
-    if (!avail.length && !sym) return;
-    const s = sym ?? avail[0].sym;
-    const n = name ?? avail[0].name;
-    const newPos: VaultPosition[] = [...positions, { sym: s, name: n, dir: dir ?? 'long', lev: lev ?? 3, alloc: 0 }];
-    const allocs = evenAlloc(newPos.length);
-    setPositions(newPos.map((p, i) => ({ ...p, alloc: allocs[i] })));
+  const addPositions = (picks: { sym: string; name: string }[]) => {
+    if (!picks.length) return;
+    const newOnes: VaultPosition[] = picks
+      .filter(p => !existingSyms.includes(p.sym))
+      .map(p => ({ sym: p.sym, name: p.name, dir: 'long' as Dir, lev: 3 as Lev, alloc: 0 }));
+    if (!newOnes.length) return;
+    const combined = [...positions, ...newOnes];
+    const allocs = evenAlloc(combined.length);
+    setPositions(combined.map((p, i) => ({ ...p, alloc: allocs[i] })));
   };
 
   const handleImport = (sym: string, name: string, dir: Dir, lev: Lev) => {
-    handleAdd(sym, name, dir, lev);
+    if (existingSyms.includes(sym)) return;
+    const combined: VaultPosition[] = [...positions, { sym, name, dir, lev, alloc: 0 }];
+    const allocs = evenAlloc(combined.length);
+    setPositions(combined.map((p, i) => ({ ...p, alloc: allocs[i] })));
   };
 
-  // Instrument picker for "+ Add position"
   const availableInstruments = markets.filter(
     m => !existingSyms.includes(m.displaySym) && !existingSyms.includes(m.sym),
   );
@@ -365,7 +388,7 @@ export default function Step1Strategy() {
         lineHeight: 1.6, marginBottom: 12,
       }}>
         Positions deploy as net new orders on Hyperliquid when your vault activates.
-        Import from your portfolio as a starting point — adjust leverage and sizing freely before deploying.
+        Import from your portfolio as a starting point {'\u2014'} adjust leverage and sizing freely before deploying.
       </div>
 
       <div style={{ marginBottom: 14 }}>
@@ -396,7 +419,7 @@ export default function Step1Strategy() {
           background: allocOk ? C.greenBg : C.redBg,
           color: allocOk ? C.greenTxt : C.redTxt,
         }}>
-          {totalAlloc(positions)}%{allocOk ? ' \u2713' : ' \u2190 must = 100%'}
+          {totalAlloc(positions)}%{allocOk ? ` ${'\u2713'}` : ` ${'\u2190'} must = 100%`}
         </div>
       </div>
 
@@ -422,18 +445,16 @@ export default function Step1Strategy() {
         />
       ))}
 
-      {availableInstruments.length > 0 && (
-        <button
-          onClick={() => handleAdd()}
-          style={{
-            width: '100%', padding: 9, borderRadius: 8,
-            border: `1px dashed ${C.border}`, background: 'transparent',
-            cursor: 'pointer', fontSize: 12, color: C.secondary, fontFamily: D, marginTop: 2,
-          }}
-        >
-          + Add position
-        </button>
-      )}
+      <button
+        onClick={() => setPickerOpen(true)}
+        style={{
+          width: '100%', padding: 9, borderRadius: 8,
+          border: `1px dashed ${C.border}`, background: 'transparent',
+          cursor: 'pointer', fontSize: 12, color: C.secondary, fontFamily: D, marginTop: 2,
+        }}
+      >
+        + Add position
+      </button>
 
       <PortfolioImport existingSyms={existingSyms} onImport={handleImport} markets={markets} />
 
@@ -444,6 +465,14 @@ export default function Step1Strategy() {
           positions={positions}
           deploySize={deploySize}
           onSizeChange={setDeploySize}
+        />
+      )}
+
+      {pickerOpen && (
+        <AddPositionPicker
+          available={availableInstruments}
+          onClose={() => setPickerOpen(false)}
+          onConfirm={picks => { addPositions(picks); setPickerOpen(false); }}
         />
       )}
     </div>
