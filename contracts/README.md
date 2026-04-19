@@ -61,38 +61,46 @@ to move from spot → perp margin.
 | Mainnet | `0xb88339CB7199b77E23DB6E890353E22632Ba630f` | `0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24` |
 | Testnet | `0x2B3370eE501B4a559b57D449569354196457D8Ab` | `0x0B80659a4076E9E93C7DbE0f10675A16a3e5C206` |
 
-## Testnet validation runbook
+## Mainnet validation runbook
+
+The rest of the platform already trades on Hyperliquid mainnet, so the spike
+is validated there too. **Use small amounts (~$5–10 USDC) — this is real money
+and the contract has no withdrawal path.**
 
 1. Set env:
    ```sh
-   export HYPEREVM_TESTNET_RPC=<rpc url>
-   export PRIVATE_KEY=0x<your funded testnet eoa>
+   export HYPEREVM_RPC=https://rpc.hyperliquid.xyz/evm
+   export PRIVATE_KEY=0x<your funded mainnet eoa>
    ```
-2. Deploy:
+2. Deploy (mainnet is the default; set `TESTNET=true` to flip):
    ```sh
    forge script script/DeploySpike.s.sol \
-     --rpc-url $HYPEREVM_TESTNET_RPC --private-key $PRIVATE_KEY --broadcast
+     --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY --broadcast
    ```
-3. Send some testnet USDC ERC20 to the deployed contract.
+3. Send a small amount of mainnet USDC ERC20 to the deployed contract
+   (`0xb88339CB7199b77E23DB6E890353E22632Ba630f`).
 4. Bridge to HyperCore spot:
    ```sh
    cast send $SPIKE "bridgeUsdcToCore(uint256)" <amount_in_6dp> \
-     --rpc-url $HYPEREVM_TESTNET_RPC --private-key $PRIVATE_KEY
+     --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY
    ```
 5. Move spot → perp:
    ```sh
-   cast send $SPIKE "moveUsdClass(uint64,bool)" <amount_in_6dp> true ...
+   cast send $SPIKE "moveUsdClass(uint64,bool)" <amount_in_6dp> true \
+     --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY
    ```
-6. Place an IOC order (e.g. BTC asset 0, buy 0.001 BTC at $200k cap):
+6. Place an IOC order (e.g. BTC asset 0, buy 0.0001 BTC at $200k cap so it
+   fills near mark):
    ```sh
    cast send $SPIKE "placeIocOrder(uint32,bool,uint64,uint64)" \
-     0 true 20000000000000 100000 ...
+     0 true 20000000000000 10000 \
+     --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY
    ```
 7. Check the L1 explorer ~5s later — the action should appear first as an
    "enqueuing" then as a HyperCore execution. Then read back position state:
    ```sh
    cast call $SPIKE "accountMarginSummary(uint32,address)" 0 $SPIKE \
-     --rpc-url $HYPEREVM_TESTNET_RPC
+     --rpc-url $HYPEREVM_RPC
    ```
 
 ## Open items (resolve before step 2)

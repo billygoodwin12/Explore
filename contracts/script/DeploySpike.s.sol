@@ -10,7 +10,8 @@ import {HLConstants} from "../src/HLConstants.sol";
 ///     --private-key $PRIVATE_KEY --broadcast
 contract DeploySpike is Script {
     function run() external {
-        bool isTestnet = vm.envOr("TESTNET", true);
+        // Default = mainnet (matches the rest of the platform). Set TESTNET=true to flip.
+        bool isTestnet = vm.envOr("TESTNET", false);
         address usdc = isTestnet ? HLConstants.USDC_EVM_TESTNET : HLConstants.USDC_EVM_MAINNET;
         address depositWallet = isTestnet
             ? HLConstants.CORE_DEPOSIT_WALLET_TESTNET
