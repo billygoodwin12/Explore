@@ -183,17 +183,28 @@ export HYPEREVM_RPC=https://rpc.hyperliquid.xyz/evm
 export PRIVATE_KEY=0x<funded hyperevm eoa, holds HYPE for gas>
 export PROTOCOL_TREASURY=0x<address that receives protocol fees + deployment fees>
 # CORE_ROUTING defaults to false; omit or set explicitly.
-# DEPLOYMENT_FEE is a USDC amount in 6dp. e.g. 5000000 = $5. Defaults to 0.
-export DEPLOYMENT_FEE=5000000
+# DEPLOYMENT_FEE is a USDC amount in 6dp. Default for v1 mainnet: $2.50.
+export DEPLOYMENT_FEE=2500000
 forge script script/DeployFactory.s.sol \
   --rpc-url $HYPEREVM_RPC --private-key $PRIVATE_KEY --broadcast
 ```
 
-The fee is pulled from the creator on every `createVault` in the same tx as
-their IM (one USDC approve covers both) and forwarded straight to
-`PROTOCOL_TREASURY`. It's kept out of the vault's share accounting so it
-never dilutes depositors. To change the fee later, deploy a new factory —
-existing vaults are unaffected.
+### Fees
+
+Two fee surfaces, both enforced at the contract layer:
+
+- **Deployment fee** — flat USDC amount the creator pays at `createVault`
+  time, pulled in the same tx as their IM (one approve covers both) and
+  forwarded straight to `PROTOCOL_TREASURY`. Kept out of the vault's share
+  accounting so it never dilutes depositors.
+- **Performance fee** — creator-set at deploy (0–30%, wizard slider),
+  stored as `perfFeeBps` on each vault. Charged on realized profit at
+  settle. Split hardcoded in `Vault.PROTOCOL_PERF_SHARE_BPS` as
+  **20% to protocol treasury / 80% to creator**. Profit realization (and
+  therefore the perf-fee carve-out in `settle()`) lands in Phase C.
+
+To change either fee mechanism, deploy a new factory pointing at a new
+`Vault` impl — existing vaults are unaffected.
 
 The script logs `VaultFactory:` — paste that into
 `theorise/.env.local` as `NEXT_PUBLIC_VAULT_FACTORY_ADDRESS` and restart the

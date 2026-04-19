@@ -34,6 +34,7 @@ export interface CreateVaultInput {
   positions: VaultPosition[];
   deploySize: number;      // notional deploy size in USDC (human units)
   timeframe: Timeframe;
+  perfFeePct: number;      // 0..30, wizard slider value
 }
 
 export interface CreateVaultResult {
@@ -85,6 +86,12 @@ export function useCreateVault() {
 
     const allocSum = input.positions.reduce((a, p) => a + p.alloc, 0);
     if (allocSum !== 100) throw new Error(`Allocation must sum to 100%, got ${allocSum}%`);
+
+    // Wizard slider is 0..30 (percent). Contract wants bps (0..3000), capped on-chain.
+    if (input.perfFeePct < 0 || input.perfFeePct > 30) {
+      throw new Error('Performance fee must be 0–30%.');
+    }
+    const perfFeeBps = Math.round(input.perfFeePct * 100);
 
     setCreating(true);
     try {
@@ -153,7 +160,7 @@ export function useCreateVault() {
         address: VAULT_FACTORY_ADDRESS,
         abi: vaultFactoryAbi,
         functionName: 'createVault',
-        args: [contractPositions, expiryTs, creatorIM],
+        args: [contractPositions, expiryTs, creatorIM, perfFeeBps],
         chain: hyperEvm,
         account: address,
       });

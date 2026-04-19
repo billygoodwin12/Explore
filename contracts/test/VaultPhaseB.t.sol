@@ -75,7 +75,7 @@ contract VaultPhaseBTest is Test {
         vm.prank(creator);
         usdc.approve(address(factory), creatorIM);
         vm.prank(creator);
-        v = Vault(factory.createVault(_baseSpec(), expiry, creatorIM));
+        v = Vault(factory.createVault(_baseSpec(), expiry, creatorIM, 0));
     }
 
     function _cw() internal pure returns (CapturingCoreWriter) {

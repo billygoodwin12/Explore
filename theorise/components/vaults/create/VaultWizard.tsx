@@ -51,6 +51,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
         positions: s.positions,
         deploySize: s.deploySize,
         timeframe: s.timeframe,
+        perfFeePct: s.perfFee,
       });
 
       // Persist off-chain metadata (name, desc, fees) keyed by vault address.

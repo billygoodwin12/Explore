@@ -71,7 +71,7 @@ export default function Step3Fees() {
       <SliderField
         label="Performance fee" value={s.perfFee} min={0} max={30} step={1}
         onChange={s.setPerfFee}
-        helper="Only charged on profit at settlement. You earn nothing if the vault loses."
+        helper="Only charged on profit at settlement. You keep 80%; 20% goes to the platform."
       />
       <SliderField
         label="Early exit fee" value={s.exitFee} min={0} max={5} step={1}
@@ -121,7 +121,7 @@ export default function Step3Fees() {
       )}
       <ReviewRow label="Timeframe" value={s.timeframe} />
       <ReviewRow label="Settlement" value={MODE_LABELS[s.settlementMode]} />
-      <ReviewRow label="Performance fee" value={`${s.perfFee}%`} />
+      <ReviewRow label="Performance fee" value={`${s.perfFee}% (80% to you / 20% to platform)`} />
       <ReviewRow label="Early exit fee" value={s.settlementMode === 'HARD' ? 'N/A' : `${s.exitFee}%`} />
       <ReviewRow label="Min deposit" value={`$${s.minDeposit} USDC`} />
 

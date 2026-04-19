@@ -48,7 +48,7 @@ contract VaultFactoryTest is Test {
         vm.prank(alice);
         usdc.approve(address(factory), 50e6);
         vm.prank(alice);
-        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
 
         assertEq(factory.allVaultsLength(), 1);
         assertEq(factory.creatorVaultsLength(alice), 1);
@@ -61,12 +61,12 @@ contract VaultFactoryTest is Test {
         vm.prank(alice);
         usdc.approve(address(factory), 50e6);
         vm.prank(alice);
-        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
 
         vm.prank(bob);
         usdc.approve(address(factory), 25e6);
         vm.prank(bob);
-        factory.createVault(_spec(), uint64(block.timestamp + 2 days), 25e6);
+        factory.createVault(_spec(), uint64(block.timestamp + 2 days), 25e6, 0);
 
         assertEq(factory.allVaultsLength(), 2);
         assertEq(factory.creatorVaultsLength(alice), 1);
@@ -78,7 +78,7 @@ contract VaultFactoryTest is Test {
         usdc.approve(address(factory), 50e6);
         vm.prank(alice);
         vm.expectRevert(VaultFactory.ExpiryInPast.selector);
-        factory.createVault(_spec(), uint64(block.timestamp), 50e6);
+        factory.createVault(_spec(), uint64(block.timestamp), 50e6, 0);
     }
 
     function test_createVault_revertsOnNoPositions() public {
@@ -87,14 +87,14 @@ contract VaultFactoryTest is Test {
         usdc.approve(address(factory), 50e6);
         vm.prank(alice);
         vm.expectRevert(VaultFactory.NoPositions.selector);
-        factory.createVault(empty, uint64(block.timestamp + 1 days), 50e6);
+        factory.createVault(empty, uint64(block.timestamp + 1 days), 50e6, 0);
     }
 
     function test_factory_holdsNoFunds() public {
         vm.prank(alice);
         usdc.approve(address(factory), 50e6);
         vm.prank(alice);
-        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
 
         assertEq(usdc.balanceOf(address(factory)), 0);
         assertEq(usdc.balanceOf(vault), 50e6);
@@ -110,7 +110,7 @@ contract VaultFactoryTest is Test {
         uint256 treasuryBefore = usdc.balanceOf(treasury);
 
         vm.prank(alice);
-        address vault = feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        address vault = feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
 
         // Vault got the IM; treasury got the fee; alice paid both.
         assertEq(usdc.balanceOf(vault), 50e6);
@@ -127,7 +127,7 @@ contract VaultFactoryTest is Test {
         vm.prank(alice);
         usdc.approve(address(factory), 50e6); // only IM approved
         vm.prank(alice);
-        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
         // Did not revert — fee transferFrom was skipped.
     }
 
@@ -140,6 +140,35 @@ contract VaultFactoryTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(); // MockUSDC underflows on unapproved transferFrom
-        feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6);
+        feeFactory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 0);
+    }
+
+    function test_perfFee_storedOnVault() public {
+        vm.prank(alice);
+        usdc.approve(address(factory), 50e6);
+        vm.prank(alice);
+        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 1500);
+        // 15% perf fee
+        assertEq(Vault(vault).perfFeeBps(), 1500);
+    }
+
+    function test_perfFee_splitIs20Protocol80Creator() public {
+        vm.prank(alice);
+        usdc.approve(address(factory), 50e6);
+        vm.prank(alice);
+        address vault = factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 1500);
+
+        (uint16 protocolBps, uint16 creatorBps) = Vault(vault).perfFeeSplit();
+        assertEq(protocolBps, 2000); // 20% of the perf fee
+        assertEq(creatorBps, 8000); // 80% of the perf fee
+        assertEq(protocolBps + creatorBps, 10_000);
+    }
+
+    function test_perfFee_revertsAbove30pct() public {
+        vm.prank(alice);
+        usdc.approve(address(factory), 50e6);
+        vm.prank(alice);
+        vm.expectRevert(Vault.PerfFeeTooHigh.selector);
+        factory.createVault(_spec(), uint64(block.timestamp + 1 days), 50e6, 3001);
     }
 }

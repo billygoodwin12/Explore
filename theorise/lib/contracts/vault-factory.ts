@@ -64,6 +64,7 @@ export const vaultFactoryAbi = [
       },
       { name: 'expiryTs', type: 'uint64' },
       { name: 'creatorIM', type: 'uint256' },
+      { name: 'perfFeeBps', type: 'uint16' },
     ],
     outputs: [{ name: 'vault', type: 'address' }],
   },
@@ -84,6 +85,7 @@ export const vaultFactoryAbi = [
       { name: 'expiryTs', type: 'uint64', indexed: false },
       { name: 'creatorIM', type: 'uint256', indexed: false },
       { name: 'deploymentFee', type: 'uint256', indexed: false },
+      { name: 'perfFeeBps', type: 'uint16', indexed: false },
     ],
   },
 ] as const satisfies Abi;

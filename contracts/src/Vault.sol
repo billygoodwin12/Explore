@@ -51,6 +51,9 @@ contract Vault is ReentrancyGuard {
     address public protocolTreasury;
     uint64 public expiryTs;
     bool public coreRoutingEnabled;
+    /// Performance fee in bps charged on realized profit at settle.
+    /// Wizard clamps to 0..3000 (0-30%). 0 = creator takes no perf fee.
+    uint16 public perfFeeBps;
 
     Position[] public positions;
     bytes32 public positionsHash;
@@ -70,6 +73,14 @@ contract Vault is ReentrancyGuard {
     uint256 public creatorLockedIM;
 
     uint16 public constant BPS_DENOM = 10_000;
+
+    /// Of the performance fee, this share goes to protocolTreasury. The rest
+    /// goes to creator. 2000 = 20% protocol / 80% creator. Hardcoded so
+    /// depositors can audit the split on-chain; redeploy impl to change.
+    uint16 public constant PROTOCOL_PERF_SHARE_BPS = 2000;
+
+    /// Hard cap on perfFeeBps accepted at init — matches the wizard's 30% slider.
+    uint16 public constant MAX_PERF_FEE_BPS = 3000;
 
     /// Early-exit penalty in bps. Disabled at 0 for v1 to not deter users.
     /// Split 50/50 protocol/remaining-LPs. Override in a subclass impl +
@@ -109,6 +120,7 @@ contract Vault is ReentrancyGuard {
     error SizeOutOfRange();
     error PriceOutOfRange();
     error InsufficientBalance();
+    error PerfFeeTooHigh();
 
     // ── Init (clone pattern — no constructor logic) ──────────────
     function initialize(
@@ -119,12 +131,14 @@ contract Vault is ReentrancyGuard {
         address _protocolTreasury,
         uint64 _expiryTs,
         bool _coreRoutingEnabled,
+        uint16 _perfFeeBps,
         Position[] calldata _positions,
         uint256 _creatorIM
     ) external {
         if (initialized) revert AlreadyInitialized();
         if (msg.sender != _factory) revert NotFactory();
         if (_creatorIM == 0) revert ZeroAmount();
+        if (_perfFeeBps > MAX_PERF_FEE_BPS) revert PerfFeeTooHigh();
         initialized = true;
 
         factory = _factory;
@@ -134,6 +148,7 @@ contract Vault is ReentrancyGuard {
         protocolTreasury = _protocolTreasury;
         expiryTs = _expiryTs;
         coreRoutingEnabled = _coreRoutingEnabled;
+        perfFeeBps = _perfFeeBps;
 
         uint256 allocSum;
         for (uint256 i = 0; i < _positions.length; i++) {
@@ -344,4 +359,10 @@ contract Vault is ReentrancyGuard {
     // ── Views ────────────────────────────────────────────────────
     function positionsCount() external view returns (uint256) { return positions.length; }
     function nav() external view returns (uint256) { return totalIM; }
+
+    /// @return protocolBps share of the perf fee routed to protocolTreasury
+    /// @return creatorBps  share of the perf fee routed to creator
+    function perfFeeSplit() external pure returns (uint16 protocolBps, uint16 creatorBps) {
+        return (PROTOCOL_PERF_SHARE_BPS, BPS_DENOM - PROTOCOL_PERF_SHARE_BPS);
+    }
 }

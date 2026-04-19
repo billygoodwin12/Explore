@@ -37,7 +37,8 @@ contract VaultFactory {
         address indexed creator,
         uint64 expiryTs,
         uint256 creatorIM,
-        uint256 deploymentFee
+        uint256 deploymentFee,
+        uint16 perfFeeBps
     );
 
     error ZeroAddress();
@@ -69,7 +70,8 @@ contract VaultFactory {
     function createVault(
         Vault.Position[] calldata positions,
         uint64 expiryTs,
-        uint256 creatorIM
+        uint256 creatorIM,
+        uint16 perfFeeBps
     ) external returns (address vault) {
         if (positions.length == 0) revert NoPositions();
         if (expiryTs <= block.timestamp) revert ExpiryInPast();
@@ -98,13 +100,14 @@ contract VaultFactory {
             protocolTreasury,
             expiryTs,
             coreRoutingEnabled,
+            perfFeeBps,
             positions,
             creatorIM
         );
 
         allVaults.push(vault);
         creatorVaults[msg.sender].push(vault);
-        emit VaultCreated(vault, msg.sender, expiryTs, creatorIM, deploymentFee);
+        emit VaultCreated(vault, msg.sender, expiryTs, creatorIM, deploymentFee, perfFeeBps);
     }
 
     function allVaultsLength() external view returns (uint256) { return allVaults.length; }

@@ -79,7 +79,7 @@ contract VaultTest is Test {
         vm.prank(creator);
         usdc.approve(address(factory), creatorIM);
         vm.prank(creator);
-        v = Vault(factory.createVault(_baseSpec(), expiry, creatorIM));
+        v = Vault(factory.createVault(_baseSpec(), expiry, creatorIM, 0));
     }
 
     // ── Init ─────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ contract VaultTest is Test {
         usdc.approve(address(factory), 100e6);
         vm.prank(creator);
         vm.expectRevert(Vault.InvalidAlloc.selector);
-        factory.createVault(bad, expiry, 100e6);
+        factory.createVault(bad, expiry, 100e6, 0);
     }
 
     function test_initialize_cannotBeCalledTwice() public {
@@ -116,7 +116,7 @@ contract VaultTest is Test {
         vm.expectRevert(Vault.AlreadyInitialized.selector);
         v.initialize(
             address(factory), creator, address(usdc), depositWallet, treasury,
-            uint64(block.timestamp + 1 days), false, _baseSpec(), 1e6
+            uint64(block.timestamp + 1 days), false, 0, _baseSpec(), 1e6
         );
     }
 
@@ -126,7 +126,7 @@ contract VaultTest is Test {
         vm.expectRevert(Vault.NotFactory.selector);
         fresh.initialize(
             address(0xdead), creator, address(usdc), depositWallet, treasury,
-            uint64(block.timestamp + 1 days), false, _baseSpec(), 1e6
+            uint64(block.timestamp + 1 days), false, 0, _baseSpec(), 1e6
         );
     }
 
@@ -198,7 +198,7 @@ contract VaultTest is Test {
         vm.prank(creator);
         usdc.approve(address(pf), 100e6);
         vm.prank(creator);
-        Vault v = Vault(pf.createVault(_baseSpec(), uint64(block.timestamp + 7 days), 100e6));
+        Vault v = Vault(pf.createVault(_baseSpec(), uint64(block.timestamp + 7 days), 100e6, 0));
 
         vm.prank(alice);
         usdc.approve(address(v), 100e6);
@@ -314,7 +314,7 @@ contract VaultTest is Test {
         vm.expectEmit(false, false, false, true);
         emit Vault.DeployRequested(100e6);
         vm.prank(creator);
-        v = Vault(factory.createVault(_baseSpec(), expiry, 100e6));
+        v = Vault(factory.createVault(_baseSpec(), expiry, 100e6, 0));
 
         vm.prank(alice);
         usdc.approve(address(v), 25e6);
