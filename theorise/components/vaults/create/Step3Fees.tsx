@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
-import { useVaultCreateStore, calcMinDeploy, calcTotalIM } from '@/stores/vault-create-store';
+import { useVaultCreateStore, calcMinIM, calcTotalNotional } from '@/stores/vault-create-store';
 
 const fmt = (n: number) => {
   const r = Math.round(n * 100) / 100;
@@ -50,8 +50,8 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 
 export default function Step3Fees() {
   const s = useVaultCreateStore();
-  const im = calcTotalIM(s.positions, s.deploySize);
-  const minDeposit = calcMinDeploy(s.positions);
+  const totalNotional = calcTotalNotional(s.positions, s.deployIM);
+  const minDeposit = calcMinIM(s.positions);
   const posStr = s.positions
     .map(p => `${p.sym} ${p.dir === 'long' ? 'L' : 'S'} ${p.lev}x ${p.alloc}%`)
     .join(', ');
@@ -121,8 +121,8 @@ export default function Step3Fees() {
 
       <ReviewRow label="Vault name" value={s.name || '\u2014'} />
       <ReviewRow label="Positions" value={posStr || '\u2014'} />
-      <ReviewRow label="Your deployment" value={`${fmt(s.deploySize)} notional`} />
-      <ReviewRow label="Your IM required" value={`${fmt(im)} USDC`} />
+      <ReviewRow label="Your collateral (IM)" value={`${fmt(s.deployIM)} USDC`} />
+      <ReviewRow label="Total notional" value={fmt(totalNotional)} />
       <ReviewRow label="Timeframe" value={s.timeframe} />
       <ReviewRow label="Performance fee" value={`${s.perfFee}%`} />
       <ReviewRow label="Min deposit" value={`$${s.minDeposit} USDC`} />

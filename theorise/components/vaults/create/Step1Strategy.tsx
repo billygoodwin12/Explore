@@ -6,8 +6,10 @@ import { useMarketData, type MarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import {
   useVaultCreateStore,
-  calcMinDeploy,
-  calcTotalIM,
+  calcMinIM,
+  calcTotalNotional,
+  posIM,
+  posNotional,
   totalAlloc,
   rebalanceAlloc,
   evenAlloc,
@@ -27,16 +29,16 @@ const fmt = (n: number) => {
 };
 
 function PositionRow({
-  pos, idx, deploySize, onAllocChange, onLevChange, onDirChange, onRemove,
+  pos, idx, deployIM, onAllocChange, onLevChange, onDirChange, onRemove,
 }: {
-  pos: VaultPosition; idx: number; deploySize: number;
+  pos: VaultPosition; idx: number; deployIM: number;
   onAllocChange: (idx: number, val: number) => void;
   onLevChange: (idx: number, lev: Lev) => void;
   onDirChange: (idx: number, dir: Dir) => void;
   onRemove: (idx: number) => void;
 }) {
-  const notional = deploySize * (pos.alloc / 100);
-  const im = notional / pos.lev;
+  const im = posIM(deployIM, pos.alloc);
+  const notional = posNotional(deployIM, pos.alloc, pos.lev);
   const color = ALLOC_COLORS[idx % ALLOC_COLORS.length];
 
   return (
@@ -119,39 +121,39 @@ function PositionRow({
 
       <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
         <div style={{ fontSize: 10, color: C.muted, fontFamily: M }}>
-          Notional: <span style={{ color: C.primary, fontWeight: 600 }}>{fmt(notional)}</span>
+          IM: <span style={{ color: C.primary, fontWeight: 600 }}>{fmt(im)}</span>
         </div>
         <div style={{ fontSize: 10, color: C.muted, fontFamily: M }}>
-          IM: <span style={{ color: C.primary, fontWeight: 600 }}>{fmt(im)}</span>
+          Notional: <span style={{ color: C.primary, fontWeight: 600 }}>{fmt(notional)}</span>
         </div>
       </div>
     </div>
   );
 }
 
-function DeployCard({ positions, deploySize, onSizeChange }: {
-  positions: VaultPosition[]; deploySize: number; onSizeChange: (val: number) => void;
+function DeployCard({ positions, deployIM, onIMChange }: {
+  positions: VaultPosition[]; deployIM: number; onIMChange: (val: number) => void;
 }) {
-  const minDeploy = calcMinDeploy(positions);
-  const effectiveSize = Math.max(deploySize, minDeploy);
-  const im = calcTotalIM(positions, effectiveSize);
+  const minIM = calcMinIM(positions);
+  const effectiveIM = Math.max(deployIM, minIM);
+  const notional = calcTotalNotional(positions, effectiveIM);
   // Stable max: doesn't depend on slider value, so dragging can't drive it upward.
-  const maxSlider = Math.max(minDeploy * 200, 100_000);
+  const maxSlider = Math.max(minIM * 200, 50_000);
 
-  const [inputVal, setInputVal] = useState(String(effectiveSize));
+  const [inputVal, setInputVal] = useState(String(effectiveIM));
   const focusedRef = useRef(false);
 
   useEffect(() => {
-    if (!focusedRef.current) setInputVal(String(effectiveSize));
-  }, [effectiveSize]);
+    if (!focusedRef.current) setInputVal(String(effectiveIM));
+  }, [effectiveIM]);
 
   const commitInput = useCallback(() => {
     focusedRef.current = false;
     const parsed = parseInt(inputVal.replace(/[^0-9]/g, ''), 10);
-    const next = Number.isFinite(parsed) ? Math.max(parsed, minDeploy) : minDeploy;
-    onSizeChange(next);
+    const next = Number.isFinite(parsed) ? Math.max(parsed, minIM) : minIM;
+    onIMChange(next);
     setInputVal(String(next));
-  }, [inputVal, minDeploy, onSizeChange]);
+  }, [inputVal, minIM, onIMChange]);
 
   return (
     <div style={{
@@ -161,30 +163,30 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: C.secondary, fontFamily: M, marginBottom: 3 }}>
-            Your deployment
+            Your collateral (IM)
           </div>
           <div style={{ fontSize: 30, fontWeight: 700, fontFamily: M, color: C.primary, letterSpacing: '-0.03em', lineHeight: 1 }}>
-            {fmt(effectiveSize)}
+            {fmt(effectiveIM)}
           </div>
           <div style={{ fontSize: 11, color: C.muted, fontFamily: D, marginTop: 3 }}>
-            Initial margin required:{' '}
-            <strong style={{ color: C.primary, fontWeight: 700 }}>{fmt(im)}</strong> USDC
+            Total notional:{' '}
+            <strong style={{ color: C.primary, fontWeight: 700 }}>{fmt(notional)}</strong>
           </div>
         </div>
         <div style={{
           background: '#EBF4FF', color: '#1A56A0', fontSize: 10, fontWeight: 700,
           padding: '3px 8px', borderRadius: 5, fontFamily: M, whiteSpace: 'nowrap',
         }}>
-          Min: {fmt(minDeploy)}
+          Min: {fmt(minIM)}
         </div>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-        <span style={{ fontSize: 10, color: C.muted, fontFamily: M, whiteSpace: 'nowrap' }}>{fmt(minDeploy)}</span>
+        <span style={{ fontSize: 10, color: C.muted, fontFamily: M, whiteSpace: 'nowrap' }}>{fmt(minIM)}</span>
         <input
-          type="range" min={minDeploy} max={maxSlider} step={10}
-          value={Math.min(effectiveSize, maxSlider)}
-          onChange={e => onSizeChange(Math.max(parseInt(e.target.value), minDeploy))}
+          type="range" min={minIM} max={maxSlider} step={1}
+          value={Math.min(effectiveIM, maxSlider)}
+          onChange={e => onIMChange(Math.max(parseInt(e.target.value), minIM))}
           style={{ flex: 1, accentColor: C.accent }}
         />
         <span style={{ fontSize: 10, color: C.muted, fontFamily: M, whiteSpace: 'nowrap' }}>{fmt(maxSlider)}</span>
@@ -216,8 +218,8 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
 
       <div style={{ borderTop: `1px solid ${C.borderLight}`, paddingTop: 10 }}>
         {positions.map((p, i) => {
-          const notional = effectiveSize * (p.alloc / 100);
-          const posIM = notional / p.lev;
+          const im = posIM(effectiveIM, p.alloc);
+          const ntl = posNotional(effectiveIM, p.alloc, p.lev);
           return (
             <div key={p.sym} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -232,8 +234,8 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
                 </span>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 700, fontFamily: M, color: C.primary }}>{fmt(notional)}</div>
-                <div style={{ color: C.muted, fontFamily: M, fontSize: 10 }}>IM: {fmt(posIM)}</div>
+                <div style={{ fontWeight: 700, fontFamily: M, color: C.primary }}>{fmt(im)}</div>
+                <div style={{ color: C.muted, fontFamily: M, fontSize: 10 }}>Notional: {fmt(ntl)}</div>
               </div>
             </div>
           );
@@ -244,8 +246,8 @@ function DeployCard({ positions, deploySize, onSizeChange }: {
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         borderTop: `1px solid ${C.borderLight}`, paddingTop: 10, marginTop: 6,
       }}>
-        <span style={{ fontSize: 11, color: C.secondary, fontFamily: D }}>Total initial margin</span>
-        <span style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.primary }}>{fmt(im)} USDC</span>
+        <span style={{ fontSize: 11, color: C.secondary, fontFamily: D }}>Total notional</span>
+        <span style={{ fontSize: 13, fontWeight: 700, fontFamily: M, color: C.primary }}>{fmt(notional)}</span>
       </div>
     </div>
   );
@@ -329,7 +331,7 @@ function PortfolioImport({ existingSyms, onImport, markets }: {
 }
 
 export default function Step1Strategy() {
-  const { positions, deploySize, name, setPositions, setDeploySize, setName } = useVaultCreateStore();
+  const { positions, deployIM, name, setPositions, setDeployIM, setName } = useVaultCreateStore();
   const { markets } = useMarketData();
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -437,7 +439,7 @@ export default function Step1Strategy() {
       {positions.map((p, i) => (
         <PositionRow
           key={p.sym} pos={p} idx={i}
-          deploySize={Math.max(deploySize, calcMinDeploy(positions))}
+          deployIM={Math.max(deployIM, calcMinIM(positions))}
           onAllocChange={handleAllocChange}
           onLevChange={handleLevChange}
           onDirChange={handleDirChange}
@@ -463,8 +465,8 @@ export default function Step1Strategy() {
       {positions.length > 0 && (
         <DeployCard
           positions={positions}
-          deploySize={deploySize}
-          onSizeChange={setDeploySize}
+          deployIM={deployIM}
+          onIMChange={setDeployIM}
         />
       )}
 

@@ -13,7 +13,7 @@ const CreateVaultSchema = z.object({
   name: z.string().min(1).max(60),
   desc: z.string().max(2000).optional().default(''),
   positions: z.array(VaultPositionSchema).min(1).max(10),
-  deploySize: z.number().min(10),
+  deployIM: z.number().min(1),
   timeframe: z.enum(['1h', '4h', '1d', '3d', '7d', '2w', '1m', '3m']),
   settlementMode: z.enum(['HARD', 'SOFT', 'CREATOR']),
   perfFee: z.number().min(0).max(30),
