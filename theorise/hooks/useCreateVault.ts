@@ -106,11 +106,12 @@ export function useCreateVault() {
       if (!walletClient) throw new Error('Switch to HyperEVM and try again.');
       if (!publicClient) throw new Error('HyperEVM RPC unavailable.');
 
-      // 2. Resolve on-chain position tuple from market metadata
+      // 2. Resolve on-chain position tuple from market metadata. The picker
+      //    stores displaySym (e.g. "CL"), which for HIP-3 markets differs from
+      //    the universe name ("xyz:CL"), so match against either.
       const contractPositions: ContractPosition[] = input.positions.map((p) => {
-        const market = markets.find((m) => m.sym === p.sym);
+        const market = markets.find((m) => m.displaySym === p.sym || m.sym === p.sym);
         if (!market) throw new Error(`Asset ${p.sym} not found in Hyperliquid universe.`);
-        if (market.dex) throw new Error(`HIP-3 assets (${p.sym}) are not supported in vaults yet.`);
         return {
           asset: market.assetIndex,
           isBuy: p.dir === 'long',
