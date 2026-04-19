@@ -63,7 +63,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
     try {
       const { vaultAddress, txHash } = await create({
         positions: s.positions,
-        deploySize: s.deploySize,
+        deployIM: s.deployIM,
         timeframe: s.timeframe,
         perfFeePct: s.perfFee,
       });
@@ -80,7 +80,7 @@ export default function VaultWizard({ onClose }: { onClose: () => void }) {
             name: s.name,
             desc: s.desc,
             positions: s.positions,
-            deploySize: s.deploySize,
+            deployIM: s.deployIM,
             timeframe: s.timeframe,
             settlementMode: s.settlementMode,
             perfFee: s.perfFee,

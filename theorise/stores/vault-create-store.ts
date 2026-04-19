@@ -17,7 +17,8 @@ export interface VaultCreateState {
   step: 1 | 2 | 3 | 4;
   name: string;
   desc: string;
-  deploySize: number;
+  /** Total collateral (initial margin) the creator deposits, in USDC. */
+  deployIM: number;
   timeframe: Timeframe;
   settlementMode: SettlementMode;
   perfFee: number;
@@ -29,7 +30,7 @@ export interface VaultCreateState {
   setStep: (step: 1 | 2 | 3 | 4) => void;
   setName: (name: string) => void;
   setDesc: (desc: string) => void;
-  setDeploySize: (size: number) => void;
+  setDeployIM: (im: number) => void;
   setTimeframe: (tf: Timeframe) => void;
   setSettlementMode: (mode: SettlementMode) => void;
   setPerfFee: (fee: number) => void;
@@ -41,18 +42,18 @@ export interface VaultCreateState {
 }
 
 const INITIAL: Pick<VaultCreateState,
-  'step' | 'name' | 'desc' | 'deploySize' | 'timeframe' | 'settlementMode' |
+  'step' | 'name' | 'desc' | 'deployIM' | 'timeframe' | 'settlementMode' |
   'perfFee' | 'exitFee' | 'minDeposit' | 'positions' | 'vaultAddress'
 > = {
   step: 1,
   name: '',
   desc: '',
-  deploySize: 500,
+  deployIM: 100,
   timeframe: '7d',
   settlementMode: 'HARD',
   perfFee: 15,
   exitFee: 1,
-  minDeposit: 100,
+  minDeposit: 25,
   positions: [],
   vaultAddress: null,
 };
@@ -62,7 +63,7 @@ export const useVaultCreateStore = create<VaultCreateState>((set) => ({
   setStep: (step) => set({ step }),
   setName: (name) => set({ name }),
   setDesc: (desc) => set({ desc }),
-  setDeploySize: (deploySize) => set({ deploySize }),
+  setDeployIM: (deployIM) => set({ deployIM }),
   setTimeframe: (timeframe) => set({ timeframe }),
   setSettlementMode: (settlementMode) => set({ settlementMode }),
   setPerfFee: (perfFee) => set({ perfFee }),
@@ -75,13 +76,29 @@ export const useVaultCreateStore = create<VaultCreateState>((set) => ({
 
 const MIN_ORDER = 10;
 
-export function calcMinDeploy(positions: VaultPosition[]): number {
-  if (!positions.length) return MIN_ORDER;
-  return Math.ceil(Math.max(...positions.map(p => MIN_ORDER / (p.alloc / 100))));
+/** Per-position IM = totalIM × alloc/100. */
+export function posIM(im: number, alloc: number): number {
+  return im * (alloc / 100);
 }
 
-export function calcTotalIM(positions: VaultPosition[], deploySize: number): number {
-  return positions.reduce((acc, p) => acc + (deploySize * (p.alloc / 100)) / p.lev, 0);
+/** Per-position notional = posIM × leverage. */
+export function posNotional(im: number, alloc: number, lev: number): number {
+  return posIM(im, alloc) * lev;
+}
+
+/**
+ * Smallest collateral (IM) such that every position's notional clears
+ * Hyperliquid's $10 minimum order: notional_i = IM × alloc/100 × lev ≥ 10
+ *   → IM ≥ 1000 / (alloc × lev). Take the max across positions.
+ */
+export function calcMinIM(positions: VaultPosition[]): number {
+  if (!positions.length) return MIN_ORDER;
+  return Math.ceil(Math.max(...positions.map(p => 1000 / (p.alloc * p.lev))));
+}
+
+/** Total notional = sum of per-position notionals. */
+export function calcTotalNotional(positions: VaultPosition[], im: number): number {
+  return positions.reduce((acc, p) => acc + posNotional(im, p.alloc, p.lev), 0);
 }
 
 export function totalAlloc(positions: VaultPosition[]): number {

@@ -1,7 +1,8 @@
 'use client';
 
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { C, D, M } from '@/styles/tokens';
-import { useVaultCreateStore, calcTotalIM } from '@/stores/vault-create-store';
+import { useVaultCreateStore, calcMinIM, calcTotalNotional } from '@/stores/vault-create-store';
 import { useCreateVault } from '@/hooks/useCreateVault';
 import { formatUnits } from 'viem';
 
@@ -59,12 +60,33 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
 export default function Step3Fees() {
   const s = useVaultCreateStore();
   const { deploymentFee } = useCreateVault();
-  const im = calcTotalIM(s.positions, s.deploySize);
+  const totalNotional = calcTotalNotional(s.positions, s.deployIM);
+  const minIM = calcMinIM(s.positions);
   const feeUsdc = deploymentFee !== null ? parseFloat(formatUnits(deploymentFee, 6)) : null;
-  const totalDue = feeUsdc !== null ? im + feeUsdc : null;
+  const totalDue = feeUsdc !== null ? s.deployIM + feeUsdc : null;
   const posStr = s.positions
     .map(p => `${p.sym} ${p.dir === 'long' ? 'L' : 'S'} ${p.lev}x ${p.alloc}%`)
     .join(', ');
+
+  const [inputVal, setInputVal] = useState(String(s.minDeposit));
+  const focusedRef = useRef(false);
+
+  // If configured floor is below what positions require, raise it to the min.
+  useEffect(() => {
+    if (s.minDeposit < minIM) s.setMinDeposit(minIM);
+  }, [minIM, s]);
+
+  useEffect(() => {
+    if (!focusedRef.current) setInputVal(String(s.minDeposit));
+  }, [s.minDeposit]);
+
+  const commitMinDeposit = useCallback(() => {
+    focusedRef.current = false;
+    const parsed = parseInt(inputVal.replace(/[^0-9]/g, ''), 10);
+    const next = Number.isFinite(parsed) ? Math.max(parsed, minIM) : minIM;
+    s.setMinDeposit(next);
+    setInputVal(String(next));
+  }, [inputVal, minIM, s]);
 
   return (
     <div>
@@ -93,13 +115,21 @@ export default function Step3Fees() {
         }}>
           <span style={{ fontSize: 13, color: C.muted, fontFamily: M }}>$</span>
           <input
-            type="number" value={s.minDeposit} min={0} step={10}
-            onChange={e => s.setMinDeposit(parseInt(e.target.value) || 0)}
+            type="text"
+            inputMode="numeric"
+            value={inputVal}
+            onFocus={() => { focusedRef.current = true; }}
+            onChange={e => setInputVal(e.target.value)}
+            onBlur={commitMinDeposit}
+            onKeyDown={e => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
             style={{
               border: 'none', background: 'transparent', fontSize: 13,
               fontFamily: M, color: C.primary, outline: 'none', padding: '8px 0', width: 90,
             }}
           />
+        </div>
+        <div style={{ fontSize: 10, color: C.muted, fontFamily: D, marginTop: 4 }}>
+          Must be {'\u2265'} ${minIM} (IM) so every position covers the $10 minimum order on Hyperliquid.
         </div>
       </div>
 
@@ -111,8 +141,8 @@ export default function Step3Fees() {
 
       <ReviewRow label="Vault name" value={s.name || '\u2014'} />
       <ReviewRow label="Positions" value={posStr || '\u2014'} />
-      <ReviewRow label="Your deployment" value={`${fmt(s.deploySize)} notional`} />
-      <ReviewRow label="Your IM required" value={`${fmt(im)} USDC`} />
+      <ReviewRow label="Your collateral (IM)" value={`${fmt(s.deployIM)} USDC`} />
+      <ReviewRow label="Total notional" value={fmt(totalNotional)} />
       {feeUsdc !== null && feeUsdc > 0 && (
         <ReviewRow label="Platform deployment fee" value={`${fmt(feeUsdc)} USDC`} />
       )}

@@ -13,7 +13,7 @@ import {
   type ContractPosition,
 } from '@/lib/contracts/vault-factory';
 import {
-  calcTotalIM,
+  calcMinIM,
   type Timeframe,
   type VaultPosition,
 } from '@/stores/vault-create-store';
@@ -32,7 +32,7 @@ const TIMEFRAME_SECONDS: Record<Timeframe, number> = {
 
 export interface CreateVaultInput {
   positions: VaultPosition[];
-  deploySize: number;      // notional deploy size in USDC (human units)
+  deployIM: number;        // creator collateral (initial margin) in USDC, human units
   timeframe: Timeframe;
   perfFeePct: number;      // 0..30, wizard slider value
 }
@@ -120,9 +120,11 @@ export function useCreateVault() {
         };
       });
 
-      // 3. Expiry + creator IM
+      // 3. Expiry + creator IM. The wizard already expresses deployment as
+      //    collateral (IM), so just clamp to the min implied by the position
+      //    mix and pass it straight through.
       const expiryTs = BigInt(Math.floor(Date.now() / 1000) + TIMEFRAME_SECONDS[input.timeframe]);
-      const creatorImUsdc = calcTotalIM(input.positions, input.deploySize);
+      const creatorImUsdc = Math.max(input.deployIM, calcMinIM(input.positions));
       // round to 6dp for parseUnits; USDC has 6 decimals on HyperEVM
       const creatorIM = parseUnits(creatorImUsdc.toFixed(6), 6);
 

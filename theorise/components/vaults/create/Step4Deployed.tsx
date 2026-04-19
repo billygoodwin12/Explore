@@ -1,7 +1,7 @@
 'use client';
 
 import { C, D, M } from '@/styles/tokens';
-import { useVaultCreateStore, calcTotalIM } from '@/stores/vault-create-store';
+import { useVaultCreateStore } from '@/stores/vault-create-store';
 
 const fmt = (n: number) => {
   const r = Math.round(n * 100) / 100;
@@ -34,7 +34,7 @@ export default function Step4Deployed() {
         {s.name} is live
       </div>
       <div style={{ fontSize: 12, color: C.muted, fontFamily: D, marginBottom: 12 }}>
-        {s.positions.length} positions · {s.timeframe} · {s.perfFee}% perf fee · {fmt(s.deploySize)} deployed
+        {s.positions.length} positions · {s.timeframe} · {s.perfFee}% perf fee · {fmt(s.deployIM)} collateral
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 4, marginBottom: 14 }}>
