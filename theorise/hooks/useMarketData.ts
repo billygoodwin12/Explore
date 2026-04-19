@@ -164,7 +164,8 @@ async function fetchMarkets(): Promise<MarketData[]> {
   // where d is the raw index in perpDexs (xyz at index 1 → 110000..).
   for (let d = 0; d < perpDexs.length; d++) {
     const dex = perpDexs[d];
-    if (!dex) continue;
+    // MVP: only surface TradeXYZ (xyz). Other HIP-3 dexes are hidden.
+    if (!dex || dex.name !== 'xyz') continue;
     try {
       const [meta, ctxs] = await fetchMetaCtxs(dex.name);
       const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
