@@ -14,6 +14,12 @@ import {
 // The factory was deployed around block 32_922_611 on HyperEVM. Scanning from
 // a fixed starting point keeps getLogs bounded; bump this when redeploying.
 const FACTORY_DEPLOY_BLOCK = BigInt(32_900_000);
+// HyperEVM's public RPC caps eth_getLogs at 1000 blocks per request, so we
+// window the scan. Keep this strictly below that ceiling.
+const LOG_CHUNK = BigInt(900);
+// Hard cap on how far back we'll walk in a single open, so the public RPC
+// isn't hammered. 900 * 300 ≈ 270k blocks ≈ several days of HyperEVM.
+const MAX_CHUNKS = 300;
 
 const HYPERSCAN_BASE = 'https://hyperscan.com';
 
@@ -42,6 +48,7 @@ export default function MyVaultsModal({ onClose }: { onClose: () => void }) {
   const publicClient = usePublicClient({ chainId: hyperEvm.id });
   const [rows, setRows] = useState<VaultRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scanTruncated, setScanTruncated] = useState(false);
 
   useEffect(() => {
     if (!publicClient || !address || !isFactoryConfigured()) {
@@ -52,24 +59,47 @@ export default function MyVaultsModal({ onClose }: { onClose: () => void }) {
 
     (async () => {
       try {
-        const logs = await publicClient.getContractEvents({
-          address: VAULT_FACTORY_ADDRESS,
-          abi: vaultFactoryAbi,
-          eventName: 'VaultCreated',
-          args: { creator: address },
-          fromBlock: FACTORY_DEPLOY_BLOCK,
-          toBlock: 'latest',
-        });
+        const latest = await publicClient.getBlockNumber();
+        // Walk backwards so the most recent vaults show up first if the list
+        // is huge. Each chunk stays under the 1000-block RPC cap.
+        const collected: VaultRow[] = [];
+        let to = latest;
+        let chunks = 0;
+        while (to >= FACTORY_DEPLOY_BLOCK && chunks < MAX_CHUNKS) {
+          chunks++;
+          const from = to > FACTORY_DEPLOY_BLOCK + LOG_CHUNK
+            ? to - LOG_CHUNK + BigInt(1)
+            : FACTORY_DEPLOY_BLOCK;
+          const logs = await publicClient.getContractEvents({
+            address: VAULT_FACTORY_ADDRESS,
+            abi: vaultFactoryAbi,
+            eventName: 'VaultCreated',
+            args: { creator: address },
+            fromBlock: from,
+            toBlock: to,
+          });
+          if (cancelled) return;
+          for (const l of logs) {
+            collected.push({
+              vault: (l.args as { vault: Address }).vault,
+              expiryTs: (l.args as { expiryTs: bigint }).expiryTs,
+              creatorIM: (l.args as { creatorIM: bigint }).creatorIM,
+              txHash: l.transactionHash!,
+              blockNumber: l.blockNumber!,
+            });
+          }
+          // Incremental render so the user sees rows as we scan back.
+          if (collected.length > 0) {
+            setRows([...collected].sort((a, b) => Number(b.blockNumber - a.blockNumber)));
+          }
+          if (from === FACTORY_DEPLOY_BLOCK) break;
+          to = from - BigInt(1);
+        }
         if (cancelled) return;
-        const parsed: VaultRow[] = logs.map(l => ({
-          vault: (l.args as { vault: Address }).vault,
-          expiryTs: (l.args as { expiryTs: bigint }).expiryTs,
-          creatorIM: (l.args as { creatorIM: bigint }).creatorIM,
-          txHash: l.transactionHash!,
-          blockNumber: l.blockNumber!,
-        }));
-        parsed.sort((a, b) => Number(b.blockNumber - a.blockNumber));
-        setRows(parsed);
+        if (chunks >= MAX_CHUNKS && to > FACTORY_DEPLOY_BLOCK) {
+          setScanTruncated(true);
+        }
+        setRows(collected.sort((a, b) => Number(b.blockNumber - a.blockNumber)));
       } catch (e) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : 'Failed to load vaults.');
@@ -141,6 +171,11 @@ export default function MyVaultsModal({ onClose }: { onClose: () => void }) {
           {error && (
             <div style={{ padding: 20, fontSize: 11, color: C.redTxt, fontFamily: D }}>
               {error}
+            </div>
+          )}
+          {scanTruncated && rows && rows.length === 0 && !error && (
+            <div style={{ padding: 20, fontSize: 11, color: C.muted, fontFamily: D, textAlign: 'center' }}>
+              Scanned the most recent blocks only. Older vaults may exist — check MetaMask tx history or Hyperscan.
             </div>
           )}
           {rows && rows.map(r => (
