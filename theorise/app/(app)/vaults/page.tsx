@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { C, D, M, fmtK } from '@/styles/tokens';
 import VaultWizard from '@/components/vaults/create/VaultWizard';
+import MyVaultsModal from '@/components/vaults/MyVaultsModal';
 import { useVaultCreateStore } from '@/stores/vault-create-store';
 
 const VAULTS = [
@@ -85,6 +86,7 @@ function VaultCard({ v, i }: { v: typeof VAULTS[number]; i: number }) {
 export default function VaultsPage() {
   const [sort, setSort] = useState('trending');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [myVaultsOpen, setMyVaultsOpen] = useState(false);
   const resetWizard = useVaultCreateStore(s => s.reset);
 
   const openWizard = () => {
@@ -128,17 +130,30 @@ export default function VaultsPage() {
               Package your positions into a time-bound, strategy-locked vault and share it with the world.
             </div>
           </div>
-          <button
-            onClick={openWizard}
-            style={{
-              padding: '12px 28px', borderRadius: 9, border: 'none', cursor: 'pointer',
-              fontSize: 14, fontWeight: 700, fontFamily: D,
-              background: 'white', color: C.primary,
-              position: 'relative', zIndex: 1, transition: 'all 0.15s',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(0)'; }}
-          >+ Create vault</button>
+          <div style={{ display: 'flex', gap: 8, position: 'relative', zIndex: 1 }}>
+            <button
+              onClick={() => setMyVaultsOpen(true)}
+              style={{
+                padding: '12px 20px', borderRadius: 9, cursor: 'pointer',
+                fontSize: 13, fontWeight: 700, fontFamily: D,
+                background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.9)',
+                border: '1px solid rgba(255,255,255,0.18)', transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.14)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
+            >My vaults</button>
+            <button
+              onClick={openWizard}
+              style={{
+                padding: '12px 28px', borderRadius: 9, border: 'none', cursor: 'pointer',
+                fontSize: 14, fontWeight: 700, fontFamily: D,
+                background: 'white', color: C.primary,
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(-1px)'; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(0)'; }}
+            >+ Create vault</button>
+          </div>
         </div>
       </div>
 
@@ -183,6 +198,7 @@ export default function VaultsPage() {
       </div>
 
       {wizardOpen && <VaultWizard onClose={closeWizard} />}
+      {myVaultsOpen && <MyVaultsModal onClose={() => setMyVaultsOpen(false)} />}
     </div>
   );
 }
