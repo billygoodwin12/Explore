@@ -18,8 +18,18 @@ const FACTORY_DEPLOY_BLOCK = BigInt(32_900_000);
 // window the scan. Keep this strictly below that ceiling.
 const LOG_CHUNK = BigInt(900);
 // Hard cap on how far back we'll walk in a single open, so the public RPC
-// isn't hammered. 900 * 300 ≈ 270k blocks ≈ several days of HyperEVM.
-const MAX_CHUNKS = 300;
+// isn't hammered. 900 * 60 ≈ 54k blocks ≈ ~15min of HyperEVM at 1-block/s.
+// Enough to catch a freshly deployed vault; older ones need Hyperscan.
+const MAX_CHUNKS = 60;
+// Pause between chunks to stay under the public RPC's rate limit.
+const CHUNK_DELAY_MS = 120;
+
+const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+function isRateLimit(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : '';
+  return /rate limit|exceeds defined limit|429/i.test(msg);
+}
 
 const HYPERSCAN_BASE = 'https://hyperscan.com';
 
@@ -70,22 +80,39 @@ export default function MyVaultsModal({ onClose }: { onClose: () => void }) {
           const from = to > FACTORY_DEPLOY_BLOCK + LOG_CHUNK
             ? to - LOG_CHUNK + BigInt(1)
             : FACTORY_DEPLOY_BLOCK;
-          const logs = await publicClient.getContractEvents({
-            address: VAULT_FACTORY_ADDRESS,
-            abi: vaultFactoryAbi,
-            eventName: 'VaultCreated',
-            args: { creator: address },
-            fromBlock: from,
-            toBlock: to,
-          });
+          type EventLog = {
+            args: { vault: Address; expiryTs: bigint; creatorIM: bigint };
+            transactionHash: `0x${string}`;
+            blockNumber: bigint;
+          };
+          let logs: EventLog[] = [];
+          // Retry with exponential backoff on rate-limit responses.
+          for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+              const raw = await publicClient.getContractEvents({
+                address: VAULT_FACTORY_ADDRESS,
+                abi: vaultFactoryAbi,
+                eventName: 'VaultCreated',
+                args: { creator: address },
+                fromBlock: from,
+                toBlock: to,
+              });
+              logs = raw as unknown as EventLog[];
+              break;
+            } catch (e) {
+              if (!isRateLimit(e) || attempt === 4) throw e;
+              await sleep(500 * Math.pow(2, attempt));
+              if (cancelled) return;
+            }
+          }
           if (cancelled) return;
           for (const l of logs) {
             collected.push({
-              vault: (l.args as { vault: Address }).vault,
-              expiryTs: (l.args as { expiryTs: bigint }).expiryTs,
-              creatorIM: (l.args as { creatorIM: bigint }).creatorIM,
-              txHash: l.transactionHash!,
-              blockNumber: l.blockNumber!,
+              vault: l.args.vault,
+              expiryTs: l.args.expiryTs,
+              creatorIM: l.args.creatorIM,
+              txHash: l.transactionHash,
+              blockNumber: l.blockNumber,
             });
           }
           // Incremental render so the user sees rows as we scan back.
@@ -94,6 +121,8 @@ export default function MyVaultsModal({ onClose }: { onClose: () => void }) {
           }
           if (from === FACTORY_DEPLOY_BLOCK) break;
           to = from - BigInt(1);
+          await sleep(CHUNK_DELAY_MS);
+          if (cancelled) return;
         }
         if (cancelled) return;
         if (chunks >= MAX_CHUNKS && to > FACTORY_DEPLOY_BLOCK) {
