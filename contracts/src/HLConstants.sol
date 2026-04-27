@@ -43,6 +43,17 @@ library HLConstants {
     address internal constant ACCOUNT_MARGIN_SUMMARY_PRECOMPILE   = 0x000000000000000000000000000000000000080F;
     address internal constant CORE_USER_EXISTS_PRECOMPILE         = 0x0000000000000000000000000000000000000810;
 
+    // ── Extra CoreWriter action IDs ──────────────────────────────
+    // Approve builder fee (one-time per builder); subsequent orders auto-apply
+    // the fee to the approved builder. Action ID 12, payload (uint64,address).
+    uint24 internal constant ACTION_APPROVE_BUILDER_FEE  = 12;
+    // Cross-account / Core->EVM transfer.
+    // Action ID 13, payload (address,address,uint32,uint32,uint64,uint64).
+    uint24 internal constant ACTION_SEND_ASSET           = 13;
+    // Authorize an API/agent wallet to sign on this account's behalf.
+    // Action ID 9, payload (address,string).
+    uint24 internal constant ACTION_ADD_API_WALLET       = 9;
+
     // ── USDC bridge ──────────────────────────────────────────────
     // ERC20 USDC on HyperEVM mainnet / testnet.
     address internal constant USDC_EVM_MAINNET = 0xb88339CB7199b77E23DB6E890353E22632Ba630f;
@@ -51,4 +62,12 @@ library HLConstants {
     // is credited with the same amount (minus bridge fees if any).
     address internal constant CORE_DEPOSIT_WALLET_MAINNET = 0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24;
     address internal constant CORE_DEPOSIT_WALLET_TESTNET = 0x0B80659a4076E9E93C7DbE0f10675A16a3e5C206;
+
+    // Core->EVM unbridge: send a Core spot asset to address
+    // 0x20...<tokenIndex BE> via sendAsset (action 13). The corresponding
+    // ERC20 on HyperEVM is credited to the sender's EVM address.
+    // USDC has spot token index 0 → all-zero suffix.
+    address internal constant CORE_TO_EVM_BRIDGE_USDC = 0x2000000000000000000000000000000000000000;
+    // USDC's HyperCore spot token index.
+    uint64 internal constant USDC_SPOT_TOKEN_INDEX = 0;
 }

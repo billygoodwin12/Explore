@@ -36,6 +36,9 @@ contract PerpOrderSpike {
 
     event RawActionSent(uint24 indexed actionId, bytes payload);
     event UsdcBridged(uint256 amount);
+    event BuilderApproved(address indexed builder, uint64 maxFeeBps);
+    event UsdcBridgedBack(uint64 amount);
+    event ApiWalletAdded(address indexed agent, string apiName);
 
     error NotOwner();
 
@@ -90,6 +93,60 @@ contract PerpOrderSpike {
             uint128(0)              // cloid (0 = none)
         );
         _sendAction(HLConstants.ACTION_LIMIT_ORDER, payload);
+    }
+
+    // ── Spike (a): one-time builder fee approval (action 12) ─────
+    /// @param builder the Theorise builder address that should receive the fee.
+    /// @param maxFeeBps the max basis-point fee this contract authorizes the
+    ///        builder to skim from its own orders going forward.
+    /// @dev fires CoreWriter action 12. Subsequent perp orders placed by this
+    ///      contract will auto-attach the approved builder. Verify on HL by
+    ///      polling the builder's user state for an incremented fee balance
+    ///      after the next placeIocOrder fills.
+    function approveBuilderFee(address builder, uint64 maxFeeBps) external onlyOwner {
+        bytes memory payload = abi.encode(maxFeeBps, builder);
+        _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
+        emit BuilderApproved(builder, maxFeeBps);
+    }
+
+    // ── Spike (b): Core -> EVM USDC unbridge (action 13) ─────────
+    /// @param amount USDC amount in HyperCore "ntl" units (6 decimals).
+    /// @dev sends the contract's Core USDC spot balance to the canonical
+    ///      Core->EVM bridge address (0x20...0 for USDC, token index 0).
+    ///      The corresponding ERC20 USDC balance on HyperEVM is then credited
+    ///      to address(this). Confirm with `IERC20(usdc).balanceOf(address(this))`
+    ///      a few seconds after firing.
+    ///
+    /// sendAsset payload layout (best inferred from public docs):
+    ///   (address destination, address token, uint32 srcDexIndex,
+    ///    uint32 dstDexIndex, uint64 amount, uint64 nonce)
+    /// For USDC Core->EVM: destination = CORE_TO_EVM_BRIDGE_USDC,
+    /// token = address(0) (USDC implied), src/dst dex = 0, nonce = 0.
+    /// If the on-chain layout differs once tested, adjust here only.
+    function bridgeUsdcBackToEvm(uint64 amount) external onlyOwner {
+        bytes memory payload = abi.encode(
+            HLConstants.CORE_TO_EVM_BRIDGE_USDC, // destination
+            address(0),                          // token (USDC implied via destination)
+            uint32(0),                           // srcDexIndex (default dex)
+            uint32(0),                           // dstDexIndex (default dex)
+            amount,                              // amount in 6dp
+            uint64(0)                            // nonce
+        );
+        _sendAction(HLConstants.ACTION_SEND_ASSET, payload);
+        emit UsdcBridgedBack(amount);
+    }
+
+    // ── Spike (c, fallback): authorize an EOA agent (action 9) ───
+    /// @param agent EOA that will sign HL actions on behalf of address(this).
+    /// @param apiName label HL stores alongside the agent (free-form string).
+    /// @dev only relevant if Path 1 (CoreWriter) hits a blocker and we have to
+    ///      fall back to off-chain agent signing. If this succeeds and the
+    ///      agent can subsequently place orders against this contract's HL
+    ///      account, Path 2 stays viable as a fallback.
+    function addApiWallet(address agent, string calldata apiName) external onlyOwner {
+        bytes memory payload = abi.encode(agent, apiName);
+        _sendAction(HLConstants.ACTION_ADD_API_WALLET, payload);
+        emit ApiWalletAdded(agent, apiName);
     }
 
     // ── Helpers ──────────────────────────────────────────────────

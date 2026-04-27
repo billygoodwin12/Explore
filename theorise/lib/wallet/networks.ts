@@ -83,10 +83,12 @@ const TESTNET: NetworkConfig = {
   hlExchangeUrl: 'https://api.hyperliquid-testnet.xyz/exchange',
   hlWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
   explorerBase: 'https://hyperevmscan.io',
-  // Testnet has no canonical USDC. Set a community-deployed address or our
-  // own mock USDC via NEXT_PUBLIC_USDC_ADDRESS_TESTNET.
+  // Canonical testnet USDC ERC20 on HyperEVM testnet (matches
+  // HLConstants.USDC_EVM_TESTNET in contracts/src/HLConstants.sol).
+  // Override via NEXT_PUBLIC_USDC_ADDRESS_TESTNET if a mock is needed.
   usdc:
-    (process.env.NEXT_PUBLIC_USDC_ADDRESS_TESTNET as Address | undefined) ?? ZERO,
+    (process.env.NEXT_PUBLIC_USDC_ADDRESS_TESTNET as Address | undefined) ??
+    '0x2B3370eE501B4a559b57D449569354196457D8Ab',
   vaultFactory:
     (process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS_TESTNET as Address | undefined) ??
     ZERO,
