@@ -1,9 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-
-const API_URL = 'https://api.hyperliquid.xyz/info';
-const WS_URL = 'wss://api.hyperliquid.xyz/ws';
+import { HL_INFO_URL as API_URL, HL_WS_URL as WS_URL } from '@/lib/wallet/networks';
 
 export type Interval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 

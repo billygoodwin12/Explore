@@ -1,9 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-
-const API_URL = 'https://api.hyperliquid.xyz/info';
-const WS_URL = 'wss://api.hyperliquid.xyz/ws';
+import { HL_INFO_URL as API_URL, HL_WS_URL as WS_URL } from '@/lib/wallet/networks';
 
 /** Curated default-dex assets — tight list, friendly display names. */
 const TRACKED_ASSETS: Record<string, { name: string; cat: 'crypto' | 'commodity' | 'index' }> = {

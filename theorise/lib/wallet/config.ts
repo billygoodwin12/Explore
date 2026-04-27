@@ -1,20 +1,10 @@
 import { http, createConfig } from 'wagmi';
 import { arbitrum } from 'wagmi/chains';
 import { metaMask } from 'wagmi/connectors';
-import { defineChain } from 'viem';
+import { hyperEvm } from './networks';
 
-/// HyperEVM mainnet — chain id 999, HYPE native gas.
-export const hyperEvm = defineChain({
-  id: 999,
-  name: 'HyperEVM',
-  nativeCurrency: { name: 'HYPE', symbol: 'HYPE', decimals: 18 },
-  rpcUrls: {
-    default: { http: ['https://rpc.hyperliquid.xyz/evm'] },
-  },
-  blockExplorers: {
-    default: { name: 'HyperEVM Explorer', url: 'https://www.hyperscan.com' },
-  },
-});
+// Re-export for any callers still importing hyperEvm from here.
+export { hyperEvm } from './networks';
 
 /**
  * MVP: MetaMask only. Auto-discovery disabled so we get exactly one
@@ -22,7 +12,8 @@ export const hyperEvm = defineChain({
  * with Hyperliquid's EIP-712 signing.
  *
  * Arbitrum stays for the USDC-deposit flow to Hyperliquid's L1 bridge.
- * HyperEVM is needed for the vault factory + vault contracts.
+ * HyperEVM (mainnet 999 / testnet 998) is selected via NEXT_PUBLIC_NETWORK
+ * — see lib/wallet/networks.ts.
  */
 export const config = createConfig({
   chains: [arbitrum, hyperEvm],

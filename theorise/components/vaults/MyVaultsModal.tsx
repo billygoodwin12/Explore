@@ -4,16 +4,14 @@ import { useEffect, useState } from 'react';
 import { useAccount, usePublicClient } from 'wagmi';
 import { formatUnits, type Address } from 'viem';
 import { C, D, M } from '@/styles/tokens';
-import { hyperEvm } from '@/lib/wallet/config';
 import {
+  hyperEvm,
+  FACTORY_DEPLOY_BLOCK,
+  EXPLORER_BASE,
   VAULT_FACTORY_ADDRESS,
-  vaultFactoryAbi,
   isFactoryConfigured,
-} from '@/lib/contracts/vault-factory';
-
-// The factory was deployed around block 32_922_611 on HyperEVM. Scanning from
-// a fixed starting point keeps getLogs bounded; bump this when redeploying.
-const FACTORY_DEPLOY_BLOCK = BigInt(32_900_000);
+} from '@/lib/wallet/networks';
+import { vaultFactoryAbi } from '@/lib/contracts/vault-factory';
 // HyperEVM's public RPC caps eth_getLogs at 1000 blocks per request, so we
 // window the scan. Keep this strictly below that ceiling.
 const LOG_CHUNK = BigInt(900);
@@ -31,7 +29,7 @@ function isRateLimit(e: unknown): boolean {
   return /rate limit|exceeds defined limit|429/i.test(msg);
 }
 
-const HYPERSCAN_BASE = 'https://hyperscan.com';
+const HYPERSCAN_BASE = EXPLORER_BASE;
 
 interface VaultRow {
   vault: Address;

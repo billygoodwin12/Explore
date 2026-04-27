@@ -1,8 +1,9 @@
 'use client';
 
-import { C, D } from '@/styles/tokens';
+import { C, D, M } from '@/styles/tokens';
 import TabNavigation from './TabNavigation';
 import WalletButton from '@/components/wallet/WalletButton';
+import { NETWORK } from '@/lib/wallet/networks';
 
 export default function Header() {
   return (
@@ -27,6 +28,18 @@ export default function Header() {
         <span style={{ fontSize: 15, fontWeight: 700, color: C.primary, fontFamily: D, letterSpacing: '-0.02em' }}>
           Theorise
         </span>
+        {NETWORK === 'testnet' && (
+          <span style={{
+            marginLeft: 4,
+            fontSize: 9, fontWeight: 700, fontFamily: M,
+            padding: '3px 7px', borderRadius: 4,
+            background: '#FDF6E8', color: '#7A6010',
+            border: '1px solid #F59E0B',
+            letterSpacing: '0.06em', textTransform: 'uppercase',
+          }}>
+            Testnet
+          </span>
+        )}
       </div>
 
       {/* Tabs */}

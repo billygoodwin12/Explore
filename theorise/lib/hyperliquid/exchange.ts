@@ -2,8 +2,7 @@ import { encode } from '@msgpack/msgpack';
 import { keccak256, type WalletClient } from 'viem';
 import type { PrivateKeyAccount } from 'viem/accounts';
 
-const MAINNET_EXCHANGE = 'https://api.hyperliquid.xyz/exchange';
-const MAINNET_INFO = 'https://api.hyperliquid.xyz/info';
+import { HL_EXCHANGE_URL as MAINNET_EXCHANGE, HL_INFO_URL as MAINNET_INFO } from '@/lib/wallet/networks';
 
 // ── Phantom agent domain (L1 actions, signed locally by agent key) ──
 const PHANTOM_DOMAIN = {

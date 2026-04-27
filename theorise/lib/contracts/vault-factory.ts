@@ -1,16 +1,12 @@
-import type { Abi, Address } from 'viem';
+import type { Abi } from 'viem';
 
-/**
- * Address of the deployed VaultFactory on HyperEVM mainnet.
- * Must be set in env as NEXT_PUBLIC_VAULT_FACTORY_ADDRESS once the factory
- * is deployed. Until then, the wizard deploy button throws a clear error.
- */
-export const VAULT_FACTORY_ADDRESS =
-  (process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS as Address | undefined) ??
-  ('0x0000000000000000000000000000000000000000' as Address);
-
-/// HyperEVM USDC ERC20 (mainnet).
-export const HYPEREVM_USDC: Address = '0xb88339CB7199b77E23DB6E890353E22632Ba630f';
+// Network-aware addresses live in lib/wallet/networks.ts; re-export here so
+// existing callers continue to import from this module.
+export {
+  VAULT_FACTORY_ADDRESS,
+  HYPEREVM_USDC,
+  isFactoryConfigured,
+} from '@/lib/wallet/networks';
 
 /// Minimal ERC20 ABI — just the entrypoints we call for approvals + balance.
 export const erc20Abi = [
@@ -99,7 +95,3 @@ export interface ContractPosition {
   szDecimals: number; // uint8
 }
 
-/// True when the env-configured factory address is set to a non-zero value.
-export function isFactoryConfigured(): boolean {
-  return VAULT_FACTORY_ADDRESS !== '0x0000000000000000000000000000000000000000';
-}
