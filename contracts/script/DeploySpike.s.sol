@@ -13,9 +13,8 @@ contract DeploySpike is Script {
         // Default = mainnet (matches the rest of the platform). Set TESTNET=true to flip.
         bool isTestnet = vm.envOr("TESTNET", false);
         address usdc = isTestnet ? HLConstants.USDC_EVM_TESTNET : HLConstants.USDC_EVM_MAINNET;
-        address depositWallet = isTestnet
-            ? HLConstants.CORE_DEPOSIT_WALLET_TESTNET
-            : HLConstants.CORE_DEPOSIT_WALLET_MAINNET;
+        // Same canonical system address on both networks for the EVM->Core USDC bridge.
+        address depositWallet = HLConstants.CORE_DEPOSIT_WALLET;
 
         vm.startBroadcast();
         PerpOrderSpike spike = new PerpOrderSpike(usdc, depositWallet);

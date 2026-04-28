@@ -58,16 +58,21 @@ library HLConstants {
     // ERC20 USDC on HyperEVM mainnet / testnet.
     address internal constant USDC_EVM_MAINNET = 0xb88339CB7199b77E23DB6E890353E22632Ba630f;
     address internal constant USDC_EVM_TESTNET = 0x2B3370eE501B4a559b57D449569354196457D8Ab;
-    // Send USDC ERC20 to this address; the sender's HyperCore spot account
-    // is credited with the same amount (minus bridge fees if any).
-    address internal constant CORE_DEPOSIT_WALLET_MAINNET = 0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24;
-    address internal constant CORE_DEPOSIT_WALLET_TESTNET = 0x0B80659a4076E9E93C7DbE0f10675A16a3e5C206;
 
-    // Core->EVM unbridge: send a Core spot asset to address
-    // 0x20...<tokenIndex BE> via sendAsset (action 13). The corresponding
-    // ERC20 on HyperEVM is credited to the sender's EVM address.
-    // USDC has spot token index 0 → all-zero suffix.
+    // Canonical USDC system address — same on mainnet and testnet, used for
+    // BOTH directions of the EVM<->Core bridge:
+    //   EVM->Core: ERC20 transfer USDC to this address → credits Core spot
+    //   Core->EVM: sendAsset (action 13) to this address → credits EVM ERC20
+    // Format: 0x20 prefix || tokenIndex (uint256 big-endian). USDC index = 0.
+    address internal constant CORE_DEPOSIT_WALLET = 0x2000000000000000000000000000000000000000;
+    // Alias kept for the Core->EVM direction (same address, clearer intent).
     address internal constant CORE_TO_EVM_BRIDGE_USDC = 0x2000000000000000000000000000000000000000;
     // USDC's HyperCore spot token index.
     uint64 internal constant USDC_SPOT_TOKEN_INDEX = 0;
+
+    // Legacy bridge wallets (older Bridge2 contracts). Kept for reference;
+    // the canonical system address above supersedes both. Mainnet's legacy
+    // address is still observed to work today; testnet's appears dormant.
+    address internal constant LEGACY_DEPOSIT_WALLET_MAINNET = 0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24;
+    address internal constant LEGACY_DEPOSIT_WALLET_TESTNET = 0x0B80659a4076E9E93C7DbE0f10675A16a3e5C206;
 }

@@ -24,9 +24,8 @@ contract DeployFactory is Script {
         uint256 deploymentFee = vm.envOr("DEPLOYMENT_FEE", uint256(0));
 
         address usdc = isTestnet ? HLConstants.USDC_EVM_TESTNET : HLConstants.USDC_EVM_MAINNET;
-        address depositWallet = isTestnet
-            ? HLConstants.CORE_DEPOSIT_WALLET_TESTNET
-            : HLConstants.CORE_DEPOSIT_WALLET_MAINNET;
+        // Same canonical system address on both networks for the EVM->Core USDC bridge.
+        address depositWallet = HLConstants.CORE_DEPOSIT_WALLET;
         address treasury = vm.envAddress("PROTOCOL_TREASURY");
 
         vm.startBroadcast();
