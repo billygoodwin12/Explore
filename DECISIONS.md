@@ -66,10 +66,16 @@ write. Each finding below is a one-paragraph record.
 ## Contract layer
 
 ### Path 1 (contract signs via CoreWriter) chosen over Path 2 (agent wallet)
-- **Why**: trustless signing, single privileged role (keeper-trigger only, no key with HL trade authority), no off-chain key compromise vector for trade execution.
-- **Cost**: extra HyperEVM gas per mirror trade. Tolerable on HyperEVM at ~1s small-block latency for retail copy-trading.
+- **Why**: trustless signing, single privileged role (creator-trigger only in v0.1, +keeper in v1), no off-chain key compromise vector for trade execution.
+- **Cost**: extra HyperEVM gas per trade. Tolerable on HyperEVM at ~1s small-block latency for retail trading.
 - **Reversible**: yes — Path 2 (agent wallet) becomes a fallback if the spike turns up a blocker on Path 1.
 - **Open dependency**: confirmed by spike (a) and (b) before contract write.
+
+### Direct-trade-through-vault for v0.1, mirror copy-trading deferred to v1
+- **Why**: v0.1 doesn't need the keeper. Creator clicks "Place trade" in our UI → tx signed by creator → calls `vault.placeOrder()` → CoreWriter places the order on HL Core. Vault IS the trading account; creator doesn't trade on HL.app at all. Removes a major moving part (keeper service) and tells a cleaner product story ("fund-manager interface" vs "copy-trading bot").
+- **What's lost vs mirror model**: creators can't trade naturally on HL.app and have followers benefit automatically. They have to use Theorise's UI. For v0.1 (single creator, validation phase) this is fine.
+- **v1 path**: add an off-chain keeper service that watches creator's HL trades and triggers the same `placeOrder()` automatically. The contract surface for this is identical — keeper just becomes a second authorized caller alongside the creator. **Zero forced migration for users**: same vault address, same shares, just a new authorized caller wired in via UUPS upgrade.
+- **Reversal trigger**: meaningful demand for "auto-mirror my HL trades" beyond what direct-trade-through-vault already serves.
 
 ### NAV via precompile chosen over keeper-pushed `setNAV()`
 - **Why**: trustless. Keeper-pushed NAV becomes an oracle with all the attendant attack surface (stale reads, frontrunning, multi-signer plumbing) — precompile gives the data directly from HL.
@@ -103,6 +109,7 @@ write. Each finding below is a one-paragraph record.
 - **Why**: testnet vault is non-upgradeable, single-owner-key. Multisig + 48hr timelock is multi-day plumbing.
 - **v0.1 cost**: bug discovered = redeploy from scratch on testnet; no migration cost since no real funds.
 - **mainnet upgrade gate**: 2-of-3 multisig + UUPS proxy required before any mainnet vault holds real USDC.
+- **Migration property**: once mainnet vaults are UUPS, any post-launch feature additions (keeper authority, perf-fee changes, new asset support) are in-place upgrades — vault addresses, share balances, and user state persist. Forced redeposit only happens at the testnet→mainnet boundary, never within mainnet itself.
 
 ### Non-transferable shares — INTENTIONAL for v0.1
 - **Why**: per spec; transfer requires cost-basis transfer logic that's a v2 problem.
@@ -113,21 +120,27 @@ write. Each finding below is a one-paragraph record.
 
 ## Keeper layer
 
-### Single Node process, no leader election — INTENTIONAL for v0.1
-- **Why**: redundancy adds Redis-based leader election. Worth it in prod, overkill for testnet validation.
-- **v0.1 cost**: keeper outage stops mirroring. Manual restart.
-- **v1 cost**: ~1-2 days (Redis lock + multiple executor instances).
+### Entire keeper layer — DEFERRED to v1 (see contract layer)
+- **Why**: v0.1 ships direct-trade-through-vault — creator triggers trades from our UI directly, no off-chain detection needed. Building a keeper for v0.1 is solving a problem we don't have yet.
+- **v0.1 cost**: no automatic mirroring of creator's HL.app trades; creators must trade through Theorise's UI.
+- **v1 cost**: ~3-5 days (HL websocket subscriber, mirror executor, retry logic, lag/skip metrics). All keeper layer entries below remain accurate as the v1 plan.
+- **Reversal trigger**: see contract-layer entry for the v1 transition.
+
+### Single Node process, no leader election — INTENTIONAL for v1 (when keeper lands)
+- **Why**: redundancy adds Redis-based leader election. Worth it in prod, overkill for first keeper rollout.
+- **v1 cost**: keeper outage stops mirroring. Manual restart.
+- **v1.x cost**: ~1-2 days (Redis lock + multiple executor instances).
 - **Reversal trigger**: first production-critical outage.
 
-### env-var key (testnet only) — INTENTIONAL for v0.1
+### env-var key — INTENTIONAL for v1 testnet keeper, mainnet gate enforces HSM
 - **Why**: HSM/KMS integration is days of plumbing. Testnet has no real funds at risk.
-- **v0.1 cost**: keeper key compromise drops trades on testnet only.
-- **mainnet upgrade gate**: HSM-backed signer required before any mainnet deploy. Non-negotiable.
+- **v1 testnet cost**: keeper key compromise drops trades on testnet only.
+- **mainnet upgrade gate**: HSM-backed signer required before any mainnet keeper deploy. Non-negotiable.
 
-### Tracking quality metric — DEFERRED to v1
-- **Why**: out-of-band reporting; not on critical path.
-- **v0.1 cost**: depositors can't see lag/skip transparency in UI.
-- **v1 cost**: ~1 day (events already emitted, just need aggregation + UI badge).
+### Tracking quality metric — DEFERRED to v1.x (post-keeper)
+- **Why**: out-of-band reporting; only relevant once mirror keeper exists.
+- **v1 cost**: depositors can't see lag/skip transparency in UI.
+- **v1.x cost**: ~1 day (events already emitted, just need aggregation + UI badge).
 - **Reversal trigger**: first user asking "why was this trade skipped?".
 
 ### NAV publisher — DEFERRED indefinitely

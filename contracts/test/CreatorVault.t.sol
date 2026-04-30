@@ -79,6 +79,6 @@ contract CreatorVaultTest is Test {
     }
 
     function test_creator_recorded() public view {
-        assertEq(vault.creator(), creator);
+        assertEq(vault.CREATOR(), creator);
     }
 }
