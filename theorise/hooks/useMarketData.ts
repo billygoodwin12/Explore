@@ -117,8 +117,18 @@ async function fetchMetaCtxs(dex?: string, signal?: AbortSignal) {
   return await res.json();
 }
 
+function isAbort(e: unknown): boolean {
+  return (e as { name?: string })?.name === 'AbortError';
+}
+
 async function fetchMarkets(signal?: AbortSignal): Promise<MarketData[]> {
-  const perpDexs = await fetchPerpDexs(signal);
+  let perpDexs: (PerpDex | null)[] = [null];
+  try {
+    perpDexs = await fetchPerpDexs(signal);
+  } catch (e) {
+    if (isAbort(e)) throw e;
+    console.warn('[markets] perpDexs fetch failed', e);
+  }
 
   const all: MarketData[] = [];
 
@@ -155,7 +165,8 @@ async function fetchMarkets(signal?: AbortSignal): Promise<MarketData[]> {
       });
     }
   } catch (e) {
-    console.error('[markets] default dex fetch failed', e);
+    if (isAbort(e)) throw e;
+    console.warn('[markets] default dex fetch failed', e);
   }
 
   // ── HIP-3 perp dexes ──────────────────────────────────────────
@@ -201,7 +212,8 @@ async function fetchMarkets(signal?: AbortSignal): Promise<MarketData[]> {
         });
       }
     } catch (e) {
-      console.error(`[markets] hip3 dex ${dex.name} fetch failed`, e);
+      if (isAbort(e)) throw e;
+      console.warn(`[markets] hip3 dex ${dex.name} fetch failed`, e);
     }
   }
 
@@ -230,7 +242,7 @@ export function useMarketData() {
       setMarkets(data);
       setError(null);
     } catch (e) {
-      if ((e as { name?: string })?.name === 'AbortError') return;
+      if (isAbort(e)) return;
       setError(e instanceof Error ? e.message : 'Failed to fetch');
     } finally {
       if (!ac.signal.aborted) setLoading(false);

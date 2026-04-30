@@ -6,6 +6,7 @@ import { C, D, M, fmt } from '@/styles/tokens';
 import { useMarketData } from '@/hooks/useMarketData';
 import { usePositions } from '@/hooks/usePositions';
 import { useDeposit } from '@/hooks/useDeposit';
+import { BRIDGE_URL } from '@/lib/wallet/networks';
 import { placeMarketOrder, updateLeverage, closePosition } from '@/lib/hyperliquid/exchange';
 import { ensureAgentApproved } from '@/lib/hyperliquid/agentWallet';
 import Chart from '@/components/chart/Chart';
@@ -374,7 +375,7 @@ export default function TradePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted, fontFamily: M }}>Account</div>
               <a
-                href="https://app.hyperliquid-testnet.xyz/trade"
+                href={BRIDGE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{
@@ -383,7 +384,7 @@ export default function TradePage() {
                   color: C.secondary, fontSize: 10, fontWeight: 700, fontFamily: M, textDecoration: 'none',
                 }}
               >
-                Bridge ↗
+                Bridge to EVM ↗
               </a>
             </div>
             <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginBottom: 4 }}>PERPS</div>

@@ -30,6 +30,10 @@ interface NetworkConfig {
   hlWsUrl: string;
   /// Block explorer base URL (for address/tx links).
   explorerBase: string;
+  /// HL portfolio page — opened in a new tab when the user clicks
+  /// "Bridge to EVM". The portfolio page hosts HL's deposit/withdraw UI
+  /// for moving USDC between Core and EVM, until our in-app bridge ships.
+  bridgeUrl: string;
   /// Native USDC ERC20 address on this HyperEVM network. This is the token
   /// users hold and the contract calls `balanceOf` / `transfer` on. Distinct
   /// from `coreDepositWallet` (the bridge proxy).
@@ -73,6 +77,7 @@ const MAINNET: NetworkConfig = {
   hlExchangeUrl: 'https://api.hyperliquid.xyz/exchange',
   hlWsUrl: 'wss://api.hyperliquid.xyz/ws',
   explorerBase: 'https://hyperscan.com',
+  bridgeUrl: 'https://app.hyperliquid.xyz/portfolio',
   usdc: '0xb88339CB7199b77E23DB6E890353E22632Ba630f',
   coreDepositWallet: '0x6b9e773128f453F5C2c60935ee2De2cBC5390a24',
   vaultFactory:
@@ -92,6 +97,7 @@ const TESTNET: NetworkConfig = {
   hlExchangeUrl: 'https://api.hyperliquid-testnet.xyz/exchange',
   hlWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
   explorerBase: 'https://hyperevmscan.io',
+  bridgeUrl: 'https://app.hyperliquid-testnet.xyz/portfolio',
   // Native Circle USDC ERC-20 on HyperEVM testnet. Verified via Phase 0
   // investigation: this is the token where balances actually live. Distinct
   // from the CoreDepositWallet bridge below (which spotMeta misleadingly
@@ -113,6 +119,7 @@ export const HL_INFO_URL = NETWORK_CONFIG.hlInfoUrl;
 export const HL_EXCHANGE_URL = NETWORK_CONFIG.hlExchangeUrl;
 export const HL_WS_URL = NETWORK_CONFIG.hlWsUrl;
 export const EXPLORER_BASE = NETWORK_CONFIG.explorerBase;
+export const BRIDGE_URL = NETWORK_CONFIG.bridgeUrl;
 export const HYPEREVM_USDC: Address = NETWORK_CONFIG.usdc;
 export const CORE_DEPOSIT_WALLET: Address = NETWORK_CONFIG.coreDepositWallet;
 export const VAULT_FACTORY_ADDRESS: Address = NETWORK_CONFIG.vaultFactory;
