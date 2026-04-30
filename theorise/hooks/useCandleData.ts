@@ -23,7 +23,11 @@ const LOOKBACK: Record<Interval, number> = {
   '1d':  180 * 86400_000,
 };
 
-async function fetchCandles(coin: string, interval: Interval): Promise<Candle[]> {
+function isAbort(e: unknown): boolean {
+  return (e as { name?: string })?.name === 'AbortError';
+}
+
+async function fetchCandles(coin: string, interval: Interval, signal?: AbortSignal): Promise<Candle[]> {
   const now = Date.now();
   const start = now - LOOKBACK[interval];
 
@@ -34,6 +38,7 @@ async function fetchCandles(coin: string, interval: Interval): Promise<Candle[]>
       type: 'candleSnapshot',
       req: { coin, interval, startTime: start, endTime: now },
     }),
+    signal,
   });
 
   if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -59,14 +64,18 @@ export function useCandleData(coin: string, interval: Interval) {
     let cancelled = false;
     let ws: WebSocket;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
+    const ac = new AbortController();
 
     async function init() {
       setLoading(true);
       try {
-        const data = await fetchCandles(coin, interval);
+        const data = await fetchCandles(coin, interval, ac.signal);
         if (cancelled) return;
         candlesRef.current = data;
         setCandles(data);
+      } catch (e) {
+        if (isAbort(e)) return;
+        console.warn('[candles] fetch failed', e);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -129,6 +138,7 @@ export function useCandleData(coin: string, interval: Interval) {
 
     return () => {
       cancelled = true;
+      ac.abort();
       clearTimeout(reconnectTimeout);
       if (wsRef.current) {
         wsRef.current.onclose = null;
