@@ -164,6 +164,11 @@ write. Each finding below is a one-paragraph record.
 - **v1 cost**: ~2 weeks for the full social stack.
 - **Reversal trigger**: ready for creator onboarding beyond friends-and-family.
 
+### Vault discovery UI = social-media feed (not table) — DIRECTIONAL
+- **Why**: vaults are creator-led products; users browse them by personality/track-record, not by sortable columns. The discovery surface should look like a feed (creator avatar, headline performance, recent trade, follow/deposit CTA) — closer to Twitter or TikTok than Bloomberg.
+- **v0.1 status**: not built. Vault list during v0.1 is functional/utilitarian (likely a simple list).
+- **Trigger to build**: after Phase 1 (contract + deposit flow) is working end-to-end; before any external creator onboarding.
+
 ### Twitter / X integration — DEFERRED to v1+
 - **Why**: OAuth + verification flow is independent product surface.
 - **v0.1 cost**: creators can't link X accounts; no auto-share on settle.
