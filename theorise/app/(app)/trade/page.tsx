@@ -18,7 +18,7 @@ export default function TradePage() {
   const { isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
   const { positions, accountValue, withdrawable, spotUsdcTotal, spotUsdcAvailable, refresh: refreshPositions } = usePositions();
-  const { usdcBalance, depositing, deposit, isReady: depositReady, isWrongChain, switchToArbitrum } = useDeposit();
+  const { usdcBalance } = useDeposit();
 
   const [selectedSym, setSelectedSym] = useState('BTC');
   const [side, setSide] = useState<'long' | 'short'>('long');
@@ -28,9 +28,6 @@ export default function TradePage() {
   const [submitting, setSubmitting] = useState(false);
   const [orderStatus, setOrderStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const [showDeposit, setShowDeposit] = useState(false);
-  const [depositAmt, setDepositAmt] = useState('');
-  const [depositStatus, setDepositStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [closingCoin, setClosingCoin] = useState<string | null>(null);
 
   const selected = markets.find(m => m.sym === selectedSym) || markets[0];
@@ -157,25 +154,6 @@ export default function TradePage() {
       setClosingCoin(null);
     }
   }, [walletClient, markets, refreshPositions]);
-
-  const handleDeposit = useCallback(async () => {
-    if (!depositAmt) return;
-    setDepositStatus(null);
-    try {
-      await deposit(depositAmt);
-      setDepositStatus({ type: 'success', msg: `Deposited ${depositAmt} USDC — credits in ~1 min` });
-      setDepositAmt('');
-      // Poll for balance update every 5s for 2 minutes
-      let polls = 0;
-      const pollInterval = setInterval(() => {
-        refreshPositions();
-        polls++;
-        if (polls >= 24) clearInterval(pollInterval);
-      }, 5000);
-    } catch (e) {
-      setDepositStatus({ type: 'error', msg: e instanceof Error ? e.message : 'Deposit failed' });
-    }
-  }, [depositAmt, deposit, refreshPositions]);
 
   if (loading && markets.length === 0) {
     return (
@@ -395,16 +373,18 @@ export default function TradePage() {
           <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.borderLight}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted, fontFamily: M }}>Account</div>
-              <button
-                onClick={() => setShowDeposit(!showDeposit)}
+              <a
+                href="https://app.hyperliquid-testnet.xyz/trade"
+                target="_blank"
+                rel="noopener noreferrer"
                 style={{
-                  padding: '3px 10px', borderRadius: 5, border: `1px solid ${C.green}`,
-                  background: showDeposit ? C.greenBg : 'transparent',
-                  color: C.green, fontSize: 10, fontWeight: 700, fontFamily: M, cursor: 'pointer',
+                  padding: '3px 10px', borderRadius: 5, border: `1px solid ${C.borderLight}`,
+                  background: 'transparent',
+                  color: C.secondary, fontSize: 10, fontWeight: 700, fontFamily: M, textDecoration: 'none',
                 }}
               >
-                Deposit
-              </button>
+                Bridge ↗
+              </a>
             </div>
             <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginBottom: 4 }}>PERPS</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M, marginBottom: 3 }}>
@@ -426,68 +406,9 @@ export default function TradePage() {
             </div>
             <div style={{ fontSize: 9, fontWeight: 600, color: C.muted, letterSpacing: '0.08em', marginTop: 8, marginBottom: 4 }}>WALLET</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontFamily: M }}>
-              <span style={{ color: C.muted }}>Arb USDC</span>
-              <span style={{ color: C.secondary, fontWeight: 600 }}>{fmt(parseFloat(usdcBalance))}</span>
+              <span style={{ color: C.muted }}>EVM USDC</span>
+              <span style={{ color: C.secondary, fontWeight: 600 }}>${fmt(parseFloat(usdcBalance))}</span>
             </div>
-
-            {showDeposit && (
-              <div style={{ marginTop: 10, padding: '10px', background: C.bg, borderRadius: 8, border: `1px solid ${C.borderLight}` }}>
-                <div style={{ fontSize: 10, fontFamily: M, color: C.secondary, marginBottom: 6 }}>
-                  Deposit USDC from Arbitrum One (min 5 USDC)
-                </div>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  <div style={{ display: 'flex', flex: 1, background: C.card, border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '0 8px' }}>
-                    <span style={{ fontSize: 10, color: C.muted, fontFamily: M, lineHeight: '32px' }}>$</span>
-                    <input
-                      placeholder="0.00"
-                      value={depositAmt}
-                      onChange={e => setDepositAmt(e.target.value)}
-                      type="number"
-                      min="5"
-                      style={{ flex: 1, border: 'none', background: 'transparent', padding: '7px 4px', fontSize: 12, fontFamily: M, fontWeight: 600, color: C.primary, outline: 'none', width: 0 }}
-                    />
-                  </div>
-                  <button
-                    onClick={() => setDepositAmt(usdcBalance)}
-                    style={{ padding: '0 8px', borderRadius: 6, border: `1px solid ${C.borderLight}`, background: C.card, fontSize: 10, fontFamily: M, color: C.secondary, cursor: 'pointer' }}
-                  >
-                    MAX
-                  </button>
-                </div>
-                <button
-                  onClick={handleDeposit}
-                  disabled={depositing || !depositAmt || parseFloat(depositAmt) < 5}
-                  style={{
-                    width: '100%', padding: '8px 0', borderRadius: 6, border: 'none', cursor: 'pointer',
-                    fontSize: 11, fontWeight: 700, fontFamily: M,
-                    background: C.green, color: 'white',
-                    opacity: depositing || !depositAmt || parseFloat(depositAmt) < 5 ? 0.5 : 1,
-                  }}
-                >
-                  {depositing ? 'Depositing...' : 'Deposit USDC'}
-                </button>
-                {isWrongChain && !depositing && (
-                  <button
-                    onClick={switchToArbitrum}
-                    style={{
-                      width: '100%', padding: '8px 0', borderRadius: 6, border: `1px solid ${C.accent}`,
-                      background: 'transparent', color: C.accent, fontSize: 10, fontWeight: 700,
-                      fontFamily: M, cursor: 'pointer', marginTop: 6,
-                    }}
-                  >
-                    Switch to Arbitrum One
-                  </button>
-                )}
-                {depositStatus && (
-                  <div style={{
-                    marginTop: 6, fontSize: 10, fontFamily: M,
-                    color: depositStatus.type === 'success' ? C.green : C.red,
-                  }}>
-                    {depositStatus.msg}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
 

@@ -1,34 +1,32 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useAccount, usePublicClient, useWalletClient, useSwitchChain } from 'wagmi';
-import { parseUnits, formatUnits, erc20Abi } from 'viem';
-import { arbitrum } from 'viem/chains';
+import { useAccount, usePublicClient } from 'wagmi';
+import { erc20Abi, formatUnits } from 'viem';
+import { HYPEREVM_USDC, hyperEvm } from '@/lib/wallet/networks';
 
-const ARBITRUM_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as `0x${string}`;
-const HYPERLIQUID_BRIDGE = '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7' as `0x${string}`;
-const MIN_DEPOSIT = 5; // USDC
-
+/**
+ * Reads the connected wallet's HyperEVM USDC balance. The legacy
+ * Arbitrum→HL bridge flow this hook used to drive is intentionally removed
+ * — see DECISIONS.md ("In-app bridge UI — DEFERRED to v0.x"). Until the
+ * in-app bridge ships, users can move USDC between EVM and Core via the
+ * HL bridge UI directly.
+ */
 export function useDeposit() {
   const { address, chainId } = useAccount();
   const publicClient = usePublicClient();
-  const { data: walletClient } = useWalletClient();
-  const { switchChainAsync } = useSwitchChain();
   const [usdcBalance, setUsdcBalance] = useState('0');
-  const [depositing, setDepositing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const isWrongChain = !!address && chainId !== arbitrum.id;
+  const isWrongChain = !!address && chainId !== hyperEvm.id;
 
   const refreshBalance = useCallback(async () => {
-    if (!address || !publicClient) {
+    if (!address || !publicClient || isWrongChain) {
       setUsdcBalance('0');
       return;
     }
-
     try {
       const balance = await publicClient.readContract({
-        address: ARBITRUM_USDC,
+        address: HYPEREVM_USDC,
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [address],
@@ -37,64 +35,17 @@ export function useDeposit() {
     } catch {
       setUsdcBalance('0');
     }
-  }, [address, publicClient]);
+  }, [address, publicClient, isWrongChain]);
 
   useEffect(() => {
     refreshBalance();
-    const interval = setInterval(refreshBalance, 10000);
+    const interval = setInterval(refreshBalance, 10_000);
     return () => clearInterval(interval);
   }, [refreshBalance]);
 
-  const switchToArbitrum = useCallback(async () => {
-    try {
-      await switchChainAsync({ chainId: arbitrum.id });
-    } catch (e) {
-      throw new Error('Please switch to Arbitrum One in your wallet');
-    }
-  }, [switchChainAsync]);
-
-  const deposit = useCallback(async (amountUsdc: string) => {
-    if (!address) throw new Error('Wallet not connected');
-
-    const amount = parseFloat(amountUsdc);
-    if (amount < MIN_DEPOSIT) throw new Error(`Minimum deposit is ${MIN_DEPOSIT} USDC`);
-    if (amount > parseFloat(usdcBalance)) throw new Error('Insufficient USDC balance');
-
-    setDepositing(true);
-    setError(null);
-
-    try {
-      // Switch chain if needed
-      if (isWrongChain) {
-        await switchToArbitrum();
-      }
-
-      // walletClient should now be available after chain switch
-      if (!walletClient) throw new Error('Please switch to Arbitrum One and try again');
-
-      const hash = await walletClient.writeContract({
-        address: ARBITRUM_USDC,
-        abi: erc20Abi,
-        functionName: 'transfer',
-        args: [HYPERLIQUID_BRIDGE, parseUnits(amountUsdc, 6)],
-        chain: arbitrum,
-      });
-
-      if (publicClient) {
-        await publicClient.waitForTransactionReceipt({ hash });
-      }
-
-      await refreshBalance();
-      return hash;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Deposit failed';
-      setError(msg);
-      throw e;
-    } finally {
-      setDepositing(false);
-    }
-  }, [walletClient, address, usdcBalance, publicClient, refreshBalance, isWrongChain, switchToArbitrum]);
-
-  const isReady = !!address && !!walletClient && !isWrongChain;
-  return { usdcBalance, depositing, error, deposit, refreshBalance, minDeposit: MIN_DEPOSIT, isReady, isWrongChain, switchToArbitrum };
+  return {
+    usdcBalance,
+    refreshBalance,
+    isWrongChain,
+  };
 }

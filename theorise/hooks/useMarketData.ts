@@ -79,43 +79,52 @@ function stripDexPrefix(name: string): string {
 
 // Info endpoint is shared and rate-limited. Retry on 429/5xx with exponential
 // backoff so a single throttled response doesn't leave the wizard with zero
-// markets (and a disabled "Add positions" button).
-async function postInfo(body: Record<string, unknown>, attempt = 0): Promise<Response> {
+// markets (and a disabled "Add positions" button). Caller passes an
+// AbortSignal so unmount/refresh cancels in-flight requests cleanly instead
+// of throwing "Failed to fetch" into the console.
+async function postInfo(body: Record<string, unknown>, signal?: AbortSignal, attempt = 0): Promise<Response> {
   const res = await fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   if ((res.status === 429 || res.status >= 500) && attempt < 4) {
     const delay = 500 * 2 ** attempt;
-    await new Promise(r => setTimeout(r, delay));
-    return postInfo(body, attempt + 1);
+    await new Promise((r, rej) => {
+      const t = setTimeout(r, delay);
+      signal?.addEventListener('abort', () => {
+        clearTimeout(t);
+        rej(new DOMException('Aborted', 'AbortError'));
+      });
+    });
+    return postInfo(body, signal, attempt + 1);
   }
   return res;
 }
 
-async function fetchPerpDexs(): Promise<(PerpDex | null)[]> {
-  const res = await postInfo({ type: 'perpDexs' });
+async function fetchPerpDexs(signal?: AbortSignal): Promise<(PerpDex | null)[]> {
+  const res = await postInfo({ type: 'perpDexs' }, signal);
   if (!res.ok) return [null];
   return await res.json();
 }
 
-async function fetchMetaCtxs(dex?: string) {
+async function fetchMetaCtxs(dex?: string, signal?: AbortSignal) {
   const body: Record<string, unknown> = { type: 'metaAndAssetCtxs' };
   if (dex) body.dex = dex;
-  const res = await postInfo(body);
+  const res = await postInfo(body, signal);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return await res.json();
 }
 
-async function fetchMarkets(): Promise<MarketData[]> {
-  const perpDexs = await fetchPerpDexs();
+async function fetchMarkets(signal?: AbortSignal): Promise<MarketData[]> {
+  const perpDexs = await fetchPerpDexs(signal);
 
   const all: MarketData[] = [];
 
   // ── Default dex ───────────────────────────────────────────────
   try {
-    const [meta, ctxs] = await fetchMetaCtxs();
+    const [meta, ctxs] = await fetchMetaCtxs(undefined, signal);
     const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
 
     for (let i = 0; i < universe.length; i++) {
@@ -158,7 +167,7 @@ async function fetchMarkets(): Promise<MarketData[]> {
     // MVP: only surface TradeXYZ (xyz). Other HIP-3 dexes are hidden.
     if (!dex || dex.name !== 'xyz') continue;
     try {
-      const [meta, ctxs] = await fetchMetaCtxs(dex.name);
+      const [meta, ctxs] = await fetchMetaCtxs(dex.name, signal);
       const universe: { name: string; maxLeverage: number; szDecimals: number; isDelisted?: boolean }[] = meta.universe;
 
       for (let i = 0; i < universe.length; i++) {
@@ -206,17 +215,25 @@ export function useMarketData() {
   const wsRef = useRef<WebSocket | null>(null);
   const marketsRef = useRef<MarketData[]>([]);
 
-  // Initial REST fetch for full data
+  // Initial REST fetch for full data. Each call gets its own AbortController
+  // so unmount or rapid re-fetch cancels the previous in-flight request
+  // instead of letting it throw "Failed to fetch" later.
+  const abortRef = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     try {
-      const data = await fetchMarkets();
+      const data = await fetchMarkets(ac.signal);
+      if (ac.signal.aborted) return;
       marketsRef.current = data;
       setMarkets(data);
       setError(null);
     } catch (e) {
+      if ((e as { name?: string })?.name === 'AbortError') return;
       setError(e instanceof Error ? e.message : 'Failed to fetch');
     } finally {
-      setLoading(false);
+      if (!ac.signal.aborted) setLoading(false);
     }
   }, []);
 
@@ -287,6 +304,7 @@ export function useMarketData() {
     return () => {
       clearInterval(fullRefresh);
       clearTimeout(reconnectTimeout);
+      abortRef.current?.abort();
       if (wsRef.current) {
         wsRef.current.onclose = null; // prevent reconnect on cleanup
         wsRef.current.close();
