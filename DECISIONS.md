@@ -99,6 +99,12 @@ write. Each finding below is a one-paragraph record.
 - **v0.1 cost**: none — Theorise earns nothing on perf fees during testnet.
 - **mainnet upgrade**: set per-vault `perfFeeBps` at deploy. Default still TBD (range 0-3000 bps).
 
+### Theorise revenue model: vault deployment fee + 5 bps builder fee — INTENTIONAL (mainnet)
+- **Builder fee**: 5 bps (0.05%) attached to every trade via CoreWriter action 12. Conservative vs HL's 100 bps cap — leaves headroom for negotiating volume splits with HL once flow exists. Builder address needs to be a registered HL builder account; setting that up is a one-time off-chain step before mainnet launch.
+- **Vault deployment fee**: flat fee (USDC, amount TBD) charged at `factory.createVault()` and routed to Theorise treasury. Acts as both spam deterrent and per-creator revenue line.
+- **v0.1 status**: builder-fee plumbing wired in Phase 1.5 spike with zero recipient (verifies mechanics). Deployment fee added when factory ships in Phase 1.6.
+- **Open dependency**: Theorise's HL builder account must be registered before mainnet trades attach a non-zero fee.
+
 ### Circuit breakers — DEFERRED to v1
 - **Why**: out-of-band logic, not on the critical mirror path.
 - **v0.1 cost**: vault keeps mirroring through drawdowns; manual pause via owner key only.
