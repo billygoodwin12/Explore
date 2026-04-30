@@ -13,30 +13,53 @@ Format conventions
 
 ---
 
-## v0.1 spike findings — TBD
+## v0.1 spike findings
 
-Spike runs after testnet wallets are funded. Each finding becomes a single
-entry below — keep these short, one paragraph per question.
+Phase 0 (foundations) is read-only investigation; Phase 1 is the contract
+write. Each finding below is a one-paragraph record.
 
-### Builder field on CoreWriter
-- Status: TBD
-- Result: TBD (does CoreWriter accept a builder ref? does the fee arrive at our builder address?)
-- Implication: TBD
+### Native USDC vs CoreDepositWallet — RESOLVED (Phase 0)
+- **Status**: confirmed via cast + HL docs cross-reference (Apr 2026).
+- **Result**: HL `spotMeta` returns `evmContract.address` for canonical
+  USDC, but that address is **Circle's CoreDepositWallet bridge proxy**,
+  not the ERC-20 token. The actual native USDC ERC-20 (where balances
+  live and `balanceOf` / `transfer` work) is a separate Circle deployment.
+- **Addresses**:
+  - Mainnet USDC ERC-20: `0xb88339CB7199b77E23DB6E890353E22632Ba630f`
+  - Mainnet CoreDepositWallet: `0x6b9e773128f453F5C2c60935ee2De2cBC5390a24`
+  - Testnet USDC ERC-20: `0x2B3370eE501B4a559b57D449569354196457D8Ab`
+  - Testnet CoreDepositWallet: `0x0b80659a4076E9E93c7dbe0F10675A16A3e5C206`
+- **Implication**: vault contracts (and any code reading user USDC) call
+  the native ERC-20 address. Bridging EVM→Core is `IERC20.approve(bridge, x)
+  → bridge.deposit(x)` (NOT `IERC20.transfer` to the bridge — that's a
+  silent no-op). `lib/wallet/networks.ts` now exposes both addresses
+  per-network with the bridge labeled `coreDepositWallet`.
 
-### Core→EVM USDC return mechanism
-- Status: TBD
-- Result: TBD (precompile / system action / implicit via account ownership / not possible)
-- Implication: TBD
+### Core→EVM USDC return mechanism — TBD (Phase 0 follow-up)
+- **Status**: HL UI's "Transfer to EVM" works (verified manually). Whether
+  CoreWriter `sendAsset` (action 13) does the same thing from a contract
+  call has NOT been verified.
+- **Implication blocker**: vault buffer refill on position close depends
+  on this. Vault holds USDC on Core (margin) and needs to pull it back to
+  EVM to satisfy follower withdrawals. If `sendAsset` doesn't work as
+  expected, we need an alternate mechanism (HL's withdrawal queue, or a
+  new precompile).
+- **Next**: spike a contract that calls `sendAsset` for $1 and observes
+  whether EVM USDC balance increases.
 
-### Contract HL account initialization
-- Status: TBD
-- Result: TBD (auto-created on first action, or explicit init required)
-- Implication: TBD
+### Builder field on CoreWriter — TBD
+- **Status**: deferred to Phase 1. Spike will be a single contract call to
+  CoreWriter action 12 (`approveBuilderFee`) followed by a paid order.
+- **Implication**: builder fee revenue is the entire monetization model
+  for Theorise. Has to work or the unit economics fail.
+
+### Contract HL account initialization — TBD
+- **Status**: deferred to Phase 1. Will observe whether a fresh contract
+  address gets a Core account spun up implicitly on first CoreWriter action.
 
 ### Agent system on contract-owned HL accounts (fallback only)
-- Status: TBD
-- Result: TBD
-- Implication: TBD — only relevant if Path 1 has a blocker
+- **Status**: TBD — only revisited if Path 1 (contract-as-signer) hits a
+  blocker.
 
 ---
 
@@ -120,6 +143,17 @@ entry below — keep these short, one paragraph per question.
 - **Why**: matches industry-standard pattern (Uniswap, Aave, etc.); avoids drift between mainnet and testnet codebases.
 - **Implementation**: `NEXT_PUBLIC_NETWORK={mainnet|testnet}` env var; single `lib/wallet/networks.ts` source of truth.
 - **Mainnet legacy disposable factory** stays accessible by toggling env back to mainnet during the migration window.
+- **No UI toggle**: networks are switched per deployment (testnet.theorise.xyz vs app.theorise.xyz), not at runtime. Avoids mid-tx footguns and keeps wallet state coherent. Standard practice across major DeFi UIs.
+
+### Balance display: split EVM / Core / Perps — INTENTIONAL
+- **Why**: conflating "your balance" across HL Core and EVM is the #1 user confusion in HL-based apps. Showing all three labeled rows mirrors HL's own UX and prevents "where is my money?" support tickets.
+- **Surfaces**: vault deposit/withdraw flows show **EVM** as the primary number (that's what gets deposited). `/trade` shows Core balances (matches direct-trading mental model). Header tooltip shows all three.
+
+### In-app bridge UI — DEFERRED to v0.x (post v0.1)
+- **Why**: building a deposit-direction (`bridge.deposit()`) and withdrawal-direction (`CoreWriter.sendAsset`) bridge UI is ~1 day of UX (tx tracking, balance refresh, error states). Not on the critical path for validating the creator-vault thesis. HL.app's bridge already exists and users will be familiar with it.
+- **v0.1 cost**: users with funds only on Core must bridge externally before depositing into a vault. Add a "Need to bridge? Open HL Bridge" link at the deposit step.
+- **v0.x cost**: ~1 day for a minimal in-app bridge panel (3 labeled balances, two direction buttons, single-tx-status form per direction).
+- **Reversal trigger**: meaningful signup drop-off at the deposit step traceable to bridge friction.
 
 ### My Positions tab with Claim button (disabled until settled) — INTENTIONAL
 - **Why**: matches v0.1 product surface — depositors need one place to see all their positions and claim once a vault settles.
@@ -150,6 +184,6 @@ entry below — keep these short, one paragraph per question.
 - **v1 cost**: ~2-3 days to add the full schema.
 
 ### Use canonical HyperEVM testnet USDC (not a mock) — INTENTIONAL
-- **Why**: `HLConstants.sol` already pins `USDC_EVM_TESTNET = 0x2B3370eE501B4a559b57D449569354196457D8Ab` and the testnet Core-deposit bridge wallet. A real bridged token is more representative of mainnet behavior than a mock.
-- **Implementation**: testnet faucet drips USDC into the user's HL account; user bridges to HyperEVM via standard bridge or HL UI; `HYPEREVM_USDC` resolves to the canonical testnet address through `lib/wallet/networks.ts`.
+- **Why**: `HLConstants.sol` (now archived) pinned `USDC_EVM_TESTNET = 0x2B3370eE501B4a559b57D449569354196457D8Ab` and the testnet CoreDepositWallet. A real bridged token is more representative of mainnet behavior than a mock.
+- **Implementation**: testnet faucet drips USDC into the user's HL account; user bridges to HyperEVM via HL UI; `HYPEREVM_USDC` resolves to the canonical testnet ERC-20 through `lib/wallet/networks.ts`. Bridge address surfaces separately as `CORE_DEPOSIT_WALLET` for explicit deposit calls.
 - **Fallback**: if testnet USDC turns out to be unfaucet-able for our test wallet, we'll deploy a 6-decimal mock alongside the factory.

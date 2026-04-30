@@ -30,8 +30,16 @@ interface NetworkConfig {
   hlWsUrl: string;
   /// Block explorer base URL (for address/tx links).
   explorerBase: string;
-  /// USDC ERC20 address on this HyperEVM network.
+  /// Native USDC ERC20 address on this HyperEVM network. This is the token
+  /// users hold and the contract calls `balanceOf` / `transfer` on. Distinct
+  /// from `coreDepositWallet` (the bridge proxy).
   usdc: Address;
+  /// Circle's CoreDepositWallet — the bridge proxy used to move native USDC
+  /// from EVM to Core. Bridge with `IERC20.approve(coreDepositWallet, x)`
+  /// then `coreDepositWallet.deposit(x)`. NOT an ERC-20; do not call
+  /// `balanceOf` / `transfer` on this. This is the address HL's `spotMeta`
+  /// returns under `evmContract.address` (a misleading field name).
+  coreDepositWallet: Address;
   /// Active VaultFactory address on this network.
   vaultFactory: Address;
 }
@@ -66,6 +74,7 @@ const MAINNET: NetworkConfig = {
   hlWsUrl: 'wss://api.hyperliquid.xyz/ws',
   explorerBase: 'https://hyperscan.com',
   usdc: '0xb88339CB7199b77E23DB6E890353E22632Ba630f',
+  coreDepositWallet: '0x6b9e773128f453F5C2c60935ee2De2cBC5390a24',
   vaultFactory:
     (process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS_MAINNET as Address | undefined) ??
     (process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS as Address | undefined) ??
@@ -83,11 +92,14 @@ const TESTNET: NetworkConfig = {
   hlExchangeUrl: 'https://api.hyperliquid-testnet.xyz/exchange',
   hlWsUrl: 'wss://api.hyperliquid-testnet.xyz/ws',
   explorerBase: 'https://hyperevmscan.io',
-  // Canonical testnet USDC ERC20 on HyperEVM testnet — bound to HL spot
-  // index 0 (verified via spotMeta). Override via env if a mock is needed.
+  // Native Circle USDC ERC-20 on HyperEVM testnet. Verified via Phase 0
+  // investigation: this is the token where balances actually live. Distinct
+  // from the CoreDepositWallet bridge below (which spotMeta misleadingly
+  // returns as `evmContract.address`).
   usdc:
     (process.env.NEXT_PUBLIC_USDC_ADDRESS_TESTNET as Address | undefined) ??
-    '0x0b80659a4076E9E93c7dbe0F10675A16A3e5C206',
+    '0x2B3370eE501B4a559b57D449569354196457D8Ab',
+  coreDepositWallet: '0x0b80659a4076E9E93c7dbe0F10675A16A3e5C206',
   vaultFactory:
     (process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS_TESTNET as Address | undefined) ??
     ZERO,
@@ -102,6 +114,7 @@ export const HL_EXCHANGE_URL = NETWORK_CONFIG.hlExchangeUrl;
 export const HL_WS_URL = NETWORK_CONFIG.hlWsUrl;
 export const EXPLORER_BASE = NETWORK_CONFIG.explorerBase;
 export const HYPEREVM_USDC: Address = NETWORK_CONFIG.usdc;
+export const CORE_DEPOSIT_WALLET: Address = NETWORK_CONFIG.coreDepositWallet;
 export const VAULT_FACTORY_ADDRESS: Address = NETWORK_CONFIG.vaultFactory;
 export const FACTORY_DEPLOY_BLOCK: bigint = NETWORK_CONFIG.factoryDeployBlock;
 
