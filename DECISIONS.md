@@ -94,6 +94,18 @@ write. Each finding below is a one-paragraph record.
 - **v1 cost**: ~3 days for pro-rata close path + slippage accounting.
 - **Reversal trigger**: first user complaint about withdrawal blocking.
 
+### Creator stake invariant: min(20% of vault, $X cap) — INTENTIONAL
+- **Rule**: required creator stake = `min(MIN_CREATOR_BPS × totalAssets / 10_000, CREATOR_STAKE_CAP_USDC)`. The 20% rule binds while the vault is small (forcing meaningful skin in the game). Once 20% of the vault would exceed the USDC cap, the cap takes over and the vault can scale unbounded — a creator who's committed `$X` doesn't need to keep matching follower deposits forever.
+- **Defaults (placeholder)**: 20% bps, $100 cap. Both are testnet placeholders — final values TBD before mainnet.
+- **Effect**: at $100 cap, creator's $20 unlocks up to $80 followers; their $100 unlocks unlimited (after vault crosses $500). Creators withdraw freely above the minimum; followers withdraw with no constraint (their leaving raises creator's % automatically).
+- **v1+ knob**: cap probably wants per-vault customization (creator picks their commitment level → unlocks their max growth multiple). v0.1 keeps it as a hardcoded constant for simplicity.
+
+### Two fees, both default 0, admin-toggleable — INTENTIONAL
+- **Vault deployment fee**: flat USDC at `factory.createVault()`. Lives in the factory (Phase 1.6), not in the vault. Default 0.
+- **Follower deposit fee**: bps-of-deposit, skimmed off USDC before shares mint, sent to fee recipient. Lives in the vault (`setDepositFee` admin call). Default 0. Hard cap 10% so admin can't grief.
+- **Why default 0**: both fee surfaces are wired but inactive for v0.1 testnet. We turn them on with real numbers (and a treasury address) at the mainnet gate.
+- **Open**: actual fee bps + flat deploy amount TBD.
+
 ### Performance fee = 0 in v0.1 — INTENTIONAL
 - **Why**: we want clean P&L numbers during testing. Fee plumbing exists in the contract; rate is just zero.
 - **v0.1 cost**: none — Theorise earns nothing on perf fees during testnet.

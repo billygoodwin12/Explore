@@ -18,15 +18,19 @@ contract DeployCreatorVault is Script {
     function run() external returns (CreatorVault vault) {
         address usdc = vm.envAddress("USDC_ADDRESS");
         address creator = vm.envOr("CREATOR_ADDRESS", msg.sender);
+        // Theorise admin (Ownable owner). Defaults to deployer for testnet.
+        // Mainnet should pass a multisig here.
+        address admin = vm.envOr("ADMIN_ADDRESS", msg.sender);
         string memory name_ = vm.envOr("VAULT_NAME", string("Theorise Test Vault"));
         string memory symbol_ = vm.envOr("VAULT_SYMBOL", string("tVAULT"));
 
         vm.startBroadcast();
-        vault = new CreatorVault(IERC20(usdc), creator, name_, symbol_);
+        vault = new CreatorVault(IERC20(usdc), creator, admin, name_, symbol_);
         vm.stopBroadcast();
 
         console.log("CreatorVault deployed at:", address(vault));
         console.log("Asset (USDC):", usdc);
         console.log("Creator:", creator);
+        console.log("Admin (owner):", admin);
     }
 }
