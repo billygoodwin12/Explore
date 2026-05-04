@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
+import {ICoreDepositWallet, HLConstants} from "../src/HLConstants.sol";
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
@@ -18,8 +19,27 @@ contract MockUSDC is ERC20 {
     }
 }
 
+/// @dev Stub for the Circle CoreDepositWallet — pulls USDC on `deposit()`
+///      so we can verify the bridge call without a live Core.
+contract MockCoreDepositWallet is ICoreDepositWallet {
+    IERC20 public immutable token;
+    uint256 public lastAmount;
+    uint32 public lastDex;
+
+    constructor(IERC20 token_) {
+        token = token_;
+    }
+
+    function deposit(uint256 amount, uint32 destinationDex) external {
+        token.transferFrom(msg.sender, address(this), amount);
+        lastAmount = amount;
+        lastDex = destinationDex;
+    }
+}
+
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
+    MockCoreDepositWallet bridge;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -30,10 +50,22 @@ contract CreatorVaultTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        vault = new CreatorVault(IERC20(address(usdc)), creator, admin, "Theorise BTC Long", "tVAULT");
+        bridge = new MockCoreDepositWallet(IERC20(address(usdc)));
+        vault = new CreatorVault(
+            IERC20(address(usdc)),
+            ICoreDepositWallet(address(bridge)),
+            creator,
+            admin,
+            "Theorise BTC Long",
+            "tVAULT"
+        );
         usdc.mint(creator, 100_000e6);
         usdc.mint(alice, 100_000e6);
         usdc.mint(bob, 100_000e6);
+
+        // CoreWriter precompile doesn't exist in unit tests; mock with
+        // empty calldata prefix so any call to it returns successfully.
+        vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
     }
 
     // ─── Helpers ────────────────────────────────────────────────────
@@ -202,6 +234,66 @@ contract CreatorVaultTest is Test {
         _depositAs(bob, 1_000e6);
         // No skim — full $1,000 in vault.
         assertEq(usdc.balanceOf(address(vault)), 11_000e6);
+    }
+
+    // ─── Phase 1.5: bridge + trade access control ───────────────────
+
+    function test_only_creator_can_bridge_to_core() public {
+        _seedCreator(1_000e6);
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.bridgeToCore(100e6, true);
+    }
+
+    function test_only_creator_can_bridge_to_evm() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.bridgeToEvm(100e6);
+    }
+
+    function test_only_creator_can_place_order() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.placeOrder(0, true, 95_000_00000000, 100_000, false, HLConstants.TIF_IOC);
+    }
+
+    function test_only_admin_can_set_builder_fee() public {
+        vm.prank(creator);
+        vm.expectRevert();
+        vault.setBuilderFee(address(0xBEE), 50);
+    }
+
+    function test_bridge_to_core_pulls_usdc_from_vault() public {
+        _seedCreator(1_000e6);
+        uint256 vaultBefore = usdc.balanceOf(address(vault));
+
+        vm.prank(creator);
+        vault.bridgeToCore(500e6, true);
+
+        // 500 USDC moved out of the vault into the bridge stub.
+        assertEq(usdc.balanceOf(address(vault)), vaultBefore - 500e6);
+        assertEq(usdc.balanceOf(address(bridge)), 500e6);
+        assertEq(bridge.lastAmount(), 500e6);
+        assertEq(bridge.lastDex(), HLConstants.DEX_PERP);
+    }
+
+    function test_bridge_to_core_zero_amount_reverts() public {
+        _seedCreator(1_000e6);
+        vm.prank(creator);
+        vm.expectRevert();
+        vault.bridgeToCore(0, true);
+    }
+
+    function test_place_order_succeeds_for_creator() public {
+        // Doesn't actually trade — just confirms the call wires through
+        // CoreWriter without reverting. Live verification happens on testnet.
+        vm.prank(creator);
+        vault.placeOrder(0, true, 95_000_00000000, 100_000, false, HLConstants.TIF_IOC);
+    }
+
+    function test_set_builder_fee_succeeds_for_admin() public {
+        vm.prank(admin);
+        vault.setBuilderFee(address(0xBEE), 50); // 5 bps in tenths-of-bps
     }
 
     function test_two_depositors_split_pro_rata_no_fee() public {

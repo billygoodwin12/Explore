@@ -8,24 +8,29 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
+import {HLConstants, ICoreDepositWallet, ICoreWriter} from "./HLConstants.sol";
+
 /// @title CreatorVault — v0.1
-/// @notice Single-creator vault that holds USDC and mints ERC-4626 shares.
+/// @notice Single-creator vault that holds USDC, mints ERC-4626 shares,
+///         and signs HyperCore trades through CoreWriter.
 ///
 ///         Roles:
-///         - CREATOR (immutable): the trader who manages this vault. In
-///           Phase 1.5 they get permission to call placeOrder etc.
-///         - owner (Ownable): Theorise admin. Sets platform-wide fees and
-///           the fee recipient. Does NOT have trading authority.
+///         - CREATOR (immutable): the trader who manages this vault.
+///           Signs bridge + order calls.
+///         - owner (Ownable): Theorise admin. Sets platform-wide fees,
+///           registers builder. NO trading authority.
 ///
-///         Invariant: creator's stake must always be at least
-///         max(MIN_CREATOR_BPS of vault, MIN_CREATOR_FLOOR USDC). Skin in
-///         the game is structural — followers can only deposit up to ~4x
-///         the creator's own stake before the cap binds.
+///         Invariant: creator's stake must be at least
+///         min(MIN_CREATOR_BPS of vault, CREATOR_STAKE_CAP_USDC). Skin in
+///         the game is structural while the vault is small; the cap
+///         takes over once the vault grows past the threshold.
 contract CreatorVault is ERC4626, Ownable {
     using SafeERC20 for IERC20;
 
     /// @notice The single trader authorised to manage this vault.
     address public immutable CREATOR;
+    /// @notice Network-specific Circle CoreDepositWallet bridge for USDC.
+    ICoreDepositWallet public immutable CORE_DEPOSIT_WALLET;
 
     // ─── Creator stake invariant ────────────────────────────────────
     /// @notice Minimum creator stake in basis points of total vault assets.
@@ -48,12 +53,24 @@ contract CreatorVault is ERC4626, Ownable {
     uint16 public constant MAX_DEPOSIT_FEE_BPS = 1000; // 10% hard cap
 
     event DepositFeeUpdated(uint16 bps, address recipient);
+    event BridgedToCore(uint256 amount, bool toPerp);
+    event BridgedToEvm(uint64 amount);
+    event OrderPlaced(uint32 asset, bool isBuy, uint64 limitPx, uint64 sz, uint8 tif);
+    event BuilderApproved(address indexed builder, uint64 maxFeeRate);
 
     error CreatorStakeTooLow(uint256 currentAssets, uint256 required);
     error DepositFeeTooHigh(uint16 bps, uint16 cap);
+    error NotCreator();
+    error ZeroAmount();
+
+    modifier onlyCreator() {
+        if (msg.sender != CREATOR) revert NotCreator();
+        _;
+    }
 
     constructor(
         IERC20 usdc,
+        ICoreDepositWallet coreDepositWallet_,
         address creator_,
         address admin_,
         string memory name_,
@@ -64,6 +81,7 @@ contract CreatorVault is ERC4626, Ownable {
         Ownable(admin_)
     {
         CREATOR = creator_;
+        CORE_DEPOSIT_WALLET = coreDepositWallet_;
     }
 
     // ─── Admin: fee config ──────────────────────────────────────────
@@ -148,5 +166,88 @@ contract CreatorVault is ERC4626, Ownable {
         if (creatorAssets < minRequired) {
             revert CreatorStakeTooLow(creatorAssets, minRequired);
         }
+    }
+
+    // ─── Bridge: EVM → Core (creator only) ──────────────────────────
+
+    /// @notice Move USDC from this vault on EVM into its HL Core account.
+    /// @param amount USDC in 6 decimals.
+    /// @param toPerp true → land in perps margin; false → land in spot.
+    function bridgeToCore(uint256 amount, bool toPerp) external onlyCreator {
+        if (amount == 0) revert ZeroAmount();
+        IERC20(asset()).forceApprove(address(CORE_DEPOSIT_WALLET), amount);
+        CORE_DEPOSIT_WALLET.deposit(
+            amount,
+            toPerp ? HLConstants.DEX_PERP : HLConstants.DEX_SPOT
+        );
+        emit BridgedToCore(amount, toPerp);
+    }
+
+    // ─── Bridge: Core → EVM (creator only) ──────────────────────────
+
+    /// @notice Move USDC from this vault's Core spot back to its EVM
+    ///         ERC-20 balance, via CoreWriter sendAsset (action 13).
+    /// @dev Encoding for action 13 is provisional — payload schema not
+    ///      yet verified live on testnet. The first call in Phase 1.5
+    ///      tests is the verification step.
+    /// @param amount USDC in 6 decimals.
+    function bridgeToEvm(uint64 amount) external onlyCreator {
+        if (amount == 0) revert ZeroAmount();
+        bytes memory payload = abi.encode(
+            address(this),                  // destination on EVM
+            address(0),                     // sourceDex (default)
+            uint64(0),                      // destinationDex (default)
+            HLConstants.USDC_SPOT_INDEX,    // token = USDC
+            amount,                         // amount in 6 decimals
+            uint64(0)                       // fromSubAccount
+        );
+        _sendAction(HLConstants.ACTION_SEND_ASSET, payload);
+        emit BridgedToEvm(amount);
+    }
+
+    // ─── Trade: place limit order (creator only) ────────────────────
+
+    /// @notice Fire a CoreWriter limit order on this vault's HL account.
+    ///         Builder fee approved via setBuilderFee auto-attaches.
+    /// @param asset_ HL asset ID (perp default-dex = raw universe index;
+    ///               HIP-3 = 100000 + dex_idx*10000 + i).
+    /// @param isBuy long if true, short if false.
+    /// @param limitPx limit price scaled by 10^8.
+    /// @param sz size in base asset, scaled by 10^8.
+    /// @param reduceOnly true to only reduce existing position.
+    /// @param tif HLConstants.TIF_IOC | TIF_GTC | TIF_ALO.
+    function placeOrder(
+        uint32 asset_,
+        bool isBuy,
+        uint64 limitPx,
+        uint64 sz,
+        bool reduceOnly,
+        uint8 tif
+    ) external onlyCreator {
+        bytes memory payload = abi.encode(
+            asset_, isBuy, limitPx, sz, reduceOnly, tif, uint128(0) // cloid 0
+        );
+        _sendAction(HLConstants.ACTION_LIMIT_ORDER, payload);
+        emit OrderPlaced(asset_, isBuy, limitPx, sz, tif);
+    }
+
+    // ─── Admin: builder fee approval ────────────────────────────────
+
+    /// @notice Approve a builder to skim a max fee rate from this vault's
+    ///         orders. Called once per builder. Admin only.
+    /// @param builder Theorise's HL builder address.
+    /// @param maxFeeRate Per HL action 12 schema. Verify unit on first
+    ///                   testnet call (likely tenths of bps; 5 bps = 50).
+    function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner {
+        bytes memory payload = abi.encode(maxFeeRate, builder);
+        _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
+        emit BuilderApproved(builder, maxFeeRate);
+    }
+
+    // ─── Internal: CoreWriter raw-action shape ──────────────────────
+
+    function _sendAction(uint24 actionId, bytes memory payload) internal {
+        bytes memory data = bytes.concat(bytes1(0x01), bytes3(actionId), payload);
+        ICoreWriter(HLConstants.CORE_WRITER).sendRawAction(data);
     }
 }
