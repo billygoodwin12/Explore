@@ -187,22 +187,26 @@ contract CreatorVault is ERC4626, Ownable {
 
     /// @notice Move USDC from this vault's Core spot back to its EVM
     ///         ERC-20 balance, via CoreWriter sendAsset (action 13).
-    /// @dev Encoding for action 13 is provisional — payload schema not
-    ///      yet verified live on testnet. The first call in Phase 1.5
-    ///      tests is the verification step.
-    /// @param amount USDC in 6 decimals.
-    function bridgeToEvm(uint64 amount) external onlyCreator {
+    /// @dev Per HL docs: for Core→EVM, the action's `destination` field
+    ///      must be the per-token system address; HL credits the EVM
+    ///      ERC-20 balance of the action's *sender* (this vault).
+    ///      `destinationDex = type(uint32).max` matches the encoding
+    ///      Circle's bridge uses for the inverse direction.
+    /// @param amount USDC in 6 decimals (matches the EVM ERC-20). The
+    ///        contract converts to 8-decimal Core units internally.
+    function bridgeToEvm(uint256 amount) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
+        uint64 coreAmount = uint64(amount * 100); // 6 → 8 decimals
         bytes memory payload = abi.encode(
-            address(this),                  // destination on EVM
-            address(0),                     // sourceDex (default)
-            uint64(0),                      // destinationDex (default)
-            HLConstants.USDC_SPOT_INDEX,    // token = USDC
-            amount,                         // amount in 6 decimals
-            uint64(0)                       // fromSubAccount
+            HLConstants.USDC_SYSTEM_ADDRESS,    // destination = bridge system address
+            address(0),                         // sourceDex (default spot)
+            uint64(type(uint32).max),           // destinationDex = SPOT marker
+            HLConstants.USDC_SPOT_INDEX,        // token = USDC
+            coreAmount,                         // amount in 8 decimals
+            uint64(0)                           // fromSubAccount
         );
         _sendAction(HLConstants.ACTION_SEND_ASSET, payload);
-        emit BridgedToEvm(amount);
+        emit BridgedToEvm(uint64(amount));
     }
 
     // ─── Trade: place limit order (creator only) ────────────────────

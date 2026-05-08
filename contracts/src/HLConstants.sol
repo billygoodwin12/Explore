@@ -31,6 +31,14 @@ library HLConstants {
     // ─── HL spot token indices ──────────────────────────────────────
     uint64 internal constant USDC_SPOT_INDEX = 0;
 
+    // ─── System addresses (per-token bridge endpoints) ──────────────
+    /// @notice For Core→EVM `sendAsset`, the `destination` field must be
+    ///         the system address corresponding to the token. The HL
+    ///         system then credits the EVM-side ERC-20 balance of the
+    ///         action's *sender*. Format: 0x20-prefix + token index (BE).
+    ///         USDC token index = 0, so the address is 0x20...0000.
+    address internal constant USDC_SYSTEM_ADDRESS = 0x2000000000000000000000000000000000000000;
+
     // ─── Read precompiles ───────────────────────────────────────────
     address internal constant POSITION_PRECOMPILE                = 0x0000000000000000000000000000000000000800;
     address internal constant SPOT_BALANCE_PRECOMPILE            = 0x0000000000000000000000000000000000000801;
