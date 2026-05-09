@@ -8,12 +8,19 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {HLConstants, ICoreWriter} from "./HLConstants.sol";
+import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 
 contract CreatorVault is ERC4626, Ownable {
     using SafeERC20 for IERC20;
 
     address public immutable CREATOR;
+
+    /// @notice Circle's CoreDepositWallet — the canonical USDC bridge.
+    ///         Direct ERC-20 transfers to the per-token system address are
+    ///         blocked by Circle's Blacklistable list, so USDC must go
+    ///         through this proxy. Per-network address (mainnet/testnet
+    ///         differ) baked in at construction.
+    ICoreDepositWallet public immutable BRIDGE;
 
     uint16 public constant MIN_CREATOR_BPS = 2000;
     uint256 public constant CREATOR_STAKE_CAP_USDC = 100e6;
@@ -23,7 +30,8 @@ contract CreatorVault is ERC4626, Ownable {
     uint16 public constant MAX_DEPOSIT_FEE_BPS = 1000;
 
     event DepositFeeUpdated(uint16 bps, address recipient);
-    event BridgedToCore(uint256 amount, bool toPerp);
+    event BridgedToCore(uint256 amount);
+    event MovedOnCore(uint256 amount, bool toPerp);
     event BridgedToEvm(uint64 amount);
     event OrderPlaced(uint32 asset, bool isBuy, uint64 limitPx, uint64 sz, uint8 tif);
     event BuilderApproved(address indexed builder, uint64 maxFeeRate);
@@ -38,9 +46,19 @@ contract CreatorVault is ERC4626, Ownable {
         _;
     }
 
-    constructor(IERC20 usdc, address creator_, address admin_, string memory name_, string memory symbol_)
+    constructor(
+        IERC20 usdc,
+        ICoreDepositWallet bridge_,
+        address creator_,
+        address admin_,
+        string memory name_,
+        string memory symbol_
+    )
         ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_)
-    { CREATOR = creator_; }
+    {
+        CREATOR = creator_;
+        BRIDGE = bridge_;
+    }
 
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
@@ -84,16 +102,23 @@ contract CreatorVault is ERC4626, Ownable {
         if (ca < mr) revert CreatorStakeTooLow(ca, mr);
     }
 
+    /// @notice Move `amount` of vault USDC from EVM to the vault's own
+    ///         Core spot account via Circle's CoreDepositWallet. From there
+    ///         use `moveOnCore` to flip into the perp account before trading.
+    /// @dev    Lands in spot (DEX_SPOT) so withdrawals via `bridgeToEvm`
+    ///         (which only sources from spot) stay one-hop.
     function bridgeToCore(uint256 amount) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
-        IERC20(asset()).safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, amount);
-        emit BridgedToCore(amount, false);
+        IERC20(asset()).forceApprove(address(BRIDGE), amount);
+        BRIDGE.depositFor(address(this), amount, HLConstants.DEX_SPOT);
+        emit BridgedToCore(amount);
     }
 
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
         bytes memory payload = abi.encode(uint64(amount), toPerp);
         _sendAction(HLConstants.ACTION_USD_CLASS_TRANSFER, payload);
+        emit MovedOnCore(amount, toPerp);
     }
 
     function bridgeToEvm(uint256 amount) external onlyCreator {

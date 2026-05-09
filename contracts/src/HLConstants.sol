@@ -12,7 +12,7 @@ library HLConstants {
     ///           NB  abi.encoded payload
     address internal constant CORE_WRITER = 0x3333333333333333333333333333333333333333;
 
-    // ─── CoreWriter action IDs ──────────────────────────────────────
+    // ─── CoreWriter action IDs ──────────────────────────────────
     uint24 internal constant ACTION_LIMIT_ORDER = 1;
     uint24 internal constant ACTION_SPOT_SEND = 6;
     uint24 internal constant ACTION_USD_CLASS_TRANSFER = 7;
@@ -29,7 +29,7 @@ library HLConstants {
     uint32 internal constant DEX_PERP = 0;
     uint32 internal constant DEX_SPOT = type(uint32).max;
 
-    // ─── HL spot token indices ──────────────────────────────────────
+    // ─── HL spot token indices ────────────────────────────────────
     uint64 internal constant USDC_SPOT_INDEX = 0;
 
     // ─── System addresses (per-token bridge endpoints) ──────────────
@@ -40,7 +40,7 @@ library HLConstants {
     ///         USDC token index = 0, so the address is 0x20...0000.
     address internal constant USDC_SYSTEM_ADDRESS = 0x2000000000000000000000000000000000000000;
 
-    // ─── Read precompiles ───────────────────────────────────────────
+    // ─── Read precompiles ───────────────────────────────────────
     address internal constant POSITION_PRECOMPILE                = 0x0000000000000000000000000000000000000800;
     address internal constant SPOT_BALANCE_PRECOMPILE            = 0x0000000000000000000000000000000000000801;
     address internal constant WITHDRAWABLE_PRECOMPILE            = 0x0000000000000000000000000000000000000803;
@@ -59,6 +59,13 @@ interface ICoreDepositWallet {
     /// @param destinationDex `HLConstants.DEX_PERP` (0) for perps balance
     ///                       or `HLConstants.DEX_SPOT` (max uint32) for spot.
     function deposit(uint256 amount, uint32 destinationDex) external;
+
+    /// @param recipient Core account to credit (any EVM address; Core uses
+    ///                  the same address space).
+    /// @dev Use this from a contract caller to be unambiguous about the
+    ///      Core-side credit destination, regardless of Circle's internal
+    ///      msg.sender routing rules.
+    function depositFor(address recipient, uint256 amount, uint32 destinationDex) external;
 }
 
 interface ICoreWriter {
