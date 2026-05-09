@@ -5,48 +5,18 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
-import {HLConstants, ICoreDepositWallet} from "../src/HLConstants.sol";
+import {HLConstants} from "../src/HLConstants.sol";
 
+/// @dev USDC label only — vault never actually holds EVM USDC; deposits
+///      and redeems happen on HyperCore. We pass this address to ERC4626's
+///      constructor so `asset()` has a valid 6-dec ERC20 to introspect.
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-
-    function decimals() public pure override returns (uint8) {
-        return 6;
-    }
-}
-
-/// @dev Stub for Circle's CoreDepositWallet. Pulls USDC on `depositFor` and
-///      records the call so we can verify the bridge wiring.
-contract MockCoreDepositWallet is ICoreDepositWallet {
-    IERC20 public immutable token;
-    address public lastRecipient;
-    uint256 public lastAmount;
-    uint32 public lastDex;
-
-    constructor(IERC20 token_) { token = token_; }
-
-    function deposit(uint256 amount, uint32 destinationDex) external override {
-        token.transferFrom(msg.sender, address(this), amount);
-        lastRecipient = msg.sender;
-        lastAmount = amount;
-        lastDex = destinationDex;
-    }
-
-    function depositFor(address recipient, uint256 amount, uint32 destinationDex) external override {
-        token.transferFrom(msg.sender, address(this), amount);
-        lastRecipient = recipient;
-        lastAmount = amount;
-        lastDex = destinationDex;
-    }
+    function decimals() public pure override returns (uint8) { return 6; }
 }
 
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
-    MockCoreDepositWallet bridge;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -57,41 +27,46 @@ contract CreatorVaultTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        bridge = new MockCoreDepositWallet(IERC20(address(usdc)));
         vault = new CreatorVault(
             IERC20(address(usdc)),
-            ICoreDepositWallet(address(bridge)),
             creator,
             admin,
             "Theorise BTC Long",
             "tVAULT"
         );
-        usdc.mint(creator, 100_000e6);
-        usdc.mint(alice, 100_000e6);
-        usdc.mint(bob, 100_000e6);
 
-        // CoreWriter precompile doesn't exist in unit tests; mock with
-        // empty calldata prefix so any call to it returns successfully.
+        // CoreWriter precompile doesn't exist in unit tests; mock so any
+        // outbound action returns successfully.
         vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
+
+        // Default Core balances = 0 for vault, perp accountValue = 0.
+        _setCoreSpot(0);
+        _setCorePerp(0);
     }
 
-    // ─── Helpers ───────────────────────────────────────────────────
+    // ─── Mock helpers ───────────────────────────────────────────────────────
 
-    function _seedCreator(uint256 amount) internal {
-        vm.startPrank(creator);
-        usdc.approve(address(vault), amount);
-        vault.deposit(amount, creator);
-        vm.stopPrank();
+    /// @dev Set vault's HyperCore spot USDC balance (in 6-dec EVM units).
+    function _setCoreSpot(uint256 sixDec) internal {
+        uint64 total8 = uint64(sixDec * 100);
+        vm.mockCall(
+            HLConstants.SPOT_BALANCE_PRECOMPILE,
+            abi.encode(address(vault), HLConstants.USDC_SPOT_INDEX),
+            abi.encode(total8, uint64(0), uint64(0))
+        );
     }
 
-    function _depositAs(address who, uint256 amount) internal returns (uint256 shares) {
-        vm.startPrank(who);
-        usdc.approve(address(vault), amount);
-        shares = vault.deposit(amount, who);
-        vm.stopPrank();
+    /// @dev Set vault's HyperCore perp accountValue (in 6-dec EVM units).
+    function _setCorePerp(uint256 sixDec) internal {
+        int64 accountValue8 = int64(uint64(sixDec * 100));
+        vm.mockCall(
+            HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE,
+            abi.encode(uint32(0), address(vault)),
+            abi.encode(accountValue8, uint64(0), int64(0), int64(0))
+        );
     }
 
-    // ─── Round-trip basics ──────────────────────────────────────────
+    // ─── Deploy invariants ────────────────────────────────────────────────
 
     function test_creator_stored() public view {
         assertEq(vault.CREATOR(), creator);
@@ -101,106 +76,115 @@ contract CreatorVaultTest is Test {
         assertEq(vault.owner(), admin);
     }
 
-    function test_creator_first_deposit_mints_one_to_one() public {
-        uint256 shares = _depositAs(creator, 500e6);
-        assertEq(shares, 500e6);
-        assertEq(vault.balanceOf(creator), 500e6);
-        assertEq(usdc.balanceOf(address(vault)), 500e6);
+    function test_asset_is_usdc() public view {
+        assertEq(vault.asset(), address(usdc));
     }
 
-    function test_creator_can_withdraw_when_alone() public {
-        _depositAs(creator, 500e6);
-        uint256 sh = vault.balanceOf(creator);
+    function test_share_decimals() public view {
+        // ERC4626 default: asset.decimals() + _decimalsOffset() = 6 + 6 = 12
+        assertEq(vault.decimals(), 12);
+    }
+
+    // ─── Standard ERC-4626 surface neutered ──────────────────────────────
+
+    function test_standard_deposit_reverts() public {
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.deposit(1, alice);
+    }
+
+    function test_standard_mint_reverts() public {
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.mint(1, alice);
+    }
+
+    function test_standard_withdraw_reverts() public {
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.withdraw(1, alice, alice);
+    }
+
+    function test_standard_redeem_reverts() public {
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.redeem(1, alice, alice);
+    }
+
+    function test_max_methods_return_zero() public view {
+        assertEq(vault.maxDeposit(alice), 0);
+        assertEq(vault.maxMint(alice), 0);
+        assertEq(vault.maxWithdraw(alice), 0);
+        assertEq(vault.maxRedeem(alice), 0);
+    }
+
+    function test_preview_methods_revert() public {
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.previewDeposit(1);
+
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.previewMint(1);
+
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.previewWithdraw(1);
+
+        vm.expectRevert(CreatorVault.UseCoreFlow.selector);
+        vault.previewRedeem(1);
+    }
+
+    // ─── depositCore happy paths ────────────────────────────────────────
+
+    function test_first_deposit_mints_with_offset() public {
+        // Creator sent 100 USDC to vault Core (mocked).
+        _setCoreSpot(100e6);
+
         vm.prank(creator);
-        uint256 out = vault.redeem(sh, creator, creator);
-        assertEq(out, 500e6);
-        assertEq(vault.totalSupply(), 0);
+        uint256 shares = vault.depositCore(creator, 0);
+
+        // First deposit: net 100e6, supply 0, preAssets 0
+        // shares = 100e6 * (0 + 1e6) / (0 + 1) = 1e14
+        assertEq(shares, 1e14);
+        assertEq(vault.balanceOf(creator), 1e14);
+        assertEq(vault.lastSeenCoreSpot(), 100e6);
     }
 
-    // ─── Creator stake invariant ────────────────────────────────────
+    function test_second_deposit_pro_rata() public {
+        // Seed creator with 100 USDC.
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
 
-    function test_invariant_cap_binds_above_threshold() public {
-        // Creator stakes exactly $100 (the cap). Vault grows past $500
-        // → 20% > $100 → cap binds → followers can keep depositing
-        // without the creator topping up.
-        _seedCreator(100e6);
-        _depositAs(bob, 400e6); // vault = $500, 20% = cap
-        _depositAs(alice, 10_000e6); // vault = $10,500. Cap still binds.
-        assertEq(vault.totalAssets(), 10_500e6);
-
-        // Creator's stake is still $100, which equals the cap → ok.
-        uint256 creatorAssets = vault.convertToAssets(vault.balanceOf(creator));
-        assertEq(creatorAssets, 100e6);
-    }
-
-    function test_invariant_pct_binds_below_threshold() public {
-        // Below cap-threshold ($500), 20% rule binds. Creator at $20 →
-        // followers maxed at 4x = $80 → vault = $100 (creator at 20%).
-        _seedCreator(20e6);
-        _depositAs(bob, 80e6);
-        assertEq(vault.totalAssets(), 100e6);
-
-        // Any more would push creator under 20% (and 20% < cap, so 20%
-        // binds, not cap).
-        vm.startPrank(alice);
-        usdc.approve(address(vault), 1e6);
-        vm.expectRevert();
-        vault.deposit(1e6, alice);
-        vm.stopPrank();
-    }
-
-    function test_invariant_creator_top_up_below_threshold() public {
-        // Below the cap-threshold the 20% rule binds. Creator can unlock
-        // more follower capacity by adding to their own stake.
-        _seedCreator(20e6); // vault $20, 20% rule active
-        _depositAs(bob, 80e6); // vault $100, creator at 20%
-        // Alice can't deposit (would push creator under 20%).
-        vm.startPrank(alice);
-        usdc.approve(address(vault), 1e6);
-        vm.expectRevert();
-        vault.deposit(1e6, alice);
-        vm.stopPrank();
-
-        // Creator tops up another $20 → creator $40, vault $120, 33%.
-        // Alice can now deposit up to $80 (creator $40 of $200 = 20%).
-        _depositAs(creator, 20e6);
-        _depositAs(alice, 80e6);
-        assertEq(vault.totalAssets(), 200e6);
-    }
-
-    function test_invariant_creator_can_only_withdraw_above_minimum() public {
-        _seedCreator(1_000e6);
-        _depositAs(bob, 4_000e6); // creator at 20%
-
-        // Creator tries to redeem any shares → drops below 20% → reverts.
-        uint256 sh = vault.balanceOf(creator);
-        vm.startPrank(creator);
-        vm.expectRevert();
-        vault.redeem(sh, creator, creator);
-        vm.stopPrank();
-    }
-
-    function test_invariant_follower_withdrawal_unaffected() public {
-        _seedCreator(1_000e6);
-        _depositAs(bob, 4_000e6);
-
-        // Bob withdrawing raises creator's % → no revert.
-        uint256 sh = vault.balanceOf(bob);
+        // Bob now sends 50 USDC (cumulative spot: 150).
+        _setCoreSpot(150e6);
         vm.prank(bob);
-        uint256 out = vault.redeem(sh, bob, bob);
-        assertEq(out, 4_000e6);
+        uint256 shares = vault.depositCore(bob, 0);
+
+        // pre supply = 1e14, pre assets = 100e6, net = 50e6
+        // shares ≈ 50e6 * 1e14 / 1e8 = 5e13
+        assertApproxEqAbs(shares, 5e13, 1e6);
+        assertEq(vault.balanceOf(bob), shares);
+    }
+
+    function test_no_delta_reverts() public {
+        _setCoreSpot(0);
+        vm.prank(creator);
+        vm.expectRevert(CreatorVault.NoDeposit.selector);
+        vault.depositCore(creator, 0);
+    }
+
+    function test_min_shares_slippage_reverts() public {
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vm.expectRevert(); // SlippageExceeded
+        vault.depositCore(creator, 1e15);
     }
 
     // ─── Deposit fee ────────────────────────────────────────────────
 
-    function test_fee_defaults_to_zero() public {
+    function test_fee_defaults_to_zero() public view {
         assertEq(vault.depositFeeBps(), 0);
         assertEq(vault.feeRecipient(), address(0));
     }
 
     function test_admin_can_set_fee() public {
         vm.prank(admin);
-        vault.setDepositFee(50, treasury); // 0.5%
+        vault.setDepositFee(50, treasury);
         assertEq(vault.depositFeeBps(), 50);
         assertEq(vault.feeRecipient(), treasury);
     }
@@ -214,59 +198,130 @@ contract CreatorVaultTest is Test {
     function test_fee_cap_enforced() public {
         vm.prank(admin);
         vm.expectRevert();
-        vault.setDepositFee(1001, treasury); // > 10%
+        vault.setDepositFee(1001, treasury);
     }
 
-    function test_fee_skims_to_recipient_on_deposit() public {
-        _seedCreator(10_000e6);
-
+    function test_fee_skims_on_deposit() public {
         vm.prank(admin);
         vault.setDepositFee(100, treasury); // 1%
 
-        uint256 treasuryBefore = usdc.balanceOf(treasury);
-        _depositAs(bob, 1_000e6);
+        // Creator sends 100 USDC. Fee = 1, net = 99.
+        _setCoreSpot(100e6);
 
-        // 1% of $1,000 = $10 to treasury, $990 to vault for bob's shares.
-        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 10e6);
-        // Vault holds creator's $10,000 plus bob's net $990.
-        assertEq(usdc.balanceOf(address(vault)), 10_990e6);
+        vm.prank(creator);
+        uint256 shares = vault.depositCore(creator, 0);
+
+        // Shares minted on net (99 USDC).
+        assertEq(shares, 99e6 * 1e6);
+        // Watermark = currentSpot - fee = 99e6 (fee will leave when spotSend settles)
+        assertEq(vault.lastSeenCoreSpot(), 99e6);
     }
 
     function test_fee_zero_recipient_disables_skim() public {
-        _seedCreator(10_000e6);
-
         vm.prank(admin);
-        vault.setDepositFee(100, address(0)); // bps set but no recipient
+        vault.setDepositFee(100, address(0));
 
-        _depositAs(bob, 1_000e6);
-        // No skim — full $1,000 in vault.
-        assertEq(usdc.balanceOf(address(vault)), 11_000e6);
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        uint256 shares = vault.depositCore(creator, 0);
+
+        // No fee skim since recipient is zero.
+        assertEq(shares, 100e6 * 1e6);
+        assertEq(vault.lastSeenCoreSpot(), 100e6);
     }
 
-    // ─── Phase 1.5: bridge + trade access control ───────────────────
+    // ─── Creator stake invariant ────────────────────────────────────────────
 
-    function test_only_creator_can_bridge_to_core() public {
-        _seedCreator(1_000e6);
+    function test_invariant_pct_binds_below_threshold() public {
+        // Below cap-threshold ($500): 20% rule binds.
+        // Creator at $20 → followers maxed at 4× = $80.
+        _setCoreSpot(20e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(100e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        // Alice tries to deposit 1 USDC — would push creator under 20%.
+        _setCoreSpot(101e6);
         vm.prank(alice);
         vm.expectRevert();
-        vault.bridgeToCore(100e6);
+        vault.depositCore(alice, 0);
     }
 
-    function test_only_creator_can_bridge_to_evm() public {
+    function test_invariant_cap_binds_above_threshold() public {
+        // Creator at exactly $100 cap. Once vault > $500, only cap binds
+        // → followers can deposit freely without creator topping up.
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(500e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        _setCoreSpot(10_500e6);
         vm.prank(alice);
-        vm.expectRevert();
-        vault.bridgeToEvm(100e6);
+        vault.depositCore(alice, 0);
+
+        uint256 creatorAssets = vault.convertToAssets(vault.balanceOf(creator));
+        assertApproxEqAbs(creatorAssets, 100e6, 1e3);
     }
+
+    // ─── redeemCore ───────────────────────────────────────────────────────
+
+    function test_redeem_creator_alone() public {
+        _setCoreSpot(500e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        uint256 sh = vault.balanceOf(creator);
+        vm.prank(creator);
+        uint256 amount = vault.redeemCore(sh, creator);
+
+        assertApproxEqAbs(amount, 500e6, 1e3);
+        assertEq(vault.totalSupply(), 0);
+    }
+
+    function test_redeem_insufficient_spot_reverts() public {
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        // Pretend creator moved most of it to perp — only 5 on spot.
+        _setCoreSpot(5e6);
+        _setCorePerp(95e6);
+
+        uint256 sh = vault.balanceOf(creator);
+        vm.prank(creator);
+        vm.expectRevert();
+        vault.redeemCore(sh, creator);
+    }
+
+    function test_redeem_zero_shares_reverts() public {
+        vm.prank(creator);
+        vm.expectRevert(CreatorVault.ZeroAmount.selector);
+        vault.redeemCore(0, creator);
+    }
+
+    function test_redeem_zero_address_reverts() public {
+        vm.prank(creator);
+        vm.expectRevert(CreatorVault.ZeroAddress.selector);
+        vault.redeemCore(1, address(0));
+    }
+
+    // ─── Trading actions: access control ───────────────────────────────────
 
     function test_only_creator_can_move_on_core() public {
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(CreatorVault.NotCreator.selector);
         vault.moveOnCore(100e6, true);
     }
 
     function test_only_creator_can_place_order() public {
         vm.prank(alice);
-        vm.expectRevert();
+        vm.expectRevert(CreatorVault.NotCreator.selector);
         vault.placeOrder(0, true, 95_000_00000000, 100_000, false, HLConstants.TIF_IOC);
     }
 
@@ -276,53 +331,53 @@ contract CreatorVaultTest is Test {
         vault.setBuilderFee(address(0xBEE), 50);
     }
 
-    function test_bridge_to_core_routes_through_circle_bridge() public {
-        _seedCreator(1_000e6);
-        uint256 vaultBefore = usdc.balanceOf(address(vault));
-
-        vm.prank(creator);
-        vault.bridgeToCore(500e6);
-
-        // 500 USDC moved out of the vault into the bridge stub.
-        assertEq(usdc.balanceOf(address(vault)), vaultBefore - 500e6);
-        assertEq(usdc.balanceOf(address(bridge)), 500e6);
-        // Bridge recorded a depositFor(vault, 500e6, DEX_SPOT).
-        assertEq(bridge.lastRecipient(), address(vault));
-        assertEq(bridge.lastAmount(), 500e6);
-        assertEq(bridge.lastDex(), HLConstants.DEX_SPOT);
-    }
-
-    function test_bridge_to_core_zero_amount_reverts() public {
-        _seedCreator(1_000e6);
+    function test_only_admin_can_reconcile() public {
         vm.prank(creator);
         vm.expectRevert();
-        vault.bridgeToCore(0);
+        vault.reconcile();
+    }
+
+    function test_admin_reconcile_resets_watermark() public {
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+        assertEq(vault.lastSeenCoreSpot(), 100e6);
+
+        _setCoreSpot(60e6);
+        vm.prank(admin);
+        vault.reconcile();
+        assertEq(vault.lastSeenCoreSpot(), 60e6);
+    }
+
+    function test_move_on_core_to_perp_updates_watermark() public {
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        vm.prank(creator);
+        vault.moveOnCore(40e6, true);
+
+        assertEq(vault.lastSeenCoreSpot(), 60e6);
+    }
+
+    function test_move_on_core_from_perp_updates_watermark() public {
+        _setCoreSpot(100e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        vm.prank(creator);
+        vault.moveOnCore(40e6, false);
+
+        assertEq(vault.lastSeenCoreSpot(), 140e6);
     }
 
     function test_place_order_succeeds_for_creator() public {
-        // Doesn't actually trade — just confirms the call wires through
-        // CoreWriter without reverting. Live verification happens on testnet.
         vm.prank(creator);
         vault.placeOrder(0, true, 95_000_00000000, 100_000, false, HLConstants.TIF_IOC);
     }
 
     function test_set_builder_fee_succeeds_for_admin() public {
         vm.prank(admin);
-        vault.setBuilderFee(address(0xBEE), 50); // 5 bps in tenths-of-bps
-    }
-
-    function test_two_depositors_split_pro_rata_no_fee() public {
-        _seedCreator(1_000e6);
-        _depositAs(bob, 4_000e6);
-
-        assertEq(vault.balanceOf(creator), 1_000e6);
-        assertEq(vault.balanceOf(bob), 4_000e6);
-        assertEq(vault.totalAssets(), 5_000e6);
-
-        // Bob redeems → gets $4,000 back.
-        uint256 sh = vault.balanceOf(bob);
-        vm.prank(bob);
-        uint256 out = vault.redeem(sh, bob, bob);
-        assertEq(out, 4_000e6);
+        vault.setBuilderFee(address(0xBEE), 50);
     }
 }

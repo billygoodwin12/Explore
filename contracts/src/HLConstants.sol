@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-/// @notice HyperLiquid system contracts and CoreWriter action IDs.
-///         Network-specific addresses (USDC, CoreDepositWallet) are passed
-///         at construction so this library is network-agnostic.
+/// @notice HyperLiquid system contracts, CoreWriter action IDs, and read
+///         precompile addresses. Network-agnostic — token addresses
+///         (USDC) are passed at construction in consumer contracts.
 library HLConstants {
     /// @notice CoreWriter precompile, identical on mainnet and testnet.
     ///         Accepts raw bytes shaped as:
@@ -25,19 +25,14 @@ library HLConstants {
     uint8 internal constant TIF_GTC = 2;
     uint8 internal constant TIF_IOC = 3;
 
-    // ─── CoreDepositWallet `destinationDex` enum ────────────────────
-    uint32 internal constant DEX_PERP = 0;
-    uint32 internal constant DEX_SPOT = type(uint32).max;
-
     // ─── HL spot token indices ────────────────────────────────────
     uint64 internal constant USDC_SPOT_INDEX = 0;
 
     // ─── System addresses (per-token bridge endpoints) ──────────────
-    /// @notice For Core→EVM `sendAsset`, the `destination` field must be
-    ///         the system address corresponding to the token. The HL
-    ///         system then credits the EVM-side ERC-20 balance of the
-    ///         action's *sender*. Format: 0x20-prefix + token index (BE).
-    ///         USDC token index = 0, so the address is 0x20...0000.
+    /// @notice For Core→EVM `spotSend`, the `destination` field can be
+    ///         this system address (HL credits the EVM-side ERC-20
+    ///         balance of the action's *sender*). 0x20-prefix + token
+    ///         index (BE). USDC token index = 0 → 0x20…0000.
     address internal constant USDC_SYSTEM_ADDRESS = 0x2000000000000000000000000000000000000000;
 
     // ─── Read precompiles ───────────────────────────────────────
@@ -49,25 +44,8 @@ library HLConstants {
     address internal constant CORE_USER_EXISTS_PRECOMPILE        = 0x0000000000000000000000000000000000000810;
 }
 
-/// @notice Circle's CoreDepositWallet bridge proxy (HL-specific). Call
-///         `deposit()` after `IERC20.approve(...)` to move native USDC
-///         from EVM to Core. Address is network-specific:
-///           mainnet: 0x6b9e773128f453F5C2c60935ee2De2cBC5390a24
-///           testnet: 0x0b80659a4076E9E93c7dbe0F10675A16A3e5C206
-interface ICoreDepositWallet {
-    /// @param amount USDC in 6-decimal native units.
-    /// @param destinationDex `HLConstants.DEX_PERP` (0) for perps balance
-    ///                       or `HLConstants.DEX_SPOT` (max uint32) for spot.
-    function deposit(uint256 amount, uint32 destinationDex) external;
-
-    /// @param recipient Core account to credit (any EVM address; Core uses
-    ///                  the same address space).
-    /// @dev Use this from a contract caller to be unambiguous about the
-    ///      Core-side credit destination, regardless of Circle's internal
-    ///      msg.sender routing rules.
-    function depositFor(address recipient, uint256 amount, uint32 destinationDex) external;
-}
-
+/// @notice CoreWriter sink — the only on-chain action interface we need
+///         for the Core-side deposit / redeem / trading flow.
 interface ICoreWriter {
     function sendRawAction(bytes calldata data) external;
 }
