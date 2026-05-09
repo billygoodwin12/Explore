@@ -41,7 +41,7 @@ contract CreatorVaultTest is Test {
         _setCorePerp(0);
     }
 
-    // ─── Mock helpers ────────────────────────────────────────────────────────
+    // ─── Mock helpers ───────────────────────────────────────────────────────
 
     function _setCoreSpot(uint256 sixDec) internal {
         uint64 total8 = uint64(sixDec * 100);
@@ -52,12 +52,14 @@ contract CreatorVaultTest is Test {
         );
     }
 
+    /// @dev Set vault's HyperCore perp accountValue. Native perp accounting
+    ///      is 6-dec USDC, same unit as our internal totalAssets.
     function _setCorePerp(uint256 sixDec) internal {
-        int64 accountValue8 = int64(uint64(sixDec * 100));
+        int64 accountValue = int64(uint64(sixDec));
         vm.mockCall(
             HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE,
             abi.encode(uint32(0), address(vault)),
-            abi.encode(accountValue8, uint64(0), int64(0), int64(0))
+            abi.encode(accountValue, uint64(0), uint64(0), int64(0))
         );
     }
 
@@ -122,7 +124,7 @@ contract CreatorVaultTest is Test {
         vault.previewRedeem(1);
     }
 
-    // ─── previewDepositCore ────────────────────────────────────────
+    // ─── previewDepositCore ─────────────────────────────────────
 
     function test_preview_zero_when_no_delta() public {
         _setCoreSpot(0);
