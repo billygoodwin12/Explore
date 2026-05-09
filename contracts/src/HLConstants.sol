@@ -14,6 +14,7 @@ library HLConstants {
 
     // ─── CoreWriter action IDs ──────────────────────────────────────
     uint24 internal constant ACTION_LIMIT_ORDER = 1;
+    uint24 internal constant ACTION_SPOT_SEND = 6;
     uint24 internal constant ACTION_USD_CLASS_TRANSFER = 7;
     uint24 internal constant ACTION_ADD_API_WALLET = 9;
     uint24 internal constant ACTION_APPROVE_BUILDER_FEE = 12;
