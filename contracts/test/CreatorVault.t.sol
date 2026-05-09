@@ -5,7 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
-import {ICoreDepositWallet, HLConstants} from "../src/HLConstants.sol";
+import {HLConstants} from "../src/HLConstants.sol";
 
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
@@ -19,27 +19,8 @@ contract MockUSDC is ERC20 {
     }
 }
 
-/// @dev Stub for the Circle CoreDepositWallet — pulls USDC on `deposit()`
-///      so we can verify the bridge call without a live Core.
-contract MockCoreDepositWallet is ICoreDepositWallet {
-    IERC20 public immutable token;
-    uint256 public lastAmount;
-    uint32 public lastDex;
-
-    constructor(IERC20 token_) {
-        token = token_;
-    }
-
-    function deposit(uint256 amount, uint32 destinationDex) external {
-        token.transferFrom(msg.sender, address(this), amount);
-        lastAmount = amount;
-        lastDex = destinationDex;
-    }
-}
-
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
-    MockCoreDepositWallet bridge;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -50,10 +31,8 @@ contract CreatorVaultTest is Test {
 
     function setUp() public {
         usdc = new MockUSDC();
-        bridge = new MockCoreDepositWallet(IERC20(address(usdc)));
         vault = new CreatorVault(
             IERC20(address(usdc)),
-            ICoreDepositWallet(address(bridge)),
             creator,
             admin,
             "Theorise BTC Long",
@@ -242,13 +221,19 @@ contract CreatorVaultTest is Test {
         _seedCreator(1_000e6);
         vm.prank(alice);
         vm.expectRevert();
-        vault.bridgeToCore(100e6, true);
+        vault.bridgeToCore(100e6);
     }
 
     function test_only_creator_can_bridge_to_evm() public {
         vm.prank(alice);
         vm.expectRevert();
         vault.bridgeToEvm(100e6);
+    }
+
+    function test_only_creator_can_move_on_core() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.moveOnCore(100e6, true);
     }
 
     function test_only_creator_can_place_order() public {
@@ -263,25 +248,23 @@ contract CreatorVaultTest is Test {
         vault.setBuilderFee(address(0xBEE), 50);
     }
 
-    function test_bridge_to_core_pulls_usdc_from_vault() public {
+    function test_bridge_to_core_sends_usdc_to_system_address() public {
         _seedCreator(1_000e6);
         uint256 vaultBefore = usdc.balanceOf(address(vault));
 
         vm.prank(creator);
-        vault.bridgeToCore(500e6, true);
+        vault.bridgeToCore(500e6);
 
-        // 500 USDC moved out of the vault into the bridge stub.
+        // 500 USDC moved out of the vault to the USDC system address.
         assertEq(usdc.balanceOf(address(vault)), vaultBefore - 500e6);
-        assertEq(usdc.balanceOf(address(bridge)), 500e6);
-        assertEq(bridge.lastAmount(), 500e6);
-        assertEq(bridge.lastDex(), HLConstants.DEX_PERP);
+        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 500e6);
     }
 
     function test_bridge_to_core_zero_amount_reverts() public {
         _seedCreator(1_000e6);
         vm.prank(creator);
         vm.expectRevert();
-        vault.bridgeToCore(0, true);
+        vault.bridgeToCore(0);
     }
 
     function test_place_order_succeeds_for_creator() public {

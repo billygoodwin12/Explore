@@ -5,6 +5,15 @@ import {Script, console} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
 
+/// @notice Deploy a single CreatorVault to HyperEVM testnet (or mainnet).
+///         Usage:
+///           forge script script/DeployCreatorVault.s.sol \
+///             --rpc-url hyperevm_testnet \
+///             --private-key $PRIVATE_KEY \
+///             --broadcast
+///
+/// @dev USDC address comes from env so the script is network-agnostic.
+///      Creator + admin default to the deployer.
 contract DeployCreatorVault is Script {
     function run() external returns (CreatorVault vault) {
         address usdc = vm.envAddress("USDC_ADDRESS");
