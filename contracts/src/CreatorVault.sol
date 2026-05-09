@@ -71,7 +71,7 @@ contract CreatorVault is ERC4626, Ownable {
         return 6;
     }
 
-    // ─── ERC-4626 surface (neutered) ──────────────────────────────────────
+    // ─── ERC-4626 surface (neutered) ────────────────────────────────────────
 
     function maxDeposit(address) public pure override returns (uint256) { return 0; }
     function maxMint(address) public pure override returns (uint256) { return 0; }
@@ -88,7 +88,7 @@ contract CreatorVault is ERC4626, Ownable {
     function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
     function previewRedeem(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
 
-    // ─── Asset accounting (Core-side reads) ────────────────────────────────
+    // ─── Asset accounting (Core-side reads) ──────────────────────────────────
 
     /// @notice Total USDC the vault claims, in 6-dec EVM units.
     ///         = vault's Core spot USDC + perp accountValue.
@@ -110,8 +110,11 @@ contract CreatorVault is ERC4626, Ownable {
             abi.encode(uint32(0), address(this))
         );
         if (!ok) revert PrecompileFailed(HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE);
-        (int64 accountValue,,,) = abi.decode(data, (int64, uint64, int64, int64));
-        return accountValue > 0 ? uint256(uint64(accountValue)) / 100 : 0;
+        // (int64 accountValue, uint64 marginUsed, uint64 ntlPos, int64 rawUsd)
+        // All four fields are 6-dec USDC (perp accounting) — same units as
+        // our internal totalAssets, so no scaling needed.
+        (int64 accountValue,,,) = abi.decode(data, (int64, uint64, uint64, int64));
+        return accountValue > 0 ? uint256(uint64(accountValue)) : 0;
     }
 
     // ─── Admin: fee config ────────────────────────────────────────────
@@ -232,7 +235,9 @@ contract CreatorVault is ERC4626, Ownable {
 
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
-        bytes memory payload = abi.encode(uint64(amount * 100), toPerp);
+        // Action 7 `usdClassTransfer` expects amount in 6-dec perp USDC,
+        // matching our internal unit — no scaling.
+        bytes memory payload = abi.encode(uint64(amount), toPerp);
         _sendAction(HLConstants.ACTION_USD_CLASS_TRANSFER, payload);
         if (toPerp) lastSeenCoreSpot -= amount;
         else lastSeenCoreSpot += amount;
