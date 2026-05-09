@@ -71,7 +71,7 @@ contract CreatorVault is ERC4626, Ownable {
         return 6;
     }
 
-    // ─── ERC-4626 surface (neutered) ────────────────────────────────────
+    // ─── ERC-4626 surface (neutered) ──────────────────────────────────────
 
     function maxDeposit(address) public pure override returns (uint256) { return 0; }
     function maxMint(address) public pure override returns (uint256) { return 0; }
@@ -133,6 +133,26 @@ contract CreatorVault is ERC4626, Ownable {
     }
 
     // ─── Core deposit / redeem ─────────────────────────────────────────
+
+    /// @notice Quote what `depositCore` would mint right now. Returns the
+    ///         unaccounted-for Core spot delta, the fee that would skim,
+    ///         and the shares the receiver would get. UI polls this to
+    ///         surface "X USDC pending claim → Y shares" before signing.
+    function previewDepositCore() external view returns (uint256 delta, uint256 fee, uint256 shares) {
+        uint256 currentSpot = _coreSpotUSDC();
+        uint256 last = lastSeenCoreSpot;
+        if (currentSpot <= last) return (0, 0, 0);
+        delta = currentSpot - last;
+
+        uint16 bps = depositFeeBps;
+        address recip = feeRecipient;
+        fee = (bps > 0 && recip != address(0)) ? Math.mulDiv(delta, bps, 10_000) : 0;
+        uint256 net = delta - fee;
+
+        uint256 preAssets = totalAssets() - delta;
+        uint256 supply = totalSupply();
+        shares = Math.mulDiv(net, supply + 10 ** _decimalsOffset(), preAssets + 1, Math.Rounding.Floor);
+    }
 
     /// @notice Claim shares for unaccounted USDC sent to vault Core spot.
     ///         Caller must already have transferred USDC to address(this)
@@ -198,7 +218,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit Redeemed(msg.sender, coreReceiver, shares, amount);
     }
 
-    // ─── Creator stake invariant ───────────────────────────────────────
+    // ─── Creator stake invariant ──────────────────────────────────────────
 
     function _enforceCreatorStake() internal view {
         if (totalSupply() == 0) return;
@@ -208,7 +228,7 @@ contract CreatorVault is ERC4626, Ownable {
         if (ca < mr) revert CreatorStakeTooLow(ca, mr);
     }
 
-    // ─── Trading actions (creator-only) ───────────────────────────────────
+    // ─── Trading actions (creator-only) ────────────────────────────────────
 
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();

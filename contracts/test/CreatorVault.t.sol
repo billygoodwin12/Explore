@@ -35,18 +35,14 @@ contract CreatorVaultTest is Test {
             "tVAULT"
         );
 
-        // CoreWriter precompile doesn't exist in unit tests; mock so any
-        // outbound action returns successfully.
         vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
 
-        // Default Core balances = 0 for vault, perp accountValue = 0.
         _setCoreSpot(0);
         _setCorePerp(0);
     }
 
-    // ─── Mock helpers ───────────────────────────────────────────────────────
+    // ─── Mock helpers ────────────────────────────────────────────────────────
 
-    /// @dev Set vault's HyperCore spot USDC balance (in 6-dec EVM units).
     function _setCoreSpot(uint256 sixDec) internal {
         uint64 total8 = uint64(sixDec * 100);
         vm.mockCall(
@@ -56,7 +52,6 @@ contract CreatorVaultTest is Test {
         );
     }
 
-    /// @dev Set vault's HyperCore perp accountValue (in 6-dec EVM units).
     function _setCorePerp(uint256 sixDec) internal {
         int64 accountValue8 = int64(uint64(sixDec * 100));
         vm.mockCall(
@@ -81,7 +76,6 @@ contract CreatorVaultTest is Test {
     }
 
     function test_share_decimals() public view {
-        // ERC4626 default: asset.decimals() + _decimalsOffset() = 6 + 6 = 12
         assertEq(vault.decimals(), 12);
     }
 
@@ -128,35 +122,63 @@ contract CreatorVaultTest is Test {
         vault.previewRedeem(1);
     }
 
-    // ─── depositCore happy paths ────────────────────────────────────────
+    // ─── previewDepositCore ────────────────────────────────────────
+
+    function test_preview_zero_when_no_delta() public {
+        _setCoreSpot(0);
+        (uint256 d, uint256 f, uint256 s) = vault.previewDepositCore();
+        assertEq(d, 0);
+        assertEq(f, 0);
+        assertEq(s, 0);
+    }
+
+    function test_preview_matches_first_deposit() public {
+        _setCoreSpot(100e6);
+
+        (uint256 d, uint256 f, uint256 s) = vault.previewDepositCore();
+        assertEq(d, 100e6);
+        assertEq(f, 0);
+        assertEq(s, 1e14);
+
+        vm.prank(creator);
+        uint256 shares = vault.depositCore(creator, 0);
+        assertEq(shares, s);
+    }
+
+    function test_preview_includes_fee() public {
+        vm.prank(admin);
+        vault.setDepositFee(100, treasury); // 1%
+
+        _setCoreSpot(100e6);
+
+        (uint256 d, uint256 f, uint256 s) = vault.previewDepositCore();
+        assertEq(d, 100e6);
+        assertEq(f, 1e6);
+        assertEq(s, 99e6 * 1e6);
+    }
+
+    // ─── depositCore happy paths ─────────────────────────────────────────
 
     function test_first_deposit_mints_with_offset() public {
-        // Creator sent 100 USDC to vault Core (mocked).
         _setCoreSpot(100e6);
 
         vm.prank(creator);
         uint256 shares = vault.depositCore(creator, 0);
 
-        // First deposit: net 100e6, supply 0, preAssets 0
-        // shares = 100e6 * (0 + 1e6) / (0 + 1) = 1e14
         assertEq(shares, 1e14);
         assertEq(vault.balanceOf(creator), 1e14);
         assertEq(vault.lastSeenCoreSpot(), 100e6);
     }
 
     function test_second_deposit_pro_rata() public {
-        // Seed creator with 100 USDC.
         _setCoreSpot(100e6);
         vm.prank(creator);
         vault.depositCore(creator, 0);
 
-        // Bob now sends 50 USDC (cumulative spot: 150).
         _setCoreSpot(150e6);
         vm.prank(bob);
         uint256 shares = vault.depositCore(bob, 0);
 
-        // pre supply = 1e14, pre assets = 100e6, net = 50e6
-        // shares ≈ 50e6 * 1e14 / 1e8 = 5e13
         assertApproxEqAbs(shares, 5e13, 1e6);
         assertEq(vault.balanceOf(bob), shares);
     }
@@ -171,7 +193,7 @@ contract CreatorVaultTest is Test {
     function test_min_shares_slippage_reverts() public {
         _setCoreSpot(100e6);
         vm.prank(creator);
-        vm.expectRevert(); // SlippageExceeded
+        vm.expectRevert();
         vault.depositCore(creator, 1e15);
     }
 
@@ -203,17 +225,14 @@ contract CreatorVaultTest is Test {
 
     function test_fee_skims_on_deposit() public {
         vm.prank(admin);
-        vault.setDepositFee(100, treasury); // 1%
+        vault.setDepositFee(100, treasury);
 
-        // Creator sends 100 USDC. Fee = 1, net = 99.
         _setCoreSpot(100e6);
 
         vm.prank(creator);
         uint256 shares = vault.depositCore(creator, 0);
 
-        // Shares minted on net (99 USDC).
         assertEq(shares, 99e6 * 1e6);
-        // Watermark = currentSpot - fee = 99e6 (fee will leave when spotSend settles)
         assertEq(vault.lastSeenCoreSpot(), 99e6);
     }
 
@@ -225,7 +244,6 @@ contract CreatorVaultTest is Test {
         vm.prank(creator);
         uint256 shares = vault.depositCore(creator, 0);
 
-        // No fee skim since recipient is zero.
         assertEq(shares, 100e6 * 1e6);
         assertEq(vault.lastSeenCoreSpot(), 100e6);
     }
@@ -233,8 +251,6 @@ contract CreatorVaultTest is Test {
     // ─── Creator stake invariant ────────────────────────────────────────────
 
     function test_invariant_pct_binds_below_threshold() public {
-        // Below cap-threshold ($500): 20% rule binds.
-        // Creator at $20 → followers maxed at 4× = $80.
         _setCoreSpot(20e6);
         vm.prank(creator);
         vault.depositCore(creator, 0);
@@ -243,7 +259,6 @@ contract CreatorVaultTest is Test {
         vm.prank(bob);
         vault.depositCore(bob, 0);
 
-        // Alice tries to deposit 1 USDC — would push creator under 20%.
         _setCoreSpot(101e6);
         vm.prank(alice);
         vm.expectRevert();
@@ -251,8 +266,6 @@ contract CreatorVaultTest is Test {
     }
 
     function test_invariant_cap_binds_above_threshold() public {
-        // Creator at exactly $100 cap. Once vault > $500, only cap binds
-        // → followers can deposit freely without creator topping up.
         _setCoreSpot(100e6);
         vm.prank(creator);
         vault.depositCore(creator, 0);
@@ -289,7 +302,6 @@ contract CreatorVaultTest is Test {
         vm.prank(creator);
         vault.depositCore(creator, 0);
 
-        // Pretend creator moved most of it to perp — only 5 on spot.
         _setCoreSpot(5e6);
         _setCorePerp(95e6);
 
