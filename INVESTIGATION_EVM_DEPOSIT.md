@@ -189,6 +189,8 @@ Migration is moot until either an HL testnet update unblocks the bridge or someo
 
 **Status as of May 10:** Path A ruled out. Bill must now choose between Path B (mainnet probe) and Path D (skip probe, resume relayer).
 
+**Status update (May 10, later) — Phase 1 mainnet fork test FAILED:** Path B is now also ruled out by a Foundry mainnet fork test (`contracts/test/BridgeForkTest.t.sol`). The same `Blacklistable: account is blacklisted` revert reproduces against real Circle USDC at `0xb88339CB7199b77E23DB6E890353E22632Ba630f` on mainnet RPC `https://rpc.hyperliquid.xyz/evm`. Circle's blacklist on `0x2000…0000` is active across both networks. See §9.
+
 ---
 
 ## 5. VERIFICATION SCRIPT
@@ -302,3 +304,64 @@ architecture pivot to Core-deposit.
 **Specifically: do not start any PR 2-NEW through 7-NEW work in this branch until Bill decides between Path B and Path D.**
 
 PR 1 (stake-floor changes) is already merged and is independent of the deposit architecture; it stands regardless of which path we take.
+
+**Update post Phase 1 fork test (May 10):** Path B is now ruled out by the
+`BridgeForkTest` (see §9). The system-address `transfer` reverts on mainnet
+the same way it does on testnet. Two viable next steps remain:
+
+- **Phase 3 — find the canonical bridge.** Inspect production HL ecosystem
+  contracts on mainnet (Kinetiq, HypurrFi, Felix, Hyperdrive, Hyperlend,
+  HLP-style native vaults) that demonstrably hold Core spot USDC funded
+  from EVM. Reverse-engineer how they got there. Possible patterns to
+  investigate: a HL-blessed bridge contract address, CoreWriter
+  `ACTION_SEND_ASSET` (action 13) used bidirectionally, or a Circle/HL
+  whitelist mechanism we don't know about yet.
+- **Path D (relayer fallback).** Roll back PR 2-NEW. Restore the EIP-712
+  intent + relayer architecture from the original audit's PR 2.
+
+PR 2-NEW code is committed to the branch but should NOT be merged in its
+current form — its `deposit()` would revert on the very first call.
+
+---
+
+## 9. PHASE 1 MAINNET FORK TEST RESULT
+
+```
+Date / time:                  May 10, 2026 (later)
+Test:                         contracts/test/BridgeForkTest.t.sol::test_mainnet_evm_side_does_not_revert
+Network:                      HyperEVM mainnet fork (chain 999)
+Fork RPC:                     https://rpc.hyperliquid.xyz/evm
+USDC contract:                0xb88339CB7199b77E23DB6E890353E22632Ba630f (real Circle mainnet)
+Probe contract:               BridgeProbe (deployed in-test, deal()-funded)
+Test amount:                  50,000,000 (50 USDC, 6-dec)
+
+Result:                       REVERT — Circle USDC `Blacklistable: account is blacklisted`
+
+Trace excerpt:
+  [5083] BridgeProbe::bridge(50000000 [5e7])
+    ├─ [3777] 0xb88339...0f::transfer(0x2000...0000, 50000000 [5e7])
+    │   ├─ [3058] 0x003f73...F8::transfer(0x2000...0000, 50000000 [5e7]) [delegatecall]
+    │   │   └─ ← [Revert] Blacklistable: account is blacklisted
+
+Implementation address (delegatecall target): 0x003f73f58ca78880DA3642c5CB71d7459B3Fe4F8
+```
+
+**Implication:** Circle's USDC `Blacklistable` modifier blocks transfers to
+`0x2000…0000` from contracts on mainnet, identically to testnet. The
+`transfer(USDC_SYSTEM_ADDRESS, X)` pattern that PR 2-NEW's `deposit()` uses
+will revert in production. Migration cannot proceed without finding a
+different EVM → Core bridge path.
+
+**Phase 2 was NOT run.** Per the protocol's decision tree, "REVERTS" branches
+straight to Phase 3 (canonical bridge investigation) without spending real
+funds on the on-chain probe.
+
+PR 2-NEW artifacts are still on this branch for reference:
+- `contracts/src/CreatorVault.sol` — ERC-4626 deposit implementation
+- `contracts/test/BridgeForkTest.t.sol` — Phase 1 fork test (this evidence)
+- `contracts/script/MainnetBridgeProbe.s.sol` — Phase 2 script (unused; kept
+  in case a working bridge pattern is later identified)
+- `contracts/test/CreatorVault.t.sol` — 60 unit tests including the
+  async-window divergence test (`test_async_two_deposits_same_block_diverge`)
+  which captures the sandwich-window finding for whichever bridge path we
+  eventually pick.
