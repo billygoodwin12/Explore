@@ -4,21 +4,38 @@ pragma solidity 0.8.26;
 import {Test, Vm} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
 import {HLConstants} from "../src/HLConstants.sol";
 
-/// @dev 6-dec USDC stand-in. We mint into test accounts and have them
-///      approve the vault. The vault `transfer`s to USDC_SYSTEM_ADDRESS
-///      to simulate the bridge; the helper `_settleBridge` advances the
-///      mocked Core spot precompile to model an async settlement.
+/// @dev 6-dec USDC stand-in. Test accounts mint + approve the vault.
 contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
     function decimals() public pure override returns (uint8) { return 6; }
     function mint(address to, uint256 amount) external { _mint(to, amount); }
 }
 
+/// @dev Mock of Circle's CoreDepositWallet. Real CDW does:
+///        1. transferFrom(msg.sender, address(this), amount)
+///        2. emit synthetic Transfer(this, USDC_SYSTEM_ADDRESS, amount)
+///        3. if dex != 0xFFFFFFFF, call CoreWriter action 13
+///      Tests don't care about (2)/(3) — they assert that USDC left the
+///      vault. The test harness models Core settlement separately via
+///      `_settleBridge`, which advances the mocked spot precompile.
+contract MockCoreDepositWallet {
+    using SafeERC20 for IERC20;
+
+    address public immutable USDC;
+    constructor(address usdc) { USDC = usdc; }
+
+    function depositFor(address /*recipient*/, uint256 amount, uint32 /*destinationDex*/) external {
+        IERC20(USDC).safeTransferFrom(msg.sender, address(this), amount);
+    }
+}
+
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
+    MockCoreDepositWallet cdw;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -27,18 +44,17 @@ contract CreatorVaultTest is Test {
     address alice = address(0xA1);
     address bob = address(0xB0);
 
-    /// @dev Mocked Core spot balance (in 6-dec). Mirrors what the
-    ///      precompile would return after a bridge settles.
     uint256 internal coreSpot;
-    /// @dev Mocked Core perp accountValue (6-dec).
     uint256 internal corePerp;
 
     function setUp() public {
         usdc = new MockUSDC();
+        cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
+            address(cdw),
             "Theorise BTC Long",
             "tVAULT"
         );
@@ -48,6 +64,12 @@ contract CreatorVaultTest is Test {
         _setCoreSpot(0);
         _setCorePerp(0);
 
+        // Disable per-tx TVL cap by default so existing breach/redeem
+        // scenarios remain readable. Dedicated tests cover the cap.
+        uint16 capDisabled = vault.DEPOSIT_TVL_CAP_DISABLED();
+        vm.prank(admin);
+        vault.setDepositTvlCapBps(capDisabled);
+
         usdc.mint(alice, 1_000_000e6);
         usdc.mint(bob, 1_000_000e6);
         usdc.mint(creator, 10_000_000e6);
@@ -56,7 +78,7 @@ contract CreatorVaultTest is Test {
         vm.prank(creator); usdc.approve(address(vault), type(uint256).max);
     }
 
-    // ─── Mock helpers ───────────────────────────────────────────
+    // ─── Mock helpers ─────────────────────────────────────────────
 
     function _setCoreSpot(uint256 sixDec) internal {
         coreSpot = sixDec;
@@ -78,34 +100,13 @@ contract CreatorVaultTest is Test {
         );
     }
 
-    /// @dev Simulate async bridge settlement by advancing the mocked Core
-    ///      spot balance. Tests that need to model the sandwich window
-    ///      do NOT call this between deposits.
+    /// @dev Simulate async bridge settlement. Tests modeling the sandwich
+    ///      window do NOT call this between deposits.
     function _settleBridge(uint256 net) internal {
         _setCoreSpot(coreSpot + net);
     }
 
-    /// @dev One-call helper for the common pattern: deposit, then settle.
-    function _depositAndSettle(address from, uint256 assets) internal returns (uint256 shares) {
-        uint256 evmBefore = usdc.balanceOf(address(vault));
-        vm.prank(from);
-        shares = vault.deposit(assets, from);
-        uint256 evmAfter = usdc.balanceOf(address(vault));
-        // Vault should hold no USDC after deposit (all bridged + fee'd out).
-        assertEq(evmAfter, evmBefore, "vault retained EVM USDC");
-        // Net = full bridged amount = assets - fee. We can recover it from
-        // the system address's increase.
-        uint256 sysBalance = usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS);
-        // Settle the just-bridged amount: net = (sysBalance - prevSysBalance)
-        // is awkward to track here; use deposit assets minus fee.
-        (uint16 bps,) = (vault.depositFeeBps(), vault.feeRecipient());
-        uint256 fee = bps == 0 ? 0 : (assets * bps) / 10_000;
-        if (vault.feeRecipient() == address(0)) fee = 0;
-        _settleBridge(assets - fee);
-        sysBalance; // silence
-    }
-
-    // ─── Deploy invariants ────────────────────────────────────────
+    // ─── Deploy invariants ────────────────────────────────────────────
 
     function test_creator_stored() public view {
         assertEq(vault.CREATOR(), creator);
@@ -117,6 +118,10 @@ contract CreatorVaultTest is Test {
 
     function test_asset_is_usdc() public view {
         assertEq(vault.asset(), address(usdc));
+    }
+
+    function test_core_deposit_wallet_stored() public view {
+        assertEq(vault.CORE_DEPOSIT_WALLET(), address(cdw));
     }
 
     function test_share_decimals() public view {
@@ -141,12 +146,12 @@ contract CreatorVaultTest is Test {
         assertEq(vault.MIN_DEPOSIT_USDC(), 10e6);
     }
 
-    // ─── ERC-4626 surface: deposit/mint open, withdraw/redeem closed ────
-
-    function test_max_deposit_open_when_no_breach() public view {
-        assertEq(vault.maxDeposit(alice), type(uint256).max);
-        assertEq(vault.maxMint(alice), type(uint256).max);
+    function test_constructor_rejects_zero_cdw() public {
+        vm.expectRevert(CreatorVault.ZeroAddress.selector);
+        new CreatorVault(IERC20(address(usdc)), creator, admin, address(0), "x", "x");
     }
+
+    // ─── ERC-4626 surface ───────────────────────────────────────────
 
     function test_max_withdraw_redeem_zero() public view {
         assertEq(vault.maxWithdraw(alice), 0);
@@ -170,7 +175,7 @@ contract CreatorVaultTest is Test {
         vault.previewRedeem(1);
     }
 
-    // ─── deposit() happy paths ────────────────────────────────────
+    // ─── deposit() happy paths ─────────────────────────────────────
 
     function test_first_deposit_mints_with_offset() public {
         vm.prank(creator);
@@ -179,7 +184,7 @@ contract CreatorVaultTest is Test {
         assertEq(shares, 1e14, "shares == 100e6 * 1e6");
         assertEq(vault.balanceOf(creator), 1e14);
         assertEq(usdc.balanceOf(address(vault)), 0, "vault holds no EVM USDC");
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 100e6, "bridged");
+        assertEq(usdc.balanceOf(address(cdw)), 100e6, "bridged via CDW");
 
         _settleBridge(100e6);
         assertEq(vault.totalAssets(), 100e6);
@@ -190,11 +195,13 @@ contract CreatorVaultTest is Test {
         vault.deposit(100e6, creator);
         _settleBridge(100e6);
 
+        uint16 capDisabled = vault.DEPOSIT_TVL_CAP_DISABLED();
+        vm.prank(admin);
+        vault.setDepositTvlCapBps(capDisabled);
+
         vm.prank(bob);
         uint256 bobShares = vault.deposit(50e6, bob);
 
-        // 100e6 NAV, 1e14 supply. Bob deposits 50e6 net.
-        // shares = 50e6 * (1e14 + 1e6) / (100e6 + 1)
         assertApproxEqAbs(bobShares, 5e13, 1e6);
         assertEq(vault.balanceOf(bob), bobShares);
     }
@@ -220,12 +227,10 @@ contract CreatorVaultTest is Test {
         vault.deposit(100e6, creator);
     }
 
-    // ─── mint() happy paths ────────────────────────────────────────
+    // ─── mint() ────────────────────────────────────────────────────
 
     function test_mint_inverse_of_deposit() public {
-        // Bootstrap so totalSupply > 0.
-        vm.prank(creator);
-        vault.deposit(100e6, creator);
+        vm.prank(creator); vault.deposit(100e6, creator);
         _settleBridge(100e6);
 
         uint256 want = 5e13;
@@ -239,10 +244,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_mint_with_fee_user_receives_at_least_requested_shares() public {
-        // Loop over fee bps × share counts as the protocol mandates.
         uint16[5] memory feeBps = [uint16(0), 50, 100, 500, 1000];
-        // Wants chosen so previewMint(want) >= MIN_DEPOSIT_USDC after the
-        // bootstrap of $100. 1e14 = $100, 1e16 = $10K, 1e18 = $1M.
         uint256[3] memory wants = [uint256(1e14), 1e16, 1e18];
 
         for (uint256 f = 0; f < feeBps.length; f++) {
@@ -256,7 +258,6 @@ contract CreatorVaultTest is Test {
                 uint256 want = wants[w];
                 uint256 grossExpected = vault.previewMint(want);
 
-                // Fund bob if his balance is short for big mints.
                 if (usdc.balanceOf(bob) < grossExpected) {
                     usdc.mint(bob, grossExpected);
                     vm.prank(bob);
@@ -285,16 +286,22 @@ contract CreatorVaultTest is Test {
 
     function _resetVaultWithBootstrap() internal {
         usdc = new MockUSDC();
+        cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
+            address(cdw),
             "Theorise BTC Long",
             "tVAULT"
         );
         vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
         _setCoreSpot(0);
         _setCorePerp(0);
+
+        uint16 capDisabled = vault.DEPOSIT_TVL_CAP_DISABLED();
+        vm.prank(admin);
+        vault.setDepositTvlCapBps(capDisabled);
 
         usdc.mint(creator, 10_000_000e6);
         usdc.mint(bob, 10_000_000e6);
@@ -306,64 +313,61 @@ contract CreatorVaultTest is Test {
         _settleBridge(100e6);
     }
 
-    // ─── previewDeposit / previewMint ─────────────────────────────────
+    // ─── previewDeposit / previewMint ──────────────────────────────────
 
-    function test_previewDeposit_no_fee() public {
+    function test_previewDeposit_no_fee() public view {
         assertEq(vault.previewDeposit(100e6), 1e14);
     }
 
     function test_previewDeposit_with_fee() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury); // 1%
+        vm.prank(admin); vault.setDepositFee(100, treasury);
         assertEq(vault.previewDeposit(100e6), 99e6 * 1e6);
     }
 
-    function test_previewMint_no_fee_first_deposit() public {
+    function test_previewMint_no_fee_first_deposit() public view {
         assertEq(vault.previewMint(1e14), 100e6);
     }
 
     function test_previewMint_with_fee_grosses_up() public {
         vm.prank(admin); vault.setDepositFee(100, treasury);
 
-        // First deposit to bootstrap.
         vm.prank(creator);
-        vault.deposit(100e6, creator); // 99e6 net → 99e12 shares
+        vault.deposit(100e6, creator);
         _settleBridge(99e6);
 
-        uint256 want = 99e12; // mirror bootstrap shares for clean math
+        uint256 want = 99e12;
         uint256 gross = vault.previewMint(want);
-        // gross such that gross * (1 - 1%) == 99e6 → gross == 100e6 (rounded up)
         assertGe(gross, 100e6);
         assertLe(gross, 100e6 + 1);
     }
 
-    // ─── Bridge accounting + sweep ──────────────────────────────────
+    // ─── Bridge accounting + sweep ──────────────────────────────────────
 
-    function test_deposit_bridges_full_net_to_system_address() public {
+    function test_deposit_bridges_full_net_to_cdw() public {
         vm.prank(creator);
         vault.deposit(500e6, creator);
 
         assertEq(usdc.balanceOf(address(vault)), 0);
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 500e6);
+        assertEq(usdc.balanceOf(address(cdw)), 500e6);
+        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 0);
     }
 
     function test_deposit_with_fee_skim_evm_side() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury); // 1%
+        vm.prank(admin); vault.setDepositFee(100, treasury);
         vm.prank(creator);
         vault.deposit(500e6, creator);
 
-        // Fee 5e6 stays on EVM with treasury; net 495e6 bridges.
         assertEq(usdc.balanceOf(treasury), 5e6);
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 495e6);
+        assertEq(usdc.balanceOf(address(cdw)), 495e6);
         assertEq(usdc.balanceOf(address(vault)), 0);
     }
 
     function test_sweep_when_empty_is_noop() public {
-        vault.sweepStrandedEvmUsdc(); // no revert
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 0);
+        vault.sweepStrandedEvmUsdc();
+        assertEq(usdc.balanceOf(address(cdw)), 0);
     }
 
-    function test_sweep_bridges_donations() public {
-        // Donor sends USDC directly to vault (bypassing deposit).
+    function test_sweep_bridges_donations_via_cdw() public {
         vm.prank(alice);
         usdc.transfer(address(vault), 25e6);
         assertEq(usdc.balanceOf(address(vault)), 25e6);
@@ -371,7 +375,7 @@ contract CreatorVaultTest is Test {
         vault.sweepStrandedEvmUsdc();
 
         assertEq(usdc.balanceOf(address(vault)), 0);
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 25e6);
+        assertEq(usdc.balanceOf(address(cdw)), 25e6);
     }
 
     function test_sweep_emits_event() public {
@@ -383,39 +387,117 @@ contract CreatorVaultTest is Test {
         vault.sweepStrandedEvmUsdc();
     }
 
-    // ─── Async-window behaviour ─────────────────────────────────────
+    // ─── Per-tx TVL cap ───────────────────────────────────────────────
 
-    /// @notice Demonstrates the async-bridge sandwich window the protocol's
-    ///         Phase 2 latency measurement exists to size. If two deposits
-    ///         land before either bridge settles, the SECOND deposit prices
-    ///         against pre-bridge NAV (which still excludes the first
-    ///         deposit's in-flight USDC) and gets MORE shares per USDC than
-    ///         the first depositor. Test asserts the divergence — the bug
-    ///         exists by design and waits on Phase 2 to determine if a
-    ///         mitigation is required.
-    function test_async_two_deposits_same_block_diverge() public {
-        // Bootstrap to $1M.
+    function test_tvl_cap_default_is_5pct() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(0);
+        _setCorePerp(0);
+        assertEq(vault.depositTvlCapBps(), 500);
+    }
+
+    function test_tvl_cap_bypassed_when_nav_zero() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(0);
+        _setCorePerp(0);
         vm.prank(creator);
-        vault.deposit(1_000_000e6, creator);
+        usdc.approve(address(vault), type(uint256).max);
+        vm.prank(creator);
+        uint256 shares = vault.deposit(1_000_000e6, creator);
+        assertGt(shares, 0);
+    }
+
+    function test_tvl_cap_blocks_oversized_deposit() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(0);
+        _setCorePerp(0);
+        vm.prank(creator); usdc.approve(address(vault), type(uint256).max);
+        vm.prank(creator); vault.deposit(1000e6, creator);
+        _settleBridge(1000e6);
+        vm.prank(bob); usdc.approve(address(vault), type(uint256).max);
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.DepositExceedsTvlCap.selector, 51e6, 50e6)
+        );
+        vault.deposit(51e6, bob);
+    }
+
+    function test_tvl_cap_allows_exact_cap() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(0);
+        _setCorePerp(0);
+        vm.prank(creator); usdc.approve(address(vault), type(uint256).max);
+        vm.prank(creator); vault.deposit(1000e6, creator);
+        _settleBridge(1000e6);
+        vm.prank(bob); usdc.approve(address(vault), type(uint256).max);
+        vm.prank(bob);
+        vault.deposit(50e6, bob);
+    }
+
+    function test_max_deposit_reflects_cap() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(1000e6);
+        _setCorePerp(0);
+        assertEq(vault.maxDeposit(alice), 50e6);
+    }
+
+    function test_admin_can_tighten_tvl_cap() public {
+        vm.prank(admin);
+        vault.setDepositTvlCapBps(200);
+        assertEq(vault.depositTvlCapBps(), 200);
+    }
+
+    function test_admin_cannot_set_tvl_cap_below_min() public {
+        vm.prank(admin);
+        vm.expectRevert();
+        vault.setDepositTvlCapBps(50);
+    }
+
+    function test_admin_cannot_set_tvl_cap_above_max() public {
+        vm.prank(admin);
+        vm.expectRevert();
+        vault.setDepositTvlCapBps(10_001);
+    }
+
+    function test_non_admin_cannot_set_tvl_cap() public {
+        vm.prank(creator);
+        vm.expectRevert();
+        vault.setDepositTvlCapBps(1000);
+    }
+
+    // ─── Async-window behaviour ──────────────────────────────────────────
+
+    function test_async_two_deposits_same_block_diverge() public {
+        vm.prank(creator); vault.deposit(1_000_000e6, creator);
         _settleBridge(1_000_000e6);
 
         uint256 supplyBefore = vault.totalSupply();
         uint256 navBefore = vault.totalAssets();
 
-        // Alice deposits $100K — pre-bridge NAV = $1M.
         vm.prank(alice);
         uint256 aliceShares = vault.deposit(100_000e6, alice);
 
-        // Bob deposits $1K with NO settlement in between — pre-bridge NAV
-        // still reads $1M but totalSupply is now $1M + alice's mint, so
-        // each USDC of bob's deposit buys MORE shares than alice's did.
         vm.prank(bob);
         uint256 bobShares = vault.deposit(1_000e6, bob);
 
-        uint256 aliceRate = aliceShares / 100_000; // shares per USDC
+        uint256 aliceRate = aliceShares / 100_000;
         uint256 bobRate   = bobShares   / 1_000;
 
-        // Bob gets at least 5% more shares per USDC than alice — exploit window.
         assertGt(bobRate, aliceRate, "bob did not get cheaper shares");
         assertGe(
             (bobRate - aliceRate) * 100 / aliceRate,
@@ -423,17 +505,44 @@ contract CreatorVaultTest is Test {
             "divergence under 5%"
         );
 
-        // After both bridges settle, NAV catches up.
         _settleBridge(101_000e6);
         assertEq(vault.totalAssets(), navBefore + 101_000e6);
         assertEq(vault.totalSupply(), supplyBefore + aliceShares + bobShares);
     }
 
-    /// @notice Sequential deposits across a settled bridge: the second
-    ///         deposit sees the first's settled credit and prices fairly.
+    function test_tvl_cap_bounds_sandwich_window() public {
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        _setCoreSpot(0);
+        _setCorePerp(0);
+        usdc.mint(creator, 10_000_000e6);
+        usdc.mint(alice, 1_000_000e6);
+        usdc.mint(bob, 1_000_000e6);
+        vm.prank(creator); usdc.approve(address(vault), type(uint256).max);
+        vm.prank(alice);   usdc.approve(address(vault), type(uint256).max);
+        vm.prank(bob);     usdc.approve(address(vault), type(uint256).max);
+
+        vm.prank(creator); vault.deposit(1_000_000e6, creator);
+        _settleBridge(1_000_000e6);
+
+        vm.prank(alice);
+        uint256 aliceShares = vault.deposit(50_000e6, alice);
+
+        vm.prank(bob);
+        uint256 bobShares = vault.deposit(50_000e6, bob);
+
+        uint256 aliceRate = aliceShares / 50_000;
+        uint256 bobRate   = bobShares   / 50_000;
+        uint256 liftPct   = ((bobRate - aliceRate) * 100) / aliceRate;
+
+        assertGt(bobRate, aliceRate);
+        assertLe(liftPct, 6, "lift exceeded interim mitigation budget");
+    }
+
     function test_sync_two_deposits_with_settlement_between() public {
-        vm.prank(creator);
-        vault.deposit(1_000_000e6, creator);
+        vm.prank(creator); vault.deposit(1_000_000e6, creator);
         _settleBridge(1_000_000e6);
 
         vm.prank(alice);
@@ -444,17 +553,12 @@ contract CreatorVaultTest is Test {
         uint256 bobShares = vault.deposit(1_000e6, bob);
         _settleBridge(1_000e6);
 
-        // Bob's per-USDC share count should be SLIGHTLY less than Alice's
-        // (Alice's NAV grew her share value, sort of). Actually with a
-        // pure $-in $-out vault and zero PnL, both should be equal. The
-        // virtual-shares offset means rates converge as supply grows.
         uint256 aliceRate = aliceShares / 100_000;
         uint256 bobRate   = bobShares   / 1_000;
-        // Floor rounding may bite by 1; same order of magnitude.
         assertApproxEqRel(aliceRate, bobRate, 1e15);
     }
 
-    // ─── Deposit fee admin ─────────────────────────────────────────
+    // ─── Deposit fee admin ───────────────────────────────────────────
 
     function test_fee_defaults_to_zero() public view {
         assertEq(vault.depositFeeBps(), 0);
@@ -462,8 +566,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_admin_can_set_fee() public {
-        vm.prank(admin);
-        vault.setDepositFee(50, treasury);
+        vm.prank(admin); vault.setDepositFee(50, treasury);
         assertEq(vault.depositFeeBps(), 50);
         assertEq(vault.feeRecipient(), treasury);
     }
@@ -481,18 +584,16 @@ contract CreatorVaultTest is Test {
     }
 
     function test_fee_zero_recipient_disables_skim() public {
-        vm.prank(admin);
-        vault.setDepositFee(100, address(0));
+        vm.prank(admin); vault.setDepositFee(100, address(0));
 
         vm.prank(creator);
         uint256 shares = vault.deposit(100e6, creator);
 
-        // No fee skimmed: full 100e6 bridged.
-        assertEq(usdc.balanceOf(HLConstants.USDC_SYSTEM_ADDRESS), 100e6);
+        assertEq(usdc.balanceOf(address(cdw)), 100e6);
         assertEq(shares, 1e14);
     }
 
-    // ─── Stake invariant: breach state machine ─────────────────────────
+    // ─── Stake invariant: breach state machine ───────────────────────────
 
     function test_breach_starts_below_5pct() public {
         vm.prank(creator); vault.deposit(5_000e6, creator);
@@ -512,13 +613,7 @@ contract CreatorVaultTest is Test {
         usdc.mint(bob, 9_750_000e6);
         vm.prank(bob); vault.deposit(9_750_000e6, bob);
         _settleBridge(9_750_000e6);
-        // Note: a transient false-positive breach may be flagged inside bob's
-        // deposit() because share-pricing reads pre-bridge totalAssets while
-        // creator's stake is computed against post-mint supply. This self-
-        // heals on the next state-mutating call (the redemption below). The
-        // test checks the FINAL breach state, not the transient one.
 
-        // Creator redeems $50K via redeemCore.
         uint256 redemptionAmount = 50_000e6;
         uint256 sharesToRedeem =
             (redemptionAmount * (vault.totalSupply() + 1e6)) / (vault.totalAssets() + 1);
@@ -560,11 +655,9 @@ contract CreatorVaultTest is Test {
 
         vm.warp(block.timestamp + 49 hours);
 
-        // maxDeposit drops to zero.
         assertEq(vault.maxDeposit(alice), 0);
         assertEq(vault.maxMint(alice), 0);
 
-        // And actual deposits revert via the cure guard.
         vm.prank(alice);
         vm.expectRevert();
         vault.deposit(100e6, alice);
@@ -592,7 +685,6 @@ contract CreatorVaultTest is Test {
 
         assertGt(vault.stakeBreachStartedAt(), 0);
 
-        // Creator tops up to >5% of new TVL.
         vm.prank(creator); vault.deposit(200_000e6, creator);
         _settleBridge(200_000e6);
 
@@ -605,13 +697,11 @@ contract CreatorVaultTest is Test {
         vm.prank(bob); vault.deposit(195_000e6, bob);
         _settleBridge(195_000e6);
 
-        // Bob redeems all.
         uint256 bobShares = vault.balanceOf(bob);
         vm.prank(bob);
         uint256 bobAmt = vault.redeemCore(bobShares, bob);
         _setCoreSpot(coreSpot - bobAmt);
 
-        // Then creator redeems all.
         uint256 creatorShares = vault.balanceOf(creator);
         vm.prank(creator);
         uint256 creatorAmt = vault.redeemCore(creatorShares, creator);
@@ -621,7 +711,7 @@ contract CreatorVaultTest is Test {
         assertEq(vault.stakeBreachStartedAt(), 0);
     }
 
-    // ─── Stake cap admin ───────────────────────────────────────────
+    // ─── Stake cap admin ──────────────────────────────────────────────
 
     function test_admin_can_adjust_cap_within_bounds() public {
         vm.prank(admin); vault.setCreatorStakeCap(500_000e6);
@@ -638,7 +728,7 @@ contract CreatorVaultTest is Test {
         vault.setCreatorStakeCap(50_000_000e6);
     }
 
-    function test_non_admin_cannot_set_cap() public {
+    function test_non_admin_cannot_set_creator_stake_cap() public {
         vm.prank(creator); vm.expectRevert();
         vault.setCreatorStakeCap(500_000e6);
     }
@@ -653,7 +743,7 @@ contract CreatorVaultTest is Test {
         assertEq(vault.requiredCreatorStake(), 250_000e6);
     }
 
-    // ─── redeemCore ─────────────────────────────────────────────
+    // ─── redeemCore ────────────────────────────────────────────────
 
     function test_redeem_creator_alone() public {
         vm.prank(creator); vault.deposit(500e6, creator);
@@ -692,7 +782,7 @@ contract CreatorVaultTest is Test {
         vault.redeemCore(1, address(0));
     }
 
-    // ─── Trading actions: access control ──────────────────────────────
+    // ─── Trading actions: access control ───────────────────────────────
 
     function test_only_creator_can_move_on_core() public {
         vm.prank(alice);
