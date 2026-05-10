@@ -4,81 +4,69 @@ pragma solidity 0.8.26;
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {HLConstants, ICoreWriter} from "./HLConstants.sol";
 
-/// @title  CreatorVault — Theorise Phase 1.5
-/// @notice Creator-led vault with Core-side custody. Followers send USDC
-///         on HyperCore to the vault address (same address as this EVM
-///         contract, mirrored on Core), then call `depositCore` here to
-///         claim ERC-20 share tokens. Creator trades the vault's Core
-///         account directly via CoreWriter actions.
+/// @title  CreatorVault — Theorise PR 2-NEW (EVM-deposit migration)
+/// @notice Creator-led vault. Followers deposit USDC on HyperEVM via the
+///         standard ERC-4626 surface; `deposit()` / `mint()` pull USDC,
+///         skim optional fee, then bridge the net to the vault's Core
+///         spot account by `transfer`-ing to USDC_SYSTEM_ADDRESS. Shares
+///         are minted against `totalAssets()` (Core spot + perp accountValue)
+///         observed BEFORE the bridge settles.
 ///
-///         The vault holds NO EVM USDC. `asset()` returns HyperEVM USDC
-///         purely as a denomination label; the standard ERC-4626
-///         deposit/redeem surface reverts. Use `depositCore` /
-///         `redeemCore` exclusively.
+///         Redemption stays Core-side (`redeemCore`): pro-rata Core USDC
+///         spotSent to the follower's address. EVM-side `withdraw`/`redeem`
+///         revert (use `redeemCore`).
 ///
-///         Creator stake invariant: the creator must hold at least
-///         `min(MIN_CREATOR_BPS of totalAssets, creatorStakeCapUsdc)`
-///         worth of shares. Below that threshold the vault enters a
-///         48-hour cure period during which the creator can top up.
-///         After the cure period expires, creator-side actions (deposit,
-///         move, trade) halt; redemptions remain open so followers can
-///         always exit.
+///         Creator-stake invariant unchanged from PR 1: creator must hold
+///         `min(MIN_CREATOR_BPS of totalAssets, creatorStakeCapUsdc)`. Below
+///         the floor, a 48h cure period starts during which creator-side
+///         actions still work; after expiry, deposits + creator trading
+///         halt while redemptions remain open.
 contract CreatorVault is ERC4626, Ownable {
+    using SafeERC20 for IERC20;
+
     address public immutable CREATOR;
 
-    // ─── Stake-invariant parameters ────────────────────────────────────────────
-    /// @notice Floor percentage of vault value the creator must hold,
-    ///         in basis points (500 = 5%).
-    uint16 public constant MIN_CREATOR_BPS = 500;
-
-    /// @notice Hard bounds for the mutable stake cap. Admin can adjust
-    ///         within this range; outside is rejected.
-    uint256 public constant CREATOR_STAKE_CAP_MIN = 100_000e6;   // $100K
-    uint256 public constant CREATOR_STAKE_CAP_MAX = 5_000_000e6; // $5M
-
-    /// @notice Time the creator has to top up after a stake breach
-    ///         starts before creator-side actions halt.
-    uint256 public constant STAKE_CURE_PERIOD = 48 hours;
-
-    /// @notice Mutable stake cap in 6-dec USDC. Initialized to $250K in
-    ///         the constructor; admin can set within bounds via
-    ///         `setCreatorStakeCap`.
+    // ─── Stake-invariant parameters ─────────────────────────────────
+    uint16  public constant MIN_CREATOR_BPS         = 500;
+    uint256 public constant CREATOR_STAKE_CAP_MIN   = 100_000e6;
+    uint256 public constant CREATOR_STAKE_CAP_MAX   = 5_000_000e6;
+    uint256 public constant STAKE_CURE_PERIOD       = 48 hours;
     uint256 public creatorStakeCapUsdc;
-
-    /// @notice Timestamp when the most recent stake breach began. 0 = compliant.
     uint256 public stakeBreachStartedAt;
 
-    // ─── Deposit fee ────────────────────────────────────────────────────
-    uint16 public depositFeeBps;
+    // ─── Deposit fee ──────────────────────────────────────────
+    uint16  public depositFeeBps;
     address public feeRecipient;
-    uint16 public constant MAX_DEPOSIT_FEE_BPS = 1000;
+    uint16  public constant MAX_DEPOSIT_FEE_BPS = 1000;
 
-    /// @notice Watermark of vault's Core spot USDC (6-dec) the contract
-    ///         has reconciled. `currentCoreSpot - lastSeenCoreSpot` is
-    ///         the unaccounted-for delta available to `depositCore`.
-    uint256 public lastSeenCoreSpot;
+    // ─── Deposit floor ────────────────────────────────────────
+    /// @notice Minimum gross USDC per deposit. Prevents dust-spam +
+    ///         shares-round-to-zero edge cases at high TVL.
+    uint256 public constant MIN_DEPOSIT_USDC = 10e6; // $10
 
     event DepositFeeUpdated(uint16 bps, address recipient);
-    event DepositedCore(address indexed caller, address indexed receiver, uint256 delta, uint256 fee, uint256 shares);
+    event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed owner, address indexed coreReceiver, uint256 shares, uint256 amount);
     event MovedOnCore(uint256 amount, bool toPerp);
     event OrderPlaced(uint32 asset, bool isBuy, uint64 limitPx, uint64 sz, uint8 tif);
     event BuilderApproved(address indexed builder, uint64 maxFeeRate);
-    event Reconciled(uint256 oldWatermark, uint256 newWatermark);
+    event StrandedUsdcSwept(uint256 amount);
     event StakeBreachStarted(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeBreachCured(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
 
-    error UseCoreFlow();
-    error NoDeposit();
+    error UseCoreRedeem();
+    error DepositBelowMinimum(uint256 assets, uint256 floor);
+    error SharesRoundToZero();
+    error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
     error InsufficientSpot(uint256 spot, uint256 needed);
-    error StakeInvariantBreached(uint256 currentStake, uint256 required);
     error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
     error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
     error DepositFeeTooHigh(uint16 bps, uint16 cap);
@@ -100,32 +88,14 @@ contract CreatorVault is ERC4626, Ownable {
         creatorStakeCapUsdc = 250_000e6;
     }
 
-    /// @notice Virtual-shares offset for inflation-attack resistance.
     function _decimalsOffset() internal pure override returns (uint8) {
         return 6;
     }
 
-    // ─── ERC-4626 surface (neutered) ──────────────────────────────────────
-
-    function maxDeposit(address) public pure override returns (uint256) { return 0; }
-    function maxMint(address) public pure override returns (uint256) { return 0; }
-    function maxWithdraw(address) public pure override returns (uint256) { return 0; }
-    function maxRedeem(address) public pure override returns (uint256) { return 0; }
-
-    function deposit(uint256, address) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function mint(uint256, address) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function withdraw(uint256, address, address) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function redeem(uint256, address, address) public pure override returns (uint256) { revert UseCoreFlow(); }
-
-    function previewDeposit(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function previewMint(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
-    function previewRedeem(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
-
-    // ─── Asset accounting (Core-side reads) ───────────────────────────────────
-
-    /// @notice Total USDC the vault claims, in 6-dec EVM units.
-    ///         = vault's Core spot USDC + perp accountValue.
+    // ─── Asset accounting ────────────────────────────────────────
+    /// @notice Vault NAV in 6-dec USDC. Reads only Core (spot + perp). Any
+    ///         transient EVM USDC sitting between transferFrom and bridge
+    ///         is intentionally NOT counted — see `deposit()` for why.
     function totalAssets() public view override returns (uint256) {
         return _coreSpotUSDC() + _corePerpAccountValue();
     }
@@ -136,7 +106,7 @@ contract CreatorVault is ERC4626, Ownable {
         );
         if (!ok) revert PrecompileFailed(HLConstants.SPOT_BALANCE_PRECOMPILE);
         (uint64 total,,) = abi.decode(data, (uint64, uint64, uint64));
-        return uint256(total) / 100; // 8-dec native → 6-dec EVM
+        return uint256(total) / 100;
     }
 
     function _corePerpAccountValue() internal view returns (uint256) {
@@ -144,23 +114,120 @@ contract CreatorVault is ERC4626, Ownable {
             abi.encode(uint32(0), address(this))
         );
         if (!ok) revert PrecompileFailed(HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE);
-        // (int64 accountValue, uint64 marginUsed, uint64 ntlPos, int64 rawUsd)
-        // All four fields are 6-dec USDC (perp accounting) — same units as
-        // our internal totalAssets, so no scaling needed.
         (int64 accountValue,,,) = abi.decode(data, (int64, uint64, uint64, int64));
         return accountValue > 0 ? uint256(uint64(accountValue)) : 0;
     }
 
-    // ─── Stake-invariant views + state machine ──────────────────────────────
+    // ─── ERC-4626 limits + previews ───────────────────────────────────
+    function maxDeposit(address) public view override returns (uint256) {
+        return _depositsOpen() ? type(uint256).max : 0;
+    }
 
-    /// @notice Returns the minimum creator stake required at current vault size.
-    ///         = min(MIN_CREATOR_BPS of totalAssets, creatorStakeCapUsdc).
+    function maxMint(address) public view override returns (uint256) {
+        return _depositsOpen() ? type(uint256).max : 0;
+    }
+
+    /// @notice Withdraw / redeem stay Core-side (use `redeemCore`).
+    function maxWithdraw(address) public pure override returns (uint256) { return 0; }
+    function maxRedeem(address)   public pure override returns (uint256) { return 0; }
+
+    function previewDeposit(uint256 assets) public view override returns (uint256) {
+        (uint256 fee, uint256 net) = _splitFee(assets);
+        fee; // silence
+        return _sharesForNet(net);
+    }
+
+    /// @notice Returns gross USDC required to mint `shares` (i.e. fee'd up).
+    function previewMint(uint256 shares) public view override returns (uint256) {
+        uint256 net = Math.mulDiv(
+            shares,
+            totalAssets() + 1,
+            totalSupply() + 10 ** _decimalsOffset(),
+            Math.Rounding.Ceil
+        );
+        uint16 bps = depositFeeBps;
+        address recip = feeRecipient;
+        if (bps > 0 && recip != address(0)) {
+            return Math.mulDiv(net, 10_000, 10_000 - bps, Math.Rounding.Ceil);
+        }
+        return net;
+    }
+
+    function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreRedeem(); }
+    function previewRedeem(uint256)   public pure override returns (uint256) { revert UseCoreRedeem(); }
+
+    // ─── ERC-4626 mutators ───────────────────────────────────────
+
+    /// @notice Standard ERC-4626 deposit. Pulls `assets` USDC on EVM,
+    ///         skims optional fee, bridges net to vault Core spot via
+    ///         transfer to USDC_SYSTEM_ADDRESS, mints shares.
+    ///
+    /// @dev    Share pricing uses `totalAssets()` BEFORE the bridge
+    ///         settles — i.e. excludes the in-flight `net` amount. This
+    ///         is intentional: it preserves ERC-4626 invariants against
+    ///         the observable Core state. See KNOWN_ISSUES on the async
+    ///         settlement window — mitigation is gated on the protocol's
+    ///         Phase 2 latency measurement.
+    function deposit(uint256 assets, address receiver) public override returns (uint256 shares) {
+        if (assets < MIN_DEPOSIT_USDC) revert DepositBelowMinimum(assets, MIN_DEPOSIT_USDC);
+        if (receiver == address(0)) revert ZeroAddress();
+        _requireStakeWithinCure();
+
+        IERC20 token = IERC20(asset());
+        token.safeTransferFrom(msg.sender, address(this), assets);
+
+        (uint256 fee, uint256 net) = _splitFee(assets);
+        shares = _sharesForNet(net);
+        if (shares == 0) revert SharesRoundToZero();
+
+        if (fee > 0) token.safeTransfer(feeRecipient, fee);
+        token.safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, net);
+
+        _mint(receiver, shares);
+        _updateStakeBreachState();
+        emit Deposited(msg.sender, receiver, assets, fee, shares);
+    }
+
+    /// @notice Standard ERC-4626 mint. Computes gross USDC, then routes
+    ///         through `deposit`. Returns the gross asset amount used.
+    function mint(uint256 shares, address receiver) public override returns (uint256 assets) {
+        assets = previewMint(shares);
+        deposit(assets, receiver);
+    }
+
+    /// @notice EVM-side withdraw is not supported. Use `redeemCore`.
+    function withdraw(uint256, address, address) public pure override returns (uint256) {
+        revert UseCoreRedeem();
+    }
+
+    /// @notice EVM-side redeem is not supported. Use `redeemCore`.
+    function redeem(uint256, address, address) public pure override returns (uint256) {
+        revert UseCoreRedeem();
+    }
+
+    // ─── Sweep stranded EVM USDC ───────────────────────────────────
+    /// @notice Permissionless: bridge any USDC sitting on the vault's
+    ///         EVM address to its Core spot account. Restores ERC-4626
+    ///         "donations enrich shareholders" semantics — anyone who
+    ///         sends USDC directly to the vault contract on EVM can call
+    ///         this to push it into the accounted-for Core balance.
+    ///
+    ///         If the bridge mechanism in `deposit()` fails silently for
+    ///         a given call, this also acts as the recovery hatch (later
+    ///         caller can re-fire the transfer once the issue clears).
+    function sweepStrandedEvmUsdc() external {
+        IERC20 token = IERC20(asset());
+        uint256 balance = token.balanceOf(address(this));
+        if (balance == 0) return;
+        token.safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, balance);
+        emit StrandedUsdcSwept(balance);
+    }
+
+    // ─── Stake-invariant views + state machine ───────────────────────────
     function requiredCreatorStake() external view returns (uint256) {
         return _requiredCreatorStake();
     }
 
-    /// @notice Returns whether the vault is currently in a stake breach,
-    ///         and how many seconds the breach has been ongoing.
     function isInBreach() external view returns (bool inBreach, uint256 elapsedSeconds) {
         uint256 startedAt = stakeBreachStartedAt;
         if (startedAt == 0) return (false, 0);
@@ -172,8 +239,6 @@ contract CreatorVault is ERC4626, Ownable {
         return percentBased < creatorStakeCapUsdc ? percentBased : creatorStakeCapUsdc;
     }
 
-    /// @notice Records the current stake-breach state. Called at the END
-    ///         of any state-mutating function. Does NOT revert.
     function _updateStakeBreachState() internal {
         if (totalSupply() == 0) {
             if (stakeBreachStartedAt != 0) stakeBreachStartedAt = 0;
@@ -194,10 +259,6 @@ contract CreatorVault is ERC4626, Ownable {
         }
     }
 
-    /// @notice Reverts if a stake breach has been ongoing past the cure
-    ///         period. Use as a guard on creator-side operations that
-    ///         should halt during prolonged breach. Redemptions never call
-    ///         this — followers must always be able to exit.
     function _requireStakeWithinCure() internal view {
         uint256 startedAt = stakeBreachStartedAt;
         if (startedAt == 0) return;
@@ -206,8 +267,13 @@ contract CreatorVault is ERC4626, Ownable {
         }
     }
 
-    // ─── Admin: fee config + cap config ─────────────────────────────────────
+    function _depositsOpen() internal view returns (bool) {
+        uint256 startedAt = stakeBreachStartedAt;
+        if (startedAt == 0) return true;
+        return block.timestamp <= startedAt + STAKE_CURE_PERIOD;
+    }
 
+    // ─── Admin: fee + cap ──────────────────────────────────────────
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
         depositFeeBps = bps;
@@ -215,9 +281,6 @@ contract CreatorVault is ERC4626, Ownable {
         emit DepositFeeUpdated(bps, recipient);
     }
 
-    /// @notice Set the creator stake cap. Bounded by [MIN, MAX] to prevent
-    ///         admin from disabling the invariant or making it absurdly
-    ///         restrictive. Time-lock added in PR 5.
     function setCreatorStakeCap(uint256 newCap) external onlyOwner {
         if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
             revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
@@ -227,115 +290,34 @@ contract CreatorVault is ERC4626, Ownable {
         emit StakeCapUpdated(old, newCap);
     }
 
-    /// @notice Admin reset of the watermark. Use if a Core action fails
-    ///         silently and `lastSeenCoreSpot` drifts from reality.
-    function reconcile() external onlyOwner {
-        uint256 oldW = lastSeenCoreSpot;
-        uint256 newW = _coreSpotUSDC();
-        lastSeenCoreSpot = newW;
-        emit Reconciled(oldW, newW);
-    }
-
-    // ─── Core deposit / redeem ──────────────────────────────────────────
-
-    /// @notice Quote what `depositCore` would mint right now. Returns the
-    ///         unaccounted-for Core spot delta, the fee that would skim,
-    ///         and the shares the receiver would get. UI polls this to
-    ///         surface "X USDC pending claim → Y shares" before signing.
-    function previewDepositCore() external view returns (uint256 delta, uint256 fee, uint256 shares) {
-        uint256 currentSpot = _coreSpotUSDC();
-        uint256 last = lastSeenCoreSpot;
-        if (currentSpot <= last) return (0, 0, 0);
-        delta = currentSpot - last;
-
-        uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
-        fee = (bps > 0 && recip != address(0)) ? Math.mulDiv(delta, bps, 10_000) : 0;
-        uint256 net = delta - fee;
-
-        uint256 preAssets = totalAssets() - delta;
-        uint256 supply = totalSupply();
-        shares = Math.mulDiv(net, supply + 10 ** _decimalsOffset(), preAssets + 1, Math.Rounding.Floor);
-    }
-
-    /// @notice Claim shares for unaccounted USDC sent to vault Core spot.
-    ///         Caller must already have transferred USDC to address(this)
-    ///         on Core. Mints shares to `receiver` for the delta against
-    ///         `lastSeenCoreSpot`, less optional fee.
-    function depositCore(address receiver, uint256 minShares) external returns (uint256 shares) {
-        if (receiver == address(0)) revert ZeroAddress();
-        _requireStakeWithinCure();
-
-        uint256 currentSpot = _coreSpotUSDC();
-        uint256 last = lastSeenCoreSpot;
-        if (currentSpot <= last) revert NoDeposit();
-        uint256 delta = currentSpot - last;
-
-        // Optional fee on the gross delta
-        uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
-        uint256 fee = (bps > 0 && recip != address(0))
-            ? Math.mulDiv(delta, bps, 10_000)
-            : 0;
-        uint256 net = delta - fee;
-
-        // Pre-deposit assets for fair share pricing
-        uint256 preAssets = totalAssets() - delta;
-        uint256 supply = totalSupply();
-
-        // Inline OZ ERC-4626 share math (mirrors _convertToShares)
-        shares = Math.mulDiv(net, supply + 10 ** _decimalsOffset(), preAssets + 1, Math.Rounding.Floor);
-        if (shares < minShares) revert SlippageExceeded(shares, minShares);
-
-        lastSeenCoreSpot = currentSpot;
-        _mint(receiver, shares);
-
-        if (fee > 0) {
-            _spotSendCore(recip, fee);
-            // Eagerly track fee outflow (settles a few seconds after dispatch)
-            lastSeenCoreSpot -= fee;
-        }
-
-        _updateStakeBreachState();
-        emit DepositedCore(msg.sender, receiver, delta, fee, shares);
-    }
-
-    /// @notice Burn `shares` and send pro-rata Core USDC to `coreReceiver`.
-    ///         Redeems are NEVER blocked by stake-breach cure expiry —
-    ///         followers must always be able to exit.
+    // ─── Core-side redeem ─────────────────────────────────────────
+    /// @notice Burn `shares` and spotSend pro-rata Core USDC to
+    ///         `coreReceiver`. Never gated by stake-cure expiry.
     function redeemCore(uint256 shares, address coreReceiver) external returns (uint256 amount) {
         if (shares == 0) revert ZeroAmount();
         if (coreReceiver == address(0)) revert ZeroAddress();
 
         uint256 supply = totalSupply();
-        if (supply == 0) revert NoDeposit();
+        if (supply == 0) revert NoSupply();
 
-        // OZ-style pro-rata
         amount = Math.mulDiv(shares, totalAssets() + 1, supply + 10 ** _decimalsOffset(), Math.Rounding.Floor);
 
-        // Must have enough on Core spot — perp positions are not auto-unwound
         uint256 spot = _coreSpotUSDC();
         if (spot < amount) revert InsufficientSpot(spot, amount);
 
         _burn(msg.sender, shares);
         _spotSendCore(coreReceiver, amount);
-        lastSeenCoreSpot -= amount;
 
         _updateStakeBreachState();
         emit Redeemed(msg.sender, coreReceiver, shares, amount);
     }
 
-    // ─── Trading actions (creator-only) ────────────────────────────────────
-
+    // ─── Trading actions (creator-only) ─────────────────────────────────
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
         _requireStakeWithinCure();
-        // Action 7 `usdClassTransfer` expects amount in 6-dec perp USDC,
-        // matching our internal unit — no scaling.
         bytes memory payload = abi.encode(uint64(amount), toPerp);
         _sendAction(HLConstants.ACTION_USD_CLASS_TRANSFER, payload);
-        if (toPerp) lastSeenCoreSpot -= amount;
-        else lastSeenCoreSpot += amount;
         emit MovedOnCore(amount, toPerp);
     }
 
@@ -354,7 +336,22 @@ contract CreatorVault is ERC4626, Ownable {
         emit BuilderApproved(builder, maxFeeRate);
     }
 
-    // ─── Internals ───────────────────────────────────────────────────────
+    // ─── Internals ───────────────────────────────────────────────
+    function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
+        uint16 bps = depositFeeBps;
+        address recip = feeRecipient;
+        fee = (bps > 0 && recip != address(0)) ? Math.mulDiv(assets, bps, 10_000) : 0;
+        net = assets - fee;
+    }
+
+    function _sharesForNet(uint256 net) internal view returns (uint256) {
+        return Math.mulDiv(
+            net,
+            totalSupply() + 10 ** _decimalsOffset(),
+            totalAssets() + 1,
+            Math.Rounding.Floor
+        );
+    }
 
     function _spotSendCore(address coreReceiver, uint256 amount6) internal {
         uint64 amount8 = uint64(amount6 * 100);
