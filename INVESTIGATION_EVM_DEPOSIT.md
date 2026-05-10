@@ -2,11 +2,13 @@
 
 **Subject:** Findings from §2 of `THEORISE_EVM_DEPOSIT_MIGRATION.md` — investigation of prior EVM-side deposit + bridge attempts before committing to the migration.
 
-**Author:** Claude Code, via line-by-line review of git history, DECISIONS.md, archived spike contracts, and live testnet evidence collected during the May 8-9 sessions.
+**Author:** Claude Code, via line-by-line review of git history, DECISIONS.md, archived spike contracts, and live testnet evidence collected during the May 8-9 sessions, plus a fresh testnet re-run on May 10 (§6 below).
 
-**TL;DR:** The migration's premise (direct ERC-20 transfer to `USDC_SYSTEM_ADDRESS` credits the contract's Core spot balance) was tried and **failed empirically on testnet**. A second path (Circle's `CoreDepositWallet.depositFor`) was also tried and **silently failed for amounts other than the very first attempt**, where the apparent success was later attributed to a parallel EOA→Core UI transfer, not the contract bridge. After three rounds of attempted fixes, the team pivoted to the current Core-deposit architecture explicitly because no EVM→Core path from a contract was reliably crediting Core balance on testnet.
+**TL;DR:** The migration's premise (direct ERC-20 transfer to `USDC_SYSTEM_ADDRESS` credits the contract's Core spot balance) was tried and **failed empirically on testnet** on May 9. A fresh testnet re-run on May 10 (§6) confirms the same revert with the same error message. The bridge mechanism the migration doc proposes does not work from a contract on testnet today.
 
-**Recommendation:** Do not proceed with the EVM-deposit migration on testnet without first re-running the verification script (provided alongside this doc) on a fresh deployment. If the script fails on testnet, the migration is moot until either (a) HL testnet behavior changes, or (b) we can confirm mainnet behavior differs and accept testnet-cannot-be-tested as a constraint. Section 4 of this doc lays out the decision tree.
+**Recommendation:** Path C confirmed. Migration is moot for testnet. Bill must choose between:
+- Path B: probe mainnet ($5-10 of real USDC) to verify whether Circle's mainnet USDC has the same Blacklistable rule. Mainnet may behave differently — Circle's CoreDepositWallet processes $1.27B+ live there.
+- Path D: skip the mainnet probe and resume the relayer architecture from the original audit's PR 2.
 
 ---
 
@@ -100,7 +102,7 @@ This is **the exact path the migration doc proposes**. Per the doc's §3.3:
 > SafeERC20.safeTransfer(IERC20(asset()), HLConstants.USDC_SYSTEM_ADDRESS, net);
 > ```
 
-Per our May 9 testnet evidence: this reverts.
+Per our May 9 testnet evidence: this reverts. **Confirmed again by the May 10 re-run — see §6.**
 
 ### 2.2 Circle's `CoreDepositWallet.deposit/depositFor` silently fails
 
@@ -147,9 +149,7 @@ It's plausible mainnet either (a) doesn't have the Circle blacklist, or (b) cred
 
 ### 3.2 Has HL testnet behavior changed since May 9?
 
-We tested on May 9. It's now May 10 (or later, depending when this is read). HL is a fast-moving testnet. It's possible the Blacklistable issue or the silent-fail-from-contracts has been patched on Circle's testnet USDC since.
-
-The verification script in §5 of this doc will surface this if Bill wants to retest.
+We re-ran on May 10 (§6). **It has not changed.** The same `Blacklistable: account is blacklisted` revert reproduced exactly.
 
 ### 3.3 Was the spike's original test on `0x0B80…` a different failure mode than what we observed on May 9?
 
@@ -176,7 +176,7 @@ The May 9 session attempted 5, 2, and 6 USDC. The "5 succeeded" was disambiguate
 The question is binary: does the EVM → Core bridge work from a contract?
 
 **Path A: Verification script passes on testnet.**
-Evidence reverses prior findings. Either (a) HL has fixed the testnet behavior, or (b) our prior tests had a confound we never identified. Proceed with the migration as specified in the doc. Run all PRs 2-NEW through 7-NEW.
+Evidence reverses prior findings. Either (a) HL has fixed the testnet behavior, or (b) our prior tests had a confound we never identified. Proceed with the migration as specified in the doc. Run all PRs 2-NEW through 7-NEW. **— RULED OUT by May 10 re-run.**
 
 **Path B: Verification script fails on testnet, passes on mainnet probe ($5-10).**
 Testnet quirk confirmed. Mainnet works. Migration proceeds, but we accept "no contract testing on testnet for the deposit flow" as a permanent constraint. UI mocks the bridge step on testnet; real validation only on mainnet.
@@ -187,7 +187,7 @@ Migration is moot. Stay with the relayer architecture from the original audit. A
 **Path D: Bill doesn't want to spend mainnet money.**
 Migration is moot until either an HL testnet update unblocks the bridge or someone else does the mainnet probe. Stay with the relayer architecture.
 
-The cheapest test is Path A (free). The next cheapest is Path B (~$10 + gas, but real money). Path C/D are decisions about whether to accept relayer complexity.
+**Status as of May 10:** Path A ruled out. Bill must now choose between Path B (mainnet probe) and Path D (skip probe, resume relayer).
 
 ---
 
@@ -202,45 +202,84 @@ The script distinguishes the failure modes:
 - If the bridge tx **reverts** — catch logs the reason. If "Blacklistable: account is blacklisted", we're confirmed in the same testnet failure as May 9.
 - If the bridge tx **succeeds** — script prints follow-up commands for Bill to poll Core spot balance over time. If credit lands within 60 seconds: Path A confirmed. If credit never lands within 5 minutes: Path C silent-fail confirmed.
 
-Run it as:
+To run on testnet (already executed May 10):
 
 ```bash
 cd contracts
 export $(grep -v '^#' .env | xargs)
 
-forge script script/VerifyBridge.s.sol \
+forge script script/VerifyBridge.s.sol:VerifyBridge \
   --sig "run()" \
   --rpc-url $HYPEREVM_TESTNET_RPC \
   --private-key $PRIVATE_KEY --broadcast --legacy
-
-# Then follow the on-screen instructions to poll Core spot balance.
 ```
 
-Capture the full output. Paste it inline at §6 of this doc when complete.
+To run on mainnet (NOT yet executed; requires conscious decision to spend real funds):
+
+```bash
+# Same script, mainnet RPC + mainnet USDC. Required env adjustments:
+#   USDC_ADDRESS=0xb88339CB7199b77E23DB6E890353E22632Ba630f
+#   HYPEREVM_MAINNET_RPC=https://rpc.hyperliquid.xyz/evm
+export USDC_ADDRESS=0xb88339CB7199b77E23DB6E890353E22632Ba630f
+
+forge script script/VerifyBridge.s.sol:VerifyBridge \
+  --sig "run()" \
+  --rpc-url https://rpc.hyperliquid.xyz/evm \
+  --private-key $PRIVATE_KEY --broadcast --legacy
+```
+
+Mainnet cost estimate: ~5 USDC + ~0.001 HYPE for gas. If the script reverts, the 5 USDC stays in the EOA. If it succeeds and credit lands on Core, the probe contract holds 5 USDC on Core spot — recoverable via cast call to `spotSendBackToEvm` then withdrawing from the probe's EVM USDC balance.
 
 ---
 
 ## 6. EMPIRICAL OBSERVATIONS FROM RE-RUN
 
-(To be filled in by Bill after running the verification script. Template:)
+```
+Date / time:                  May 10, 2026
+Network:                      HyperEVM testnet (chain 998)
+EOA:                          0xF25610b5fD0ed0eca96f35124D9916EDcf39c040
+EOA USDC balance before:      41,000,000 (41 USDC, 6-dec)
+Probe contract address:       0x5beC60C8B890872bFABeC3E2F1d7Faf907Ba5eAe (simulated)
+USDC amount probed:           5,000,000 (5 USDC, 6-dec)
+
+Result:                       REVERT — Circle USDC `Blacklistable: account is blacklisted`
+Selector:                     0x08c379a0 (Error(string))
+Revert string (decoded):      "Blacklistable: account is blacklisted"
+
+Tx broadcast status:          NOT broadcast — script reverted in simulation phase, no
+                              testnet HYPE spent, no on-chain effect.
+Core spot balance:            N/A — bridge tx never landed on Core (reverted on EVM first).
+
+Conclusion:                   Path C reached. Testnet behavior is unchanged since May 9.
+                              The direct-transfer-to-system-address path the migration doc
+                              proposes does NOT work from a contract on testnet.
+
+                              Migration is moot for testnet. Two options remain:
+                              - Path B: probe mainnet with $5-10 to verify whether
+                                Circle's mainnet USDC has the same Blacklistable rule.
+                              - Path D: accept the testnet failure and resume the
+                                relayer architecture (prior audit's PR 2).
+```
+
+**Trace excerpt (the revert frame):**
 
 ```
-Date / time:
-Network: testnet / mainnet
-Probe contract address:
-USDC amount probed:
-
-Result code:
-Tx hash (bridge attempt):
-EVM USDC balance before:
-EVM USDC balance after:
-Core spot balance before:
-Core spot balance after (t=10s):
-Core spot balance after (t=60s):
-Core spot balance after (t=300s):
-
-Conclusion: [Path A / B / C reached]
+[5200] BridgeProbe::bridgeViaSystemAddress(5000000 [5e6])
+  ├─ [3777] ::transfer(0x2000000000000000000000000000000000000000, 5000000 [5e6])
+  │   ├─ [3058] ::transfer(0x2000000000000000000000000000000000000000, 5000000 [5e6]) [delegatecall]
+  │   │   └─ ← [Revert] Blacklistable: account is blacklisted
+  │   └─ ← [Revert] Blacklistable: account is blacklisted
+  └─ ← [Revert] Blacklistable: account is blacklisted
 ```
+
+The `[delegatecall]` frame indicates Circle's testnet USDC is a proxy. The
+`Blacklistable` rule lives in the implementation behind the proxy; the rule is
+Circle USDC's own modifier, not an HL-layer rejection. The system address
+(`0x2000…0000`) is on Circle's blacklist as a forbidden recipient of contract-
+initiated transfers.
+
+Identical symptom to the May 9 testnet attempt that triggered the original
+architecture pivot to Core-deposit.
 
 ---
 
@@ -256,11 +295,10 @@ Conclusion: [Path A / B / C reached]
 
 ## 8. RECOMMENDATION
 
-**Do not delete the relayer fallback work mentally yet.** Keep the prior audit's PR 2 (EIP-712 + relayer) as a viable architecture until the verification script confirms one of:
-- Testnet bridge works (Path A) → migration is the better choice, drop relayer permanently.
-- Mainnet probe succeeds (Path B) → migration is the better choice for mainnet, relayer is overkill.
-- Both fail (Path C) → relayer is the only viable architecture; resume PR 2 of the prior audit.
+**Do not delete the relayer fallback work mentally yet.** Keep the prior audit's PR 2 (EIP-712 + relayer) as a viable architecture until Bill explicitly chooses one of:
+- Path B — run the script on mainnet with $5-10. If it succeeds, migration proceeds for mainnet only. UI mocks the bridge step on testnet.
+- Path D — skip the mainnet probe. Resume PR 2 of the prior audit (relayer architecture). Migration is permanently shelved.
 
-**Specifically: do not start any PR 2-NEW through 7-NEW work in this branch until Bill has run the verification script and posted results in §6.**
+**Specifically: do not start any PR 2-NEW through 7-NEW work in this branch until Bill decides between Path B and Path D.**
 
 PR 1 (stake-floor changes) is already merged and is independent of the deposit architecture; it stands regardless of which path we take.
