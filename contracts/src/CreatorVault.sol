@@ -8,15 +8,22 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {HLConstants, ICoreWriter} from "./HLConstants.sol";
+import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 
-/// @title  CreatorVault — Theorise PR 2-NEW (EVM-deposit migration)
+/// @title  CreatorVault — Theorise PR 2-NEW (inline-bridge EVM-deposit)
 /// @notice Creator-led vault. Followers deposit USDC on HyperEVM via the
 ///         standard ERC-4626 surface; `deposit()` / `mint()` pull USDC,
-///         skim optional fee, then bridge the net to the vault's Core
-///         spot account by `transfer`-ing to USDC_SYSTEM_ADDRESS. Shares
-///         are minted against `totalAssets()` (Core spot + perp accountValue)
-///         observed BEFORE the bridge settles.
+///         skim optional fee, then bridge the net inline to the vault's
+///         Core spot account via Circle's `CoreDepositWallet.depositFor`.
+///         Shares are minted against `totalAssets()` (Core spot + perp
+///         accountValue) observed BEFORE the bridge settles on Core.
+///
+///         The bridge mechanism is the canonical pattern used by
+///         production HL protocols (Monetrix, hyper-evm-lib, Circle's
+///         CCTP forwarder). Direct `transfer(USDC_SYSTEM_ADDRESS, …)`
+///         from a contract reverts with Circle's `Blacklistable` on both
+///         networks; `CoreDepositWallet` wraps the system-address
+///         transfer so contract callers can bridge.
 ///
 ///         Redemption stays Core-side (`redeemCore`): pro-rata Core USDC
 ///         spotSent to the follower's address. EVM-side `withdraw`/`redeem`
@@ -27,12 +34,19 @@ import {HLConstants, ICoreWriter} from "./HLConstants.sol";
 ///         the floor, a 48h cure period starts during which creator-side
 ///         actions still work; after expiry, deposits + creator trading
 ///         halt while redemptions remain open.
+///
+///         Async-bridge sandwich window: when two deposits land before
+///         the first bridge settles on Core, the second prices against
+///         stale `totalAssets()`. Interim mitigation: per-tx cap at
+///         `DEPOSIT_TVL_CAP_BPS` of TVL (default 5%), bounding exploit
+///         lift to that fraction. See KNOWN_ISSUES.md.
 contract CreatorVault is ERC4626, Ownable {
     using SafeERC20 for IERC20;
 
     address public immutable CREATOR;
+    address public immutable CORE_DEPOSIT_WALLET;
 
-    // ─── Stake-invariant parameters ─────────────────────────────────
+    // ─── Stake-invariant parameters ──────────────────────────────
     uint16  public constant MIN_CREATOR_BPS         = 500;
     uint256 public constant CREATOR_STAKE_CAP_MIN   = 100_000e6;
     uint256 public constant CREATOR_STAKE_CAP_MAX   = 5_000_000e6;
@@ -50,6 +64,17 @@ contract CreatorVault is ERC4626, Ownable {
     ///         shares-round-to-zero edge cases at high TVL.
     uint256 public constant MIN_DEPOSIT_USDC = 10e6; // $10
 
+    // ─── Per-tx TVL cap (interim sandwich-window mitigation) ─────────
+    /// @notice Per-tx cap on deposit size as a fraction of `totalAssets()`,
+    ///         in basis points. Defaults to 500 (5%). Admin-tunable inside
+    ///         [DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX], or set
+    ///         to `DEPOSIT_TVL_CAP_DISABLED` to skip the check entirely
+    ///         (intended for when PR 3-NEW's in-flight tracker lands).
+    uint16 public depositTvlCapBps = 500;
+    uint16 public constant DEPOSIT_TVL_CAP_BPS_MIN = 100;    // 1%
+    uint16 public constant DEPOSIT_TVL_CAP_BPS_MAX = 10_000; // 100% (= NAV-sized)
+    uint16 public constant DEPOSIT_TVL_CAP_DISABLED = type(uint16).max;
+
     event DepositFeeUpdated(uint16 bps, address recipient);
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed owner, address indexed coreReceiver, uint256 shares, uint256 amount);
@@ -60,15 +85,18 @@ contract CreatorVault is ERC4626, Ownable {
     event StakeBreachStarted(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeBreachCured(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
+    event DepositTvlCapUpdated(uint16 oldBps, uint16 newBps);
 
     error UseCoreRedeem();
     error DepositBelowMinimum(uint256 assets, uint256 floor);
+    error DepositExceedsTvlCap(uint256 assets, uint256 cap);
     error SharesRoundToZero();
     error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
     error InsufficientSpot(uint256 spot, uint256 needed);
     error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
     error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
+    error TvlCapBpsOutOfBounds(uint16 newBps, uint16 minBps, uint16 maxBps);
     error DepositFeeTooHigh(uint16 bps, uint16 cap);
     error PrecompileFailed(address precompile);
     error NotCreator();
@@ -80,11 +108,18 @@ contract CreatorVault is ERC4626, Ownable {
         _;
     }
 
-    constructor(IERC20 usdc, address creator_, address admin_, string memory name_, string memory symbol_)
-        ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_)
-    {
+    constructor(
+        IERC20 usdc,
+        address creator_,
+        address admin_,
+        address coreDepositWallet_,
+        string memory name_,
+        string memory symbol_
+    ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
         if (creator_ == address(0)) revert ZeroAddress();
+        if (coreDepositWallet_ == address(0)) revert ZeroAddress();
         CREATOR = creator_;
+        CORE_DEPOSIT_WALLET = coreDepositWallet_;
         creatorStakeCapUsdc = 250_000e6;
     }
 
@@ -92,7 +127,7 @@ contract CreatorVault is ERC4626, Ownable {
         return 6;
     }
 
-    // ─── Asset accounting ────────────────────────────────────────
+    // ─── Asset accounting ────────────────────────────────────────────
     /// @notice Vault NAV in 6-dec USDC. Reads only Core (spot + perp). Any
     ///         transient EVM USDC sitting between transferFrom and bridge
     ///         is intentionally NOT counted — see `deposit()` for why.
@@ -118,13 +153,20 @@ contract CreatorVault is ERC4626, Ownable {
         return accountValue > 0 ? uint256(uint64(accountValue)) : 0;
     }
 
-    // ─── ERC-4626 limits + previews ───────────────────────────────────
+    // ─── ERC-4626 limits + previews ───────────────────────────────────────
     function maxDeposit(address) public view override returns (uint256) {
-        return _depositsOpen() ? type(uint256).max : 0;
+        if (!_depositsOpen()) return 0;
+        uint256 nav = totalAssets();
+        if (nav == 0) return type(uint256).max; // bootstrap freely
+        if (depositTvlCapBps == DEPOSIT_TVL_CAP_DISABLED) return type(uint256).max;
+        return Math.mulDiv(nav, depositTvlCapBps, 10_000);
     }
 
-    function maxMint(address) public view override returns (uint256) {
-        return _depositsOpen() ? type(uint256).max : 0;
+    function maxMint(address account) public view override returns (uint256) {
+        uint256 assetCap = maxDeposit(account);
+        if (assetCap == 0) return 0;
+        if (assetCap == type(uint256).max) return type(uint256).max;
+        return previewDeposit(assetCap);
     }
 
     /// @notice Withdraw / redeem stay Core-side (use `redeemCore`).
@@ -156,22 +198,31 @@ contract CreatorVault is ERC4626, Ownable {
     function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreRedeem(); }
     function previewRedeem(uint256)   public pure override returns (uint256) { revert UseCoreRedeem(); }
 
-    // ─── ERC-4626 mutators ───────────────────────────────────────
+    // ─── ERC-4626 mutators ────────────────────────────────────────────
 
     /// @notice Standard ERC-4626 deposit. Pulls `assets` USDC on EVM,
     ///         skims optional fee, bridges net to vault Core spot via
-    ///         transfer to USDC_SYSTEM_ADDRESS, mints shares.
+    ///         `CoreDepositWallet.depositFor`, mints shares.
     ///
     /// @dev    Share pricing uses `totalAssets()` BEFORE the bridge
     ///         settles — i.e. excludes the in-flight `net` amount. This
     ///         is intentional: it preserves ERC-4626 invariants against
-    ///         the observable Core state. See KNOWN_ISSUES on the async
-    ///         settlement window — mitigation is gated on the protocol's
-    ///         Phase 2 latency measurement.
+    ///         the observable Core state. Sandwich-window risk during the
+    ///         settlement interval is bounded by the per-tx TVL cap.
     function deposit(uint256 assets, address receiver) public override returns (uint256 shares) {
         if (assets < MIN_DEPOSIT_USDC) revert DepositBelowMinimum(assets, MIN_DEPOSIT_USDC);
         if (receiver == address(0)) revert ZeroAddress();
         _requireStakeWithinCure();
+
+        // Per-tx TVL cap (sandwich-window interim mitigation). Skipped when
+        // NAV == 0 to permit bootstrap of the very first depositor, and
+        // when admin has set the disabled sentinel.
+        uint256 nav = totalAssets();
+        uint16 capBps = depositTvlCapBps;
+        if (nav > 0 && capBps != DEPOSIT_TVL_CAP_DISABLED) {
+            uint256 cap = Math.mulDiv(nav, capBps, 10_000);
+            if (assets > cap) revert DepositExceedsTvlCap(assets, cap);
+        }
 
         IERC20 token = IERC20(asset());
         token.safeTransferFrom(msg.sender, address(this), assets);
@@ -181,7 +232,7 @@ contract CreatorVault is ERC4626, Ownable {
         if (shares == 0) revert SharesRoundToZero();
 
         if (fee > 0) token.safeTransfer(feeRecipient, fee);
-        token.safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, net);
+        _bridgeToCore(token, net);
 
         _mint(receiver, shares);
         _updateStakeBreachState();
@@ -205,25 +256,21 @@ contract CreatorVault is ERC4626, Ownable {
         revert UseCoreRedeem();
     }
 
-    // ─── Sweep stranded EVM USDC ───────────────────────────────────
+    // ─── Sweep stranded EVM USDC ──────────────────────────────────────
     /// @notice Permissionless: bridge any USDC sitting on the vault's
     ///         EVM address to its Core spot account. Restores ERC-4626
     ///         "donations enrich shareholders" semantics — anyone who
     ///         sends USDC directly to the vault contract on EVM can call
     ///         this to push it into the accounted-for Core balance.
-    ///
-    ///         If the bridge mechanism in `deposit()` fails silently for
-    ///         a given call, this also acts as the recovery hatch (later
-    ///         caller can re-fire the transfer once the issue clears).
     function sweepStrandedEvmUsdc() external {
         IERC20 token = IERC20(asset());
         uint256 balance = token.balanceOf(address(this));
         if (balance == 0) return;
-        token.safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, balance);
+        _bridgeToCore(token, balance);
         emit StrandedUsdcSwept(balance);
     }
 
-    // ─── Stake-invariant views + state machine ───────────────────────────
+    // ─── Stake-invariant views + state machine ──────────────────────────────
     function requiredCreatorStake() external view returns (uint256) {
         return _requiredCreatorStake();
     }
@@ -273,7 +320,7 @@ contract CreatorVault is ERC4626, Ownable {
         return block.timestamp <= startedAt + STAKE_CURE_PERIOD;
     }
 
-    // ─── Admin: fee + cap ──────────────────────────────────────────
+    // ─── Admin: fee + cap + TVL cap ─────────────────────────────────────────
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
         depositFeeBps = bps;
@@ -290,7 +337,17 @@ contract CreatorVault is ERC4626, Ownable {
         emit StakeCapUpdated(old, newCap);
     }
 
-    // ─── Core-side redeem ─────────────────────────────────────────
+    function setDepositTvlCapBps(uint16 newBps) external onlyOwner {
+        bool inRange =
+            newBps >= DEPOSIT_TVL_CAP_BPS_MIN && newBps <= DEPOSIT_TVL_CAP_BPS_MAX;
+        if (!inRange && newBps != DEPOSIT_TVL_CAP_DISABLED) {
+            revert TvlCapBpsOutOfBounds(newBps, DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX);
+        }
+        emit DepositTvlCapUpdated(depositTvlCapBps, newBps);
+        depositTvlCapBps = newBps;
+    }
+
+    // ─── Core-side redeem ───────────────────────────────────────────────
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
     function redeemCore(uint256 shares, address coreReceiver) external returns (uint256 amount) {
@@ -312,7 +369,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit Redeemed(msg.sender, coreReceiver, shares, amount);
     }
 
-    // ─── Trading actions (creator-only) ─────────────────────────────────
+    // ─── Trading actions (creator-only) ────────────────────────────────────
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
         _requireStakeWithinCure();
@@ -336,7 +393,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit BuilderApproved(builder, maxFeeRate);
     }
 
-    // ─── Internals ───────────────────────────────────────────────
+    // ─── Internals ────────────────────────────────────────────────────
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
         uint16 bps = depositFeeBps;
         address recip = feeRecipient;
@@ -350,6 +407,17 @@ contract CreatorVault is ERC4626, Ownable {
             totalSupply() + 10 ** _decimalsOffset(),
             totalAssets() + 1,
             Math.Rounding.Floor
+        );
+    }
+
+    /// @notice Bridge `amount` USDC from vault EVM balance to vault Core
+    ///         spot via Circle's CoreDepositWallet. Canonical pattern.
+    function _bridgeToCore(IERC20 token, uint256 amount) internal {
+        token.forceApprove(CORE_DEPOSIT_WALLET, amount);
+        ICoreDepositWallet(CORE_DEPOSIT_WALLET).depositFor(
+            address(this),
+            amount,
+            HLConstants.CDW_DESTINATION_SPOT
         );
     }
 
