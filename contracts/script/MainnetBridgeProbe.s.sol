@@ -5,27 +5,36 @@ import {Script, console} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {HLConstants, ICoreWriter} from "../src/HLConstants.sol";
+import {HLConstants, ICoreWriter, ICoreDepositWallet} from "../src/HLConstants.sol";
 
-/// @notice One-shot probe contract. Holds USDC, bridges via system-address
-///         transfer, exposes a precompile reader so the runner script can
-///         confirm Core-side credit, and provides recovery hatches.
+/// @notice One-shot probe. Holds USDC, bridges via Circle's
+///         `CoreDepositWallet.depositFor` (the canonical pattern surfaced
+///         by Phase 3 of the bridge-verification protocol), exposes a
+///         precompile reader so the runner script can confirm Core-side
+///         credit, and provides recovery hatches.
 contract MainnetBridgeProbe {
     using SafeERC20 for IERC20;
 
     address public immutable USDC;
+    address public immutable CORE_DEPOSIT_WALLET;
     address public immutable owner;
 
     error NotOwner();
 
-    constructor(address usdc) {
+    constructor(address usdc, address coreDepositWallet) {
         USDC = usdc;
+        CORE_DEPOSIT_WALLET = coreDepositWallet;
         owner = msg.sender;
     }
 
-    /// @notice Permissionless bridge — just the EVM-side transfer.
+    /// @notice Permissionless bridge — forceApprove + CDW.depositFor.
     function bridge(uint256 amount) external {
-        IERC20(USDC).safeTransfer(HLConstants.USDC_SYSTEM_ADDRESS, amount);
+        IERC20(USDC).forceApprove(CORE_DEPOSIT_WALLET, amount);
+        ICoreDepositWallet(CORE_DEPOSIT_WALLET).depositFor(
+            address(this),
+            amount,
+            HLConstants.CDW_DESTINATION_SPOT
+        );
     }
 
     /// @notice Read this contract's Core spot USDC balance via precompile.
@@ -62,12 +71,10 @@ contract MainnetBridgeProbe {
 }
 
 /// @title  RunMainnetBridgeProbe — Phase 2 of the bridge-verification protocol.
-/// @notice Deploys a one-shot `MainnetBridgeProbe`, funds it from the deployer
-///         EOA, fires the bridge, and prints the cast commands needed to
-///         observe Core-side settlement.
-///
-///         Confirms or refutes the silent-fail mode the prior investigation
-///         hit: EVM tx succeeds but Core spot balance never increases.
+/// @notice Updated to use Circle's CoreDepositWallet pattern (Phase 3
+///         finding). Deploys a one-shot probe, funds it from the deployer
+///         EOA, fires the bridge, and prints cast commands to observe
+///         Core-side settlement.
 ///
 /// Setup (DO NOT use a wallet you care about):
 ///   cast wallet new                        # generate fresh deployer
@@ -82,18 +89,20 @@ contract MainnetBridgeProbe {
 /// Then:
 ///   - Wait 30s
 ///   - Poll `readCoreSpot()` via the cast commands the script prints
-///   - Update INVESTIGATION_EVM_DEPOSIT.md sec 6 with the result
 ///   - Recover funds via `recoverCore` + `recoverEvm`, then drain HYPE
 contract RunMainnetBridgeProbe is Script {
     address constant MAINNET_USDC = 0xb88339CB7199b77E23DB6E890353E22632Ba630f;
+    address constant MAINNET_CDW  = 0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24;
     uint256 constant PROBE_AMOUNT = 5e6;
 
     function run() external {
         uint256 deployerKey = vm.envUint("PROBE_PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
 
-        console.log("=== Mainnet bridge probe ===");
+        console.log("=== Mainnet bridge probe (CDW pattern) ===");
         console.log("Deployer:", deployer);
+        console.log("USDC:", MAINNET_USDC);
+        console.log("CoreDepositWallet:", MAINNET_CDW);
         console.log("Probe amount (6-dec USDC):", PROBE_AMOUNT);
 
         uint256 evmBefore = IERC20(MAINNET_USDC).balanceOf(deployer);
@@ -101,7 +110,7 @@ contract RunMainnetBridgeProbe is Script {
 
         vm.startBroadcast(deployerKey);
 
-        MainnetBridgeProbe probe = new MainnetBridgeProbe(MAINNET_USDC);
+        MainnetBridgeProbe probe = new MainnetBridgeProbe(MAINNET_USDC, MAINNET_CDW);
         console.log("Probe deployed at:", address(probe));
 
         IERC20(MAINNET_USDC).transfer(address(probe), PROBE_AMOUNT);
