@@ -41,7 +41,7 @@ contract CreatorVaultTest is Test {
         _setCorePerp(0);
     }
 
-    // ─── Mock helpers ───────────────────────────────────────────────────────
+    // ─── Mock helpers ─────────────────────────────────────────────────────────────
 
     function _setCoreSpot(uint256 sixDec) internal {
         uint64 total8 = uint64(sixDec * 100);
@@ -63,7 +63,7 @@ contract CreatorVaultTest is Test {
         );
     }
 
-    // ─── Deploy invariants ────────────────────────────────────────────────
+    // ─── Deploy invariants ──────────────────────────────────────────────────
 
     function test_creator_stored() public view {
         assertEq(vault.CREATOR(), creator);
@@ -79,6 +79,20 @@ contract CreatorVaultTest is Test {
 
     function test_share_decimals() public view {
         assertEq(vault.decimals(), 12);
+    }
+
+    function test_default_stake_cap_is_250k() public view {
+        assertEq(vault.creatorStakeCapUsdc(), 250_000e6);
+    }
+
+    function test_min_creator_bps_is_500() public view {
+        assertEq(vault.MIN_CREATOR_BPS(), 500);
+    }
+
+    function test_initial_breach_state_is_zero() public view {
+        assertEq(vault.stakeBreachStartedAt(), 0);
+        (bool inBreach,) = vault.isInBreach();
+        assertFalse(inBreach);
     }
 
     // ─── Standard ERC-4626 surface neutered ──────────────────────────────
@@ -124,7 +138,7 @@ contract CreatorVaultTest is Test {
         vault.previewRedeem(1);
     }
 
-    // ─── previewDepositCore ─────────────────────────────────────
+    // ─── previewDepositCore ──────────────────────────────────────
 
     function test_preview_zero_when_no_delta() public {
         _setCoreSpot(0);
@@ -159,7 +173,7 @@ contract CreatorVaultTest is Test {
         assertEq(s, 99e6 * 1e6);
     }
 
-    // ─── depositCore happy paths ─────────────────────────────────────────
+    // ─── depositCore happy paths ────────────────────────────────────────
 
     function test_first_deposit_mints_with_offset() public {
         _setCoreSpot(100e6);
@@ -250,38 +264,214 @@ contract CreatorVaultTest is Test {
         assertEq(vault.lastSeenCoreSpot(), 100e6);
     }
 
-    // ─── Creator stake invariant ────────────────────────────────────────────
+    // ─── Stake invariant: breach state machine ────────────────────────────
 
-    function test_invariant_pct_binds_below_threshold() public {
-        _setCoreSpot(20e6);
+    function test_breach_starts_below_5pct() public {
+        // Creator deposits $5K. Vault grows via follower deposit to $200K.
+        // Creator stake = $5K of $200K = 2.5% < 5% → breach.
+        // (Below cap-threshold of $5M, so percentage rule binds.)
+        _setCoreSpot(5_000e6);
         vm.prank(creator);
         vault.depositCore(creator, 0);
 
-        _setCoreSpot(100e6);
+        // Compliant initially (creator is 100% of vault).
+        assertEq(vault.stakeBreachStartedAt(), 0);
+
+        // Bob deposits $195K → vault $200K. Creator stake stays at $5K = 2.5%.
+        _setCoreSpot(200_000e6);
         vm.prank(bob);
         vault.depositCore(bob, 0);
 
-        _setCoreSpot(101e6);
+        // Breach recorded.
+        assertGt(vault.stakeBreachStartedAt(), 0);
+        (bool inBreach,) = vault.isInBreach();
+        assertTrue(inBreach);
+    }
+
+    function test_breach_starts_when_cap_binds_at_high_aum() public {
+        // Above cap-threshold ($5M), only the $250K cap binds.
+        // Creator at $250K is at the cap → compliant. Below → breach.
+        _setCoreSpot(250_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        // Vault grows to $10M via bob — creator stays at $250K, exactly at cap.
+        _setCoreSpot(10_000_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+        assertEq(vault.stakeBreachStartedAt(), 0);
+
+        // Creator redeems $50K of own stake → stake $200K < $250K cap → breach.
+        uint256 redemptionAmount = 50_000e6;
+        uint256 sharesToRedeem =
+            (redemptionAmount * (vault.totalSupply() + 1e6)) / (vault.totalAssets() + 1);
+
+        // Spot has full vault value (no perp).
+        _setCoreSpot(10_000_000e6);
+        _setCorePerp(0);
+
+        vm.prank(creator);
+        vault.redeemCore(sharesToRedeem, creator);
+
+        assertGt(vault.stakeBreachStartedAt(), 0);
+    }
+
+    function test_creator_can_trade_during_first_48h_of_breach() public {
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(200_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        assertGt(vault.stakeBreachStartedAt(), 0);
+
+        // Within 48h, creator can still place orders.
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(creator);
+        vault.placeOrder(0, true, 1e10, 100, false, HLConstants.TIF_IOC);
+    }
+
+    function test_creator_trading_halts_after_cure_period() public {
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(200_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        vm.warp(block.timestamp + 49 hours);
+
+        vm.prank(creator);
+        vm.expectRevert(); // StakeCureExpired
+        vault.placeOrder(0, true, 1e10, 100, false, HLConstants.TIF_IOC);
+    }
+
+    function test_deposits_halt_after_cure_period_expires() public {
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(200_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        vm.warp(block.timestamp + 49 hours);
+
+        // Even alice's deposit halts.
+        _setCoreSpot(201_000e6);
         vm.prank(alice);
         vm.expectRevert();
         vault.depositCore(alice, 0);
     }
 
-    function test_invariant_cap_binds_above_threshold() public {
-        _setCoreSpot(100e6);
+    function test_redemptions_continue_during_cure_period_and_after() public {
+        _setCoreSpot(5_000e6);
         vm.prank(creator);
         vault.depositCore(creator, 0);
 
-        _setCoreSpot(500e6);
+        _setCoreSpot(200_000e6);
         vm.prank(bob);
         vault.depositCore(bob, 0);
 
-        _setCoreSpot(10_500e6);
-        vm.prank(alice);
-        vault.depositCore(alice, 0);
+        vm.warp(block.timestamp + 49 hours);
 
-        uint256 creatorAssets = vault.convertToAssets(vault.balanceOf(creator));
-        assertApproxEqAbs(creatorAssets, 100e6, 1e3);
+        // Bob can still exit even though cure period expired.
+        uint256 bobShares = vault.balanceOf(bob);
+        vm.prank(bob);
+        uint256 amount = vault.redeemCore(bobShares, bob);
+        assertGt(amount, 0);
+    }
+
+    function test_creator_topup_cures_breach() public {
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(200_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+
+        assertGt(vault.stakeBreachStartedAt(), 0);
+
+        // Within cure period, creator tops up. Vault grows to $400K.
+        // Creator now owns $5K + $200K (new) ≈ $205K of $400K vault ≈ 51%.
+        // Required = min(5% of $400K = $20K, $250K cap) = $20K.
+        // Creator at $205K > $20K → cured.
+        _setCoreSpot(400_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        assertEq(vault.stakeBreachStartedAt(), 0);
+        (bool inBreach,) = vault.isInBreach();
+        assertFalse(inBreach);
+    }
+
+    function test_breach_state_resets_when_supply_zero() public {
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.depositCore(creator, 0);
+
+        _setCoreSpot(200_000e6);
+        vm.prank(bob);
+        vault.depositCore(bob, 0);
+        assertGt(vault.stakeBreachStartedAt(), 0);
+
+        // Bob redeems all his shares.
+        uint256 bobShares = vault.balanceOf(bob);
+        vm.prank(bob);
+        vault.redeemCore(bobShares, bob);
+
+        // Then creator redeems all theirs (vault becomes empty).
+        uint256 creatorShares = vault.balanceOf(creator);
+        // After bob's redeem, spot is whatever remains; just leave the mock
+        // at a value sufficient for creator's share value.
+        _setCoreSpot(5_000e6);
+        vm.prank(creator);
+        vault.redeemCore(creatorShares, creator);
+
+        assertEq(vault.totalSupply(), 0);
+        assertEq(vault.stakeBreachStartedAt(), 0);
+    }
+
+    // ─── Stake cap admin config ─────────────────────────────────────
+
+    function test_admin_can_adjust_cap_within_bounds() public {
+        vm.prank(admin);
+        vault.setCreatorStakeCap(500_000e6);
+        assertEq(vault.creatorStakeCapUsdc(), 500_000e6);
+    }
+
+    function test_admin_cannot_set_cap_below_min() public {
+        vm.prank(admin);
+        vm.expectRevert();
+        vault.setCreatorStakeCap(50_000e6);
+    }
+
+    function test_admin_cannot_set_cap_above_max() public {
+        vm.prank(admin);
+        vm.expectRevert();
+        vault.setCreatorStakeCap(50_000_000e6);
+    }
+
+    function test_non_admin_cannot_set_cap() public {
+        vm.prank(creator);
+        vm.expectRevert();
+        vault.setCreatorStakeCap(500_000e6);
+    }
+
+    function test_required_stake_view_below_threshold() public {
+        // Vault $1M, cap $250K, 5% = $50K. Pct binds (less than cap).
+        _setCoreSpot(1_000_000e6);
+        assertEq(vault.requiredCreatorStake(), 50_000e6);
+    }
+
+    function test_required_stake_view_above_threshold() public {
+        // Vault $10M, cap $250K, 5% = $500K. Cap binds.
+        _setCoreSpot(10_000_000e6);
+        assertEq(vault.requiredCreatorStake(), 250_000e6);
     }
 
     // ─── redeemCore ───────────────────────────────────────────────────────
