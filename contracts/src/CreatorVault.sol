@@ -20,12 +20,40 @@ import {HLConstants, ICoreWriter} from "./HLConstants.sol";
 ///         purely as a denomination label; the standard ERC-4626
 ///         deposit/redeem surface reverts. Use `depositCore` /
 ///         `redeemCore` exclusively.
+///
+///         Creator stake invariant: the creator must hold at least
+///         `min(MIN_CREATOR_BPS of totalAssets, creatorStakeCapUsdc)`
+///         worth of shares. Below that threshold the vault enters a
+///         48-hour cure period during which the creator can top up.
+///         After the cure period expires, creator-side actions (deposit,
+///         move, trade) halt; redemptions remain open so followers can
+///         always exit.
 contract CreatorVault is ERC4626, Ownable {
     address public immutable CREATOR;
 
-    uint16 public constant MIN_CREATOR_BPS = 2000;
-    uint256 public constant CREATOR_STAKE_CAP_USDC = 100e6;
+    // ─── Stake-invariant parameters ────────────────────────────────────────────
+    /// @notice Floor percentage of vault value the creator must hold,
+    ///         in basis points (500 = 5%).
+    uint16 public constant MIN_CREATOR_BPS = 500;
 
+    /// @notice Hard bounds for the mutable stake cap. Admin can adjust
+    ///         within this range; outside is rejected.
+    uint256 public constant CREATOR_STAKE_CAP_MIN = 100_000e6;   // $100K
+    uint256 public constant CREATOR_STAKE_CAP_MAX = 5_000_000e6; // $5M
+
+    /// @notice Time the creator has to top up after a stake breach
+    ///         starts before creator-side actions halt.
+    uint256 public constant STAKE_CURE_PERIOD = 48 hours;
+
+    /// @notice Mutable stake cap in 6-dec USDC. Initialized to $250K in
+    ///         the constructor; admin can set within bounds via
+    ///         `setCreatorStakeCap`.
+    uint256 public creatorStakeCapUsdc;
+
+    /// @notice Timestamp when the most recent stake breach began. 0 = compliant.
+    uint256 public stakeBreachStartedAt;
+
+    // ─── Deposit fee ────────────────────────────────────────────────────
     uint16 public depositFeeBps;
     address public feeRecipient;
     uint16 public constant MAX_DEPOSIT_FEE_BPS = 1000;
@@ -42,12 +70,17 @@ contract CreatorVault is ERC4626, Ownable {
     event OrderPlaced(uint32 asset, bool isBuy, uint64 limitPx, uint64 sz, uint8 tif);
     event BuilderApproved(address indexed builder, uint64 maxFeeRate);
     event Reconciled(uint256 oldWatermark, uint256 newWatermark);
+    event StakeBreachStarted(uint256 currentStake, uint256 required, uint256 timestamp);
+    event StakeBreachCured(uint256 currentStake, uint256 required, uint256 timestamp);
+    event StakeCapUpdated(uint256 oldCap, uint256 newCap);
 
     error UseCoreFlow();
     error NoDeposit();
     error SlippageExceeded(uint256 got, uint256 min);
     error InsufficientSpot(uint256 spot, uint256 needed);
-    error CreatorStakeTooLow(uint256 currentAssets, uint256 required);
+    error StakeInvariantBreached(uint256 currentStake, uint256 required);
+    error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
+    error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
     error DepositFeeTooHigh(uint16 bps, uint16 cap);
     error PrecompileFailed(address precompile);
     error NotCreator();
@@ -64,6 +97,7 @@ contract CreatorVault is ERC4626, Ownable {
     {
         if (creator_ == address(0)) revert ZeroAddress();
         CREATOR = creator_;
+        creatorStakeCapUsdc = 250_000e6;
     }
 
     /// @notice Virtual-shares offset for inflation-attack resistance.
@@ -71,7 +105,7 @@ contract CreatorVault is ERC4626, Ownable {
         return 6;
     }
 
-    // ─── ERC-4626 surface (neutered) ────────────────────────────────────────
+    // ─── ERC-4626 surface (neutered) ──────────────────────────────────────
 
     function maxDeposit(address) public pure override returns (uint256) { return 0; }
     function maxMint(address) public pure override returns (uint256) { return 0; }
@@ -88,7 +122,7 @@ contract CreatorVault is ERC4626, Ownable {
     function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
     function previewRedeem(uint256) public pure override returns (uint256) { revert UseCoreFlow(); }
 
-    // ─── Asset accounting (Core-side reads) ──────────────────────────────────
+    // ─── Asset accounting (Core-side reads) ───────────────────────────────────
 
     /// @notice Total USDC the vault claims, in 6-dec EVM units.
     ///         = vault's Core spot USDC + perp accountValue.
@@ -117,13 +151,80 @@ contract CreatorVault is ERC4626, Ownable {
         return accountValue > 0 ? uint256(uint64(accountValue)) : 0;
     }
 
-    // ─── Admin: fee config ────────────────────────────────────────────
+    // ─── Stake-invariant views + state machine ──────────────────────────────
+
+    /// @notice Returns the minimum creator stake required at current vault size.
+    ///         = min(MIN_CREATOR_BPS of totalAssets, creatorStakeCapUsdc).
+    function requiredCreatorStake() external view returns (uint256) {
+        return _requiredCreatorStake();
+    }
+
+    /// @notice Returns whether the vault is currently in a stake breach,
+    ///         and how many seconds the breach has been ongoing.
+    function isInBreach() external view returns (bool inBreach, uint256 elapsedSeconds) {
+        uint256 startedAt = stakeBreachStartedAt;
+        if (startedAt == 0) return (false, 0);
+        return (true, block.timestamp - startedAt);
+    }
+
+    function _requiredCreatorStake() internal view returns (uint256) {
+        uint256 percentBased = Math.mulDiv(totalAssets(), MIN_CREATOR_BPS, 10_000);
+        return percentBased < creatorStakeCapUsdc ? percentBased : creatorStakeCapUsdc;
+    }
+
+    /// @notice Records the current stake-breach state. Called at the END
+    ///         of any state-mutating function. Does NOT revert.
+    function _updateStakeBreachState() internal {
+        if (totalSupply() == 0) {
+            if (stakeBreachStartedAt != 0) stakeBreachStartedAt = 0;
+            return;
+        }
+        uint256 currentStake = convertToAssets(balanceOf(CREATOR));
+        uint256 required = _requiredCreatorStake();
+        if (currentStake < required) {
+            if (stakeBreachStartedAt == 0) {
+                stakeBreachStartedAt = block.timestamp;
+                emit StakeBreachStarted(currentStake, required, block.timestamp);
+            }
+        } else {
+            if (stakeBreachStartedAt != 0) {
+                emit StakeBreachCured(currentStake, required, block.timestamp);
+                stakeBreachStartedAt = 0;
+            }
+        }
+    }
+
+    /// @notice Reverts if a stake breach has been ongoing past the cure
+    ///         period. Use as a guard on creator-side operations that
+    ///         should halt during prolonged breach. Redemptions never call
+    ///         this — followers must always be able to exit.
+    function _requireStakeWithinCure() internal view {
+        uint256 startedAt = stakeBreachStartedAt;
+        if (startedAt == 0) return;
+        if (block.timestamp > startedAt + STAKE_CURE_PERIOD) {
+            revert StakeCureExpired(startedAt, block.timestamp - startedAt);
+        }
+    }
+
+    // ─── Admin: fee config + cap config ─────────────────────────────────────
 
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
         depositFeeBps = bps;
         feeRecipient = recipient;
         emit DepositFeeUpdated(bps, recipient);
+    }
+
+    /// @notice Set the creator stake cap. Bounded by [MIN, MAX] to prevent
+    ///         admin from disabling the invariant or making it absurdly
+    ///         restrictive. Time-lock added in PR 5.
+    function setCreatorStakeCap(uint256 newCap) external onlyOwner {
+        if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
+            revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
+        }
+        uint256 old = creatorStakeCapUsdc;
+        creatorStakeCapUsdc = newCap;
+        emit StakeCapUpdated(old, newCap);
     }
 
     /// @notice Admin reset of the watermark. Use if a Core action fails
@@ -135,7 +236,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit Reconciled(oldW, newW);
     }
 
-    // ─── Core deposit / redeem ─────────────────────────────────────────
+    // ─── Core deposit / redeem ──────────────────────────────────────────
 
     /// @notice Quote what `depositCore` would mint right now. Returns the
     ///         unaccounted-for Core spot delta, the fee that would skim,
@@ -163,6 +264,7 @@ contract CreatorVault is ERC4626, Ownable {
     ///         `lastSeenCoreSpot`, less optional fee.
     function depositCore(address receiver, uint256 minShares) external returns (uint256 shares) {
         if (receiver == address(0)) revert ZeroAddress();
+        _requireStakeWithinCure();
 
         uint256 currentSpot = _coreSpotUSDC();
         uint256 last = lastSeenCoreSpot;
@@ -194,11 +296,13 @@ contract CreatorVault is ERC4626, Ownable {
             lastSeenCoreSpot -= fee;
         }
 
-        _enforceCreatorStake();
+        _updateStakeBreachState();
         emit DepositedCore(msg.sender, receiver, delta, fee, shares);
     }
 
     /// @notice Burn `shares` and send pro-rata Core USDC to `coreReceiver`.
+    ///         Redeems are NEVER blocked by stake-breach cure expiry —
+    ///         followers must always be able to exit.
     function redeemCore(uint256 shares, address coreReceiver) external returns (uint256 amount) {
         if (shares == 0) revert ZeroAmount();
         if (coreReceiver == address(0)) revert ZeroAddress();
@@ -217,24 +321,15 @@ contract CreatorVault is ERC4626, Ownable {
         _spotSendCore(coreReceiver, amount);
         lastSeenCoreSpot -= amount;
 
-        if (msg.sender == CREATOR) _enforceCreatorStake();
+        _updateStakeBreachState();
         emit Redeemed(msg.sender, coreReceiver, shares, amount);
-    }
-
-    // ─── Creator stake invariant ──────────────────────────────────────────
-
-    function _enforceCreatorStake() internal view {
-        if (totalSupply() == 0) return;
-        uint256 ca = convertToAssets(balanceOf(CREATOR));
-        uint256 bf = Math.mulDiv(totalAssets(), MIN_CREATOR_BPS, 10_000);
-        uint256 mr = bf < CREATOR_STAKE_CAP_USDC ? bf : CREATOR_STAKE_CAP_USDC;
-        if (ca < mr) revert CreatorStakeTooLow(ca, mr);
     }
 
     // ─── Trading actions (creator-only) ────────────────────────────────────
 
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
+        _requireStakeWithinCure();
         // Action 7 `usdClassTransfer` expects amount in 6-dec perp USDC,
         // matching our internal unit — no scaling.
         bytes memory payload = abi.encode(uint64(amount), toPerp);
@@ -247,6 +342,7 @@ contract CreatorVault is ERC4626, Ownable {
     function placeOrder(uint32 asset_, bool isBuy, uint64 limitPx, uint64 sz, bool reduceOnly, uint8 tif)
         external onlyCreator
     {
+        _requireStakeWithinCure();
         bytes memory payload = abi.encode(asset_, isBuy, limitPx, sz, reduceOnly, tif, uint128(0));
         _sendAction(HLConstants.ACTION_LIMIT_ORDER, payload);
         emit OrderPlaced(asset_, isBuy, limitPx, sz, tif);
