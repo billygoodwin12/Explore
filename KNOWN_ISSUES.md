@@ -66,30 +66,36 @@ state corruption.
 
 ---
 
-## 3. CoreDepositWallet bridge mechanism not empirically verified end-to-end (PR 2-NEW)
+## 3. CoreDepositWallet bridge — verified on mainnet (PR 2-NEW)
 
-**What.** PR 2-NEW's `deposit()` uses Circle's `CoreDepositWallet.depositFor`,
-proven canonical via Phase 3 of the bridge-verification protocol
-(Monetrix, hyper-evm-lib, and Circle's own CCTP forwarder all use this
-pattern; mainnet CDW handles 450K+ txs / $1.27B). We verified the pattern
-is canonical and that mainnet CDW is heavily used.
+**Status: VERIFIED.** Two empirical mainnet probes on May 12 confirm
+the CDW bridge credits Core spot end-to-end for a contract caller.
+See `INVESTIGATION_EVM_DEPOSIT.md` §11 for the data.
 
-We have NOT yet verified end-to-end that a contract callable from THIS
-specific vault contract triggers a Core spot credit. The Foundry mainnet
-fork test only verifies the EVM-side call doesn't revert; the fork cannot
-observe HyperCore state.
+Key findings from the probes:
+- First-time bridge to a fresh Core account loses **1 USDC** to
+  Circle's `newCoreAccountFee` (the Phase 3 agent had claimed this fee
+  was 0; empirically wrong).
+- Steady-state bridges to an already-activated account credit 1:1
+  with no further deduction.
+- Settlement latency upper bound: ≤92 blocks (~92 seconds). Actual
+  latency is likely much shorter — both probes credited before the
+  first poll could measure precisely.
 
-Three prior rounds of `depositFor` on testnet (May 9) silently failed to
-credit Core. Cause not fully understood — likely a testnet-specific issue,
-but not definitively ruled out for mainnet.
+**Operational consequence.** PR 2-NEW now enforces `VaultNotActivated()`
+in `deposit()`: a fresh vault rejects user deposits until admin has
+pre-activated by sending ≥2 USDC directly to the vault's Core spot.
+See README "Deployment runbook" for the operator steps.
 
-**Mitigation before deployment.** Run `contracts/script/MainnetBridgeProbe.s.sol`
-from a fresh, throwaway EOA with $5-10 of real USDC on mainnet. Confirm
-the probe's Core spot balance reads non-zero after the bridge. ~$1-2
-cost in gas + USDC, ~30 min including recovery. See INVESTIGATION_EVM_DEPOSIT.md
-§9-§10 for the full protocol.
+**Residual operational risk.** A fresh deployment that skips the
+pre-activation runbook will revert every user deposit at the EVM
+boundary. No funds at risk; UX blocked until admin runs the step.
 
-**Status.** Mandatory before any production deployment of PR 2-NEW.
+**Re-verification before every new vault.** Run
+`contracts/script/MainnetBridgeProbe.s.sol` from a throwaway EOA after
+material changes to the bridge mechanism (CDW upgrades, Circle USDC
+implementation upgrades, network changes). Not required for every
+vault deployment under unchanged conditions.
 
 ---
 
@@ -106,3 +112,47 @@ making it permissionless — a malicious caller can only help.
 large donation to `sweepStrandedEvmUsdc` and follow with a deposit before
 the sweep's bridge settles. Same sandwich window as #1; same per-tx TVL
 cap applies. Bounded.
+
+---
+
+## 5. `newCoreAccountFee` is 1 USDC, not 0 (PR 2-NEW)
+
+**What.** Circle's `CoreDepositWallet` charges a one-time 1 USDC
+`newCoreAccountFee` on the first inbound bridge to a fresh Core account.
+The Phase 3 agent inferred from CDW source that this fee was 0 on
+mainnet; empirically false (mainnet probe May 12 — see
+`INVESTIGATION_EVM_DEPOSIT.md` §11.1, Finding A).
+
+**Impact.** Without mitigation, the first depositor's deposit silently
+loses 1 USDC: share math computes against the gross amount but Core
+credits only `amount - 1 USDC`. Subsequent depositors are diluted by
+that 1 USDC shortfall.
+
+**Mitigation.** `deposit()` reverts with `VaultNotActivated()` if the
+vault's Core spot is zero. Admin must pre-activate by sending ≥2 USDC
+directly to the vault's Core address (HyperLiquid UI / `usdSend`)
+before the vault accepts any user deposit. See README "Deployment
+runbook".
+
+**Residual cost.** 1 USDC per vault deployment, paid by the admin
+during pre-activation. Treated as deployment overhead.
+
+---
+
+## 6. Per-tx TVL cap floor (PR 2-NEW)
+
+**What.** The per-tx TVL cap (`depositTvlCapBps`, default 500 = 5%)
+has a hardcoded floor of `MIN_DEPOSIT_USDC` ($10). When `5% × NAV <
+$10` (i.e., NAV < $200), the cap is `$10`. Above NAV $200, the cap
+binds normally at 5%.
+
+**Why.** A freshly pre-activated vault has NAV = $1 (after the
+1 USDC activation fee). Without the floor, the 5% cap would be
+$0.05, below `MIN_DEPOSIT_USDC`, blocking every deposit. The floor
+makes bootstrap deposits possible without admin sending a large
+pre-activation amount.
+
+**Trade-off.** Below NAV $200, the cap doesn't bound the sandwich
+window as tightly as 5%. In the worst case (NAV ≈ $200, first
+follower deposit = $10), the deposit is `$10 / $210 ≈ 4.76%` of
+post-deposit NAV — close to the 5% intent. Acceptable.
