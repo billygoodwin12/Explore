@@ -117,9 +117,6 @@ contract RunMainnetBridgeProbe is Script {
         uint256 probeEvm = IERC20(MAINNET_USDC).balanceOf(address(probe));
         console.log("Probe EVM USDC balance:", probeEvm);
 
-        uint256 coreBefore = probe.readCoreSpot();
-        console.log("Probe Core spot before bridge:", coreBefore);
-
         probe.bridge(PROBE_AMOUNT);
         console.log("Bridge tx submitted at block:", block.number);
 
