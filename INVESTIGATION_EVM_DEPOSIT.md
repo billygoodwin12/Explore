@@ -443,3 +443,100 @@ operational profile (server uptime, key management, trust narrative)
 that Theorise explicitly excluded. PR 2-NEW keeps inline bridging — the
 bridge call happens inside the user's `deposit()` tx, fully self-contained.
 The interim cap bounds the residual sandwich-window risk.
+
+---
+
+## 11. PHASE 2 MAINNET PROBE — EXECUTED (May 12)
+
+Ran the updated `MainnetBridgeProbe.s.sol` (CDW pattern) on HyperEVM
+mainnet from a fresh, throwaway deployer EOA. Two separate bridge txs
+gave us two empirical data points.
+
+### 11.1 First bridge — fresh Core account
+
+```
+Deployer EOA:       0xA9e3F1cE0358252f74FcE41E27213E7d1B4aDD8F  (fresh)
+Probe contract:     0x2c9e2a1A329520026A0E523B72fF4FEF816217C7
+Bridge tx hash:     0x20c5e98545faec9605963dafa5ce1fa1c1d337a4ded5dc8f436a07eb5d2374cd
+Bridge tx block:    34,954,695
+Amount sent in:     5,000,000  (5 USDC)
+Amount credited:    4,000,000  (4 USDC)  ← 1 USDC short
+First poll block:   34,954,776  (delta = 81 blocks)
+First poll showed:  4,000,000   (credit had already landed)
+```
+
+**Finding A — `newCoreAccountFee` is 1 USDC, not 0.** The Phase 3 agent
+inferred from CDW source that the fee was 0 on mainnet. Empirically false:
+a fresh Core account (probe had never held Core USDC before) pays a 1 USDC
+activation fee on its first inbound. This is a `NewCoreAccountFeeApplied`
+event the agent did not observe in advance.
+
+**Finding B — settlement latency upper bound: 81 blocks (~80s).** The first
+poll already saw the credit, so actual latency is *somewhere between 1 and
+81 blocks*. Probably much faster; the 80s gap is mostly the wall-clock
+time between bridge submission and the first poll iteration.
+
+### 11.2 Second bridge — already-activated Core account
+
+```
+Bridge tx hash:     0x148a35fec04775831c0c6b4b2a2583e4b7e6dbde5e3c44f42147ce593031c5af
+Bridge tx block:    34,955,573
+Amount sent in:     1,000,000  (1 USDC)
+Amount credited:    1,000,000  (1 USDC)  ← no fee
+First poll showed:  5,000,000  (= prior 4 + new 1; credit had landed)
+First poll delta:   92 blocks
+```
+
+**Finding C — steady-state bridges credit 1:1.** Once a Core account is
+activated, subsequent inbound bridges via CDW credit the full amount with
+no further deduction. Confirms the activation fee is one-time per Core
+account (per-recipient).
+
+**Finding D — steady-state latency upper bound: ≤92 blocks (~92s).** Same
+measurement limitation as the first bridge: the polling loop's baseline
+read happened *after* Core had already credited. The lower bound is sub-
+block (settlement may be synchronous with the bridge tx itself); the upper
+bound is 92 blocks. We can't tighten without running a third probe with
+polling started *before* the bridge tx is sent.
+
+### 11.3 Implications for PR 2-NEW
+
+| Question | Answer |
+|---|---|
+| Does the CDW bridge work on mainnet? | Yes. |
+| Does it work from a contract caller? | Yes. |
+| Are there silent failures? | No, both bridges credited as expected. |
+| Activation fee? | 1 USDC, per Core account, one-time. |
+| Settlement latency? | ≤92 blocks (~92s) upper bound; likely much less. |
+| Is the 5% TVL cap right-sized? | Yes — bounds sandwich window regardless of exact latency. |
+
+### 11.4 Operational consequence — vault pre-activation
+
+Because of Finding A, the first user to deposit into a fresh vault would
+silently lose 1 USDC to the activation fee, while the share-math computes
+against the gross deposit. This is a small but real dilution of subsequent
+depositors (the first depositor mints against pre-bridge NAV which doesn't
+know about the 1 USDC shortfall).
+
+PR 2-NEW addresses this with:
+
+1. **Code-side guard.** `deposit()` reverts with `VaultNotActivated()` if
+   the vault's Core spot balance is zero. Forces admin to pre-activate
+   before any user deposit.
+2. **Operational runbook.** Admin sends 2 USDC directly to the vault's
+   Core address (via HL UI or `usdSend`) immediately after deployment.
+   After the 1 USDC activation fee, the vault has 1 USDC on Core (>0) and
+   `deposit()` becomes callable. See README §"Deployment runbook".
+
+### 11.5 Latency margin for PR 3-NEW in-flight tracker
+
+The in-flight tracker should expire pending entries after at least
+**~100 blocks (~2 minutes)** for safety. That's the observed 92-block
+upper bound plus a small headroom for occasional slow settlements. Tighter
+bounds require a third probe with pre-bridge polling.
+
+### 11.6 Funds disposition
+
+Per operational discipline: leave the 5 USDC on the probe's Core spot,
+drain HYPE from deployer EOA back to main wallet, abandon the EOA. Do not
+reuse the deployer key.
