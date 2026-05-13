@@ -46,7 +46,7 @@ contract CreatorVault is ERC4626, Ownable {
     address public immutable CREATOR;
     address public immutable CORE_DEPOSIT_WALLET;
 
-    // ─── Stake-invariant parameters ──────────────────────────────
+    // ─── Stake-invariant parameters ─────────────────────────────
     uint16  public constant MIN_CREATOR_BPS         = 500;
     uint256 public constant CREATOR_STAKE_CAP_MIN   = 100_000e6;
     uint256 public constant CREATOR_STAKE_CAP_MAX   = 5_000_000e6;
@@ -90,6 +90,7 @@ contract CreatorVault is ERC4626, Ownable {
     error UseCoreRedeem();
     error DepositBelowMinimum(uint256 assets, uint256 floor);
     error DepositExceedsTvlCap(uint256 assets, uint256 cap);
+    error VaultNotActivated();
     error SharesRoundToZero();
     error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
@@ -127,7 +128,7 @@ contract CreatorVault is ERC4626, Ownable {
         return 6;
     }
 
-    // ─── Asset accounting ────────────────────────────────────────────
+    // ─── Asset accounting ───────────────────────────────────────────
     /// @notice Vault NAV in 6-dec USDC. Reads only Core (spot + perp). Any
     ///         transient EVM USDC sitting between transferFrom and bridge
     ///         is intentionally NOT counted — see `deposit()` for why.
@@ -153,13 +154,21 @@ contract CreatorVault is ERC4626, Ownable {
         return accountValue > 0 ? uint256(uint64(accountValue)) : 0;
     }
 
-    // ─── ERC-4626 limits + previews ───────────────────────────────────────
+    // ─── ERC-4626 limits + previews ───────────────────────────────────
+    /// @notice maxDeposit reflects:
+    ///         - 0 if vault not activated (Core spot == 0) — would revert.
+    ///         - 0 if deposits are closed (post-cure-period).
+    ///         - type(uint256).max if cap is disabled.
+    ///         - max(NAV × cap_bps / 10_000, MIN_DEPOSIT_USDC) otherwise.
+    ///           The floor lets bootstrap deposits succeed when 5% of a
+    ///           small post-activation NAV would otherwise be below the
+    ///           minimum deposit.
     function maxDeposit(address) public view override returns (uint256) {
         if (!_depositsOpen()) return 0;
-        uint256 nav = totalAssets();
-        if (nav == 0) return type(uint256).max; // bootstrap freely
+        if (_coreSpotUSDC() == 0) return 0;
         if (depositTvlCapBps == DEPOSIT_TVL_CAP_DISABLED) return type(uint256).max;
-        return Math.mulDiv(nav, depositTvlCapBps, 10_000);
+        uint256 cap = Math.mulDiv(totalAssets(), depositTvlCapBps, 10_000);
+        return cap < MIN_DEPOSIT_USDC ? MIN_DEPOSIT_USDC : cap;
     }
 
     function maxMint(address account) public view override returns (uint256) {
@@ -198,7 +207,7 @@ contract CreatorVault is ERC4626, Ownable {
     function previewWithdraw(uint256) public pure override returns (uint256) { revert UseCoreRedeem(); }
     function previewRedeem(uint256)   public pure override returns (uint256) { revert UseCoreRedeem(); }
 
-    // ─── ERC-4626 mutators ────────────────────────────────────────────
+    // ─── ERC-4626 mutators ─────────────────────────────────────────
 
     /// @notice Standard ERC-4626 deposit. Pulls `assets` USDC on EVM,
     ///         skims optional fee, bridges net to vault Core spot via
@@ -214,13 +223,20 @@ contract CreatorVault is ERC4626, Ownable {
         if (receiver == address(0)) revert ZeroAddress();
         _requireStakeWithinCure();
 
-        // Per-tx TVL cap (sandwich-window interim mitigation). Skipped when
-        // NAV == 0 to permit bootstrap of the very first depositor, and
-        // when admin has set the disabled sentinel.
-        uint256 nav = totalAssets();
+        // Vault must be pre-activated. CDW charges a 1 USDC newCoreAccountFee
+        // on the first inbound to a fresh Core account; if we let user deposits
+        // pay it, the first depositor silently dilutes everyone. Admin must
+        // send ≥2 USDC directly to the vault's Core spot before opening
+        // deposits — see README "Deployment runbook" + INVESTIGATION §11.4.
+        if (_coreSpotUSDC() == 0) revert VaultNotActivated();
+
+        // Per-tx TVL cap (sandwich-window interim mitigation). Floor of
+        // MIN_DEPOSIT_USDC so bootstrap can proceed even when 5% of NAV
+        // would otherwise be below the minimum deposit.
         uint16 capBps = depositTvlCapBps;
-        if (nav > 0 && capBps != DEPOSIT_TVL_CAP_DISABLED) {
-            uint256 cap = Math.mulDiv(nav, capBps, 10_000);
+        if (capBps != DEPOSIT_TVL_CAP_DISABLED) {
+            uint256 cap = Math.mulDiv(totalAssets(), capBps, 10_000);
+            if (cap < MIN_DEPOSIT_USDC) cap = MIN_DEPOSIT_USDC;
             if (assets > cap) revert DepositExceedsTvlCap(assets, cap);
         }
 
@@ -270,7 +286,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit StrandedUsdcSwept(balance);
     }
 
-    // ─── Stake-invariant views + state machine ──────────────────────────────
+    // ─── Stake-invariant views + state machine ─────────────────────────────
     function requiredCreatorStake() external view returns (uint256) {
         return _requiredCreatorStake();
     }
@@ -320,7 +336,7 @@ contract CreatorVault is ERC4626, Ownable {
         return block.timestamp <= startedAt + STAKE_CURE_PERIOD;
     }
 
-    // ─── Admin: fee + cap + TVL cap ─────────────────────────────────────────
+    // ─── Admin: fee + cap + TVL cap ──────────────────────────────────────────
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
         depositFeeBps = bps;
@@ -347,7 +363,7 @@ contract CreatorVault is ERC4626, Ownable {
         depositTvlCapBps = newBps;
     }
 
-    // ─── Core-side redeem ───────────────────────────────────────────────
+    // ─── Core-side redeem ────────────────────────────────────────────
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
     function redeemCore(uint256 shares, address coreReceiver) external returns (uint256 amount) {
@@ -369,7 +385,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit Redeemed(msg.sender, coreReceiver, shares, amount);
     }
 
-    // ─── Trading actions (creator-only) ────────────────────────────────────
+    // ─── Trading actions (creator-only) ───────────────────────────────────
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
         if (amount == 0) revert ZeroAmount();
         _requireStakeWithinCure();
@@ -393,7 +409,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit BuilderApproved(builder, maxFeeRate);
     }
 
-    // ─── Internals ────────────────────────────────────────────────────
+    // ─── Internals ─────────────────────────────────────────────────
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
         uint16 bps = depositFeeBps;
         address recip = feeRecipient;
