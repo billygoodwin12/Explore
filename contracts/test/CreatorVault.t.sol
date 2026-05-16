@@ -904,6 +904,21 @@ contract CreatorVaultTest is Test {
         vault.redeemCore(0, creator);
     }
 
+    function test_redeem_dust_shares_reverts_with_amount_zero() public {
+        // Creator deposits, bridge settles, pending drains via _poke.
+        vm.prank(creator); vault.deposit(100e6, creator);
+        _settleBridge(100e6);
+        _poke();
+        // Force Core spot to a tiny value; NAV becomes negligible relative
+        // to supply, so a 1-share redeem rounds to amount=0.
+        _setCoreSpot(1);
+        _setCorePerp(0);
+
+        vm.prank(creator);
+        vm.expectRevert(CreatorVault.RedeemAmountZero.selector);
+        vault.redeemCore(1, creator);
+    }
+
     function test_redeem_zero_address_reverts() public {
         vm.prank(creator);
         vm.expectRevert(CreatorVault.ZeroAddress.selector);

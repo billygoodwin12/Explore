@@ -150,6 +150,11 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error SharesRoundToZero();
     error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
+    /// @notice Redeem computed to zero asset amount. Happens when the
+    ///         caller's share count is tiny relative to current vault
+    ///         NAV / supply (dust-shares case after a large dilution).
+    ///         Caller should redeem more shares.
+    error RedeemAmountZero();
     /// @notice Redeem amount exceeds Core spot, but the shortfall is
     ///         covered by `pendingBridgedUsdc` (in-flight bridges from
     ///         recent deposits). Caller should retry after settlement.
@@ -495,6 +500,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         if (supply == 0) revert NoSupply();
 
         amount = Math.mulDiv(shares, totalAssets() + 1, supply + 10 ** _decimalsOffset(), Math.Rounding.Floor);
+        // Dust-shares: ratio rounds to zero against current NAV / supply.
+        // Surface explicitly so callers know to redeem a larger amount.
+        if (amount == 0) revert RedeemAmountZero();
 
         uint256 spot = _coreSpotUSDC();
         if (spot < amount) {

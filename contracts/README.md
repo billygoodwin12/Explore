@@ -42,7 +42,7 @@ creator/admin = deployer, name = "Theorise Test Vault", symbol = "tVAULT".
 After deploying a vault, the admin **MUST** pre-activate its Core spot
 account before opening deposits to users. Otherwise the first user's
 deposit silently loses 1 USDC to Circle's `newCoreAccountFee` and
-dilutes everyone (see `INVESTIGATION_EVM_DEPOSIT.md` §11 for the
+dilutes everyone (see `INVESTIGATION_EVM_DEPOSIT.md` §12 for the
 empirical evidence + the on-chain guard that enforces this).
 
 Pre-activation flow:
@@ -78,25 +78,111 @@ additional fee.
 Before exposing a freshly-deployed vault to users on mainnet, run
 `script/MainnetBridgeProbe.s.sol` from a throwaway EOA to confirm
 the CDW bridge credits Core spot end-to-end on the deployment
-network. See `INVESTIGATION_EVM_DEPOSIT.md` §11 for the empirical
-record of the protocol's last execution and `KNOWN_ISSUES.md` §3 for
-why this check is still required even after Phase 3 confirmed the
-canonical bridge pattern.
+network. See `INVESTIGATION_EVM_DEPOSIT.md` §12.1 for the consolidated
+bridge verification narrative (three mainnet probes, cross-block
+settlement empirically 0 blocks).
+
+## Per-tx TVL cap (admin-controlled risk lever)
+
+The per-tx TVL cap was the PR 2-NEW interim mitigation for the
+async-bridge sandwich window. PR 3-NEW's in-flight tracker eliminates
+that window structurally, so the cap is no longer load-bearing.
+
+- **Default in PR 3-NEW: `DEPOSIT_TVL_CAP_DISABLED`** — no cap applied.
+- Admin can re-enable on a per-vault basis with
+  `setDepositTvlCapBps(uint16 bps)`. Bounds: `[100, 10_000]` (1% to 100%).
+- Sentinel `DEPOSIT_TVL_CAP_DISABLED = type(uint16).max` restores the
+  default (no cap).
+
+**When to enable.** Production observation surfaces a concern (e.g.,
+HyperLiquid block-time changes, CoreWriter behavior change, large
+single-deposit risk concern for a specific creator). Otherwise leave
+disabled.
+
+## Integration notes for UI and indexer
+
+The following behaviors are correct-by-design but require careful
+handling in client code. Read these before integrating.
+
+### `totalAssets()` staleness window
+
+Between bridge settlement (Core balance grows) and the next state-
+mutating tx (which calls `_settlePending`), `totalAssets()` may briefly
+read slightly inflated values. The just-settled bridge is counted twice
+(once in `coreSpot`, once in `pendingBridgedUsdc`) until the next
+`_settlePending` call drains the pending entry.
+
+- **Share math (internal) is unaffected.** Every state-mutating
+  function calls `_settlePending` at entry.
+- **External reads (UI / indexer) see the staleness.** UI should
+  display "estimated NAV" with a refresh affordance. Indexers should
+  debounce on state-mutating events rather than view-polling.
+
+See `KNOWN_ISSUES.md` §8.
+
+### 1-wei breach-cap-edge
+
+A creator depositing exactly at the cap (`creatorStakeCapUsdc`, default
+$250K) can transiently flip into a `StakeBreachStarted` event due to
+floor rounding in `convertToAssets`. The breach self-heals on the next
+state-mutating call.
+
+- **UI:** suggest creators deposit slightly above the cap (e.g., $250K +
+  1 USDC headroom).
+- **Indexer:** suppress single-block `StakeBreachStarted` /
+  `StakeBreachCured` pairs as noise.
+
+See `KNOWN_ISSUES.md` §7.
+
+### `RedeemPendingSettlement` recovery UX
+
+If `redeemCore` fails with `RedeemPendingSettlement(spotAvailable,
+amountRequested, pendingInflight, estimatedBlocksUntilSettlement)`, the
+caller's redeem amount is covered by in-flight bridges that haven't
+settled on Core yet.
+
+- **UI:** display "waiting for deposits to settle, retry in
+  ~`estimatedBlocksUntilSettlement` blocks". This is an upper bound;
+  actual settlement is typically sub-block (observed mainnet probe 3).
+- Do NOT surface as a hard failure.
+
+### Activation fee on first deposit
+
+A vault's first inbound Core credit incurs Circle's 1 USDC
+`newCoreAccountFee`. Admin pre-activates vaults with 1 USDC before
+opening deposits (handled by deployment runbook above).
+
+### Bridge silent-fail recovery
+
+If a `_bridgeToCore` call's EVM tx succeeds but Core credit doesn't
+land within `SETTLEMENT_BLOCKS_FALLBACK` (= 100 blocks ≈ 100s), the
+tracker auto-expires the pending entry via the time-based fallback.
+
+- **EVM USDC** remains in the vault contract if the bridge never
+  fired — anyone can call permissionless `sweepStrandedEvmUsdc()` to
+  retry.
+- **Indexer:** monitor `PendingBridgeExpired(amountExpired,
+  pendingStartAfter)` events as anomaly signals. Under normal
+  operation, only `PendingBridgeSettled` events fire (observation-based
+  detection).
 
 ## Layout
 
 - `src/CreatorVault.sol` — ERC-4626 creator vault with inline CDW
-  bridge, per-tx TVL cap, and Core-side redeem.
+  bridge, in-flight tracker, reentrancy guards, structured errors.
 - `src/HLConstants.sol` — HyperLiquid addresses + CoreWriter + CDW
   interface.
 - `script/DeployCreatorVault.s.sol` — chainid-aware single-vault deploy.
 - `script/MainnetBridgeProbe.s.sol` — bridge-verification probe.
 - `script/VerifyBridge.s.sol` — legacy testnet bridge probe.
-- `test/CreatorVault.t.sol` — 73-test suite covering deposit/redeem,
-  bridge accounting, TVL cap, sandwich window, stake-cure state machine.
+- `test/CreatorVault.t.sol` — 91-test suite covering deposit/redeem,
+  bridge accounting, tracker observation + fallback, TVL cap,
+  sandwich-window closure, stake-cure state machine, hardening
+  (reentrancy, SafeCast, fee validation, structured redeem errors).
 - `test/BridgeForkTest.t.sol` — Foundry mainnet fork test of the direct-
   transfer pattern (proves the failing path so we can't regress to it).
 
 See `../DECISIONS.md` for the architectural rationale,
-`../INVESTIGATION_EVM_DEPOSIT.md` for the bridge investigation, and
-`../KNOWN_ISSUES.md` for residual issues + PR 3-NEW plan.
+`../INVESTIGATION_EVM_DEPOSIT.md` for the bridge investigation +
+PR 3-NEW design notes, and `../KNOWN_ISSUES.md` for residual issues +
+deferred work.

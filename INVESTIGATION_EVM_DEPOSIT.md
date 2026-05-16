@@ -444,6 +444,164 @@ that Theorise explicitly excluded. PR 2-NEW keeps inline bridging — the
 bridge call happens inside the user's `deposit()` tx, fully self-contained.
 The interim cap bounds the residual sandwich-window risk.
 
+### 10.7 CoreWriter callback semantics (verified)
+
+Reentrancy guards added in PR 3-NEW (commit `edd7dde`) as defense-in-depth.
+CoreWriter's `sendRawAction` was verified to be fire-and-forget via three
+independent sources:
+
+1. **Bytecode disassembly** of the precompile at `0x3333333333333333333333333333333333333333`
+   on HyperEVM mainnet. Zero `CALL` / `CALLCODE` / `DELEGATECALL` / `STATICCALL`
+   opcodes. A 400-iteration gas-burn loop, a single `LOG2` emission with topic
+   hash `0x8c7f585fb295f7eb1e6aeb8fba61b23a4fe60beda405f0045073b185c74412e3`
+   indexed by `msg.sender`, then return. Function selector: `0x17938e13` =
+   `sendRawAction(bytes)`. **Structurally impossible** for the precompile to
+   re-enter the caller.
+
+2. **HyperLiquid documentation** (Gitbook "Interacting with HyperCore"):
+   CoreWriter "burns ~25,000 gas before emitting a log to be processed by
+   HyperCore as an action." Order actions and vault transfers are "delayed
+   onchain for a few seconds" and appear twice in the L1 explorer ("first
+   as an enqueuing and second as a HyperCore execution"). Strictly async.
+
+3. **Mainnet receipt inspection** for tx
+   `0x62b2ad07d2cb09d6f4e1e1d3c53e7fcf8f40191d7ebe0fd0bf6936b7b061fe13`
+   (block 35039134): receipt has exactly 1 log emitted by CoreWriter,
+   status success, gas used 154,980. Call structure:
+   `EOA → Caller → CoreWriter (LOG2, return)`. No reverse edge.
+
+Reentrancy posture across reference protocols (researched May 15):
+
+| Protocol | ReentrancyGuard | nonReentrant on CoreWriter-firing fns |
+|---|---|---|
+| `hyper-evm-lib` (CoreWriterLib.sol) | No | No |
+| Monetrix (MonetrixVault.sol) | Yes | Selective (guards on user-funds entry points only) |
+| Kinetiq (StakingManager.sol) | Yes | All `l1Write.*`-wrapping fns |
+| Circle CoreDepositWallet | No | N/A |
+
+Theorise chose Kinetiq's defensive posture: `nonReentrant` on every
+state-mutating function (`deposit`, `mint`, `redeemCore`, `moveOnCore`,
+`placeOrder`, `setBuilderFee`, `sweepStrandedEvmUsdc`). Cost: ~2.3k gas
+per call. Benefit: forward-safe against future CoreWriter behavioral
+changes; protects against malicious-ERC20 reentrancy on
+`safeTransferFrom`; consistent audit narrative ("every state-mutating
+function is guarded").
+
+Test coverage: `test_reentrancy_guard_blocks_recursive_deposit` uses a
+mock `ReentrantCdw` contract that re-enters `vault.deposit` during its
+own `depositFor` callback. Specific selector assertion:
+`ReentrancyGuard.ReentrancyGuardReentrantCall`. Smoke-test demonstrates
+the wiring; OZ's library tests cover the modifier mechanics.
+
+### 10.8 AQAv2 framework reference (May 14, 2026)
+
+Coinbase and Circle jointly announced the AQAv2 framework: Coinbase
+becomes the official USDC treasury deployer on HyperLiquid; Circle
+formally retains the technical deployer role for USDC minting,
+redemption, and cross-chain infrastructure (including CCTP). The
+CoreDepositWallet at `0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24` is
+unchanged and remains the canonical bridge contract under AQAv2.
+Coinbase shares the majority of USDC reserve yield with the HyperLiquid
+Foundation.
+
+**Implications for Theorise:** none at the contract layer. The bridge
+mechanism we verified empirically on May 12 (mainnet probes 1-3) is
+unchanged. USDC's institutional backing on HyperEVM is stronger; the
+choice of USDC as vault asset is validated. Worth re-reading the
+AQAv2 technical spec when published for any contract-level integration
+requirements (e.g., yield-claim mechanics).
+
+Sources:
+- Coinbase / HyperLiquid announcement, May 13-14 2026 (CoinDesk, The Block, FXStreet)
+- Circle CCTP retention on HyperEVM (Bitcoin.com, news.bitcoin.com)
+
+---
+
+## 12. PR 3-NEW: IN-FLIGHT BRIDGE TRACKER
+
+PR 3-NEW (commits `edd7dde`, `b287f0b`, `84031a1`, `7f329d3`, and this
+docs commit) closes the async-bridge sandwich window via an in-flight
+tracker that includes pending bridge amounts in `totalAssets()` until
+HyperCore has settled them.
+
+### 12.1 Bridge verification — three mainnet probes consolidated
+
+| Probe | Date | Bridge block | Credit block | Δ blocks | Δ wallclock | Notes |
+|---|---|---|---|---|---|---|
+| 1 (fresh account) | May 12 | 34,954,695 | ≤34,954,776 | [1, 81] | ≤80s | 1 USDC `newCoreAccountFee` deducted; credit observed at first poll (loop started after bridge confirmed) |
+| 2 (activated) | May 12 | 34,955,573 | ≤34,955,663 | [1, 90] | ≤90s | Polling cadence too slow to capture exact credit block |
+| 3 (activated, pre-fired polling) | May 13 | 35,040,457 | 35,040,457 | **0** | <1s | Credit visible in the same block bridge tx confirmed |
+
+**Conclusion:** EVM→Core USDC bridge via `CoreDepositWallet.depositFor` is
+effectively synchronous for cross-block correctness. From a subsequent
+external `cast call` reading the spot-balance precompile, the credit is
+observable starting in the same block the bridge tx confirmed.
+**Same-block intra-tx behavior is unverified** — we did not test whether a
+follow-up tx within the same block sees the credit.
+
+This empirical evidence reframes the tracker's purpose: not load-bearing
+for cross-block correctness, but defense-in-depth against same-block
+ordering ambiguity and silent-failure-mode recovery.
+
+### 12.2 Tracker design
+
+State (storage layout at `CreatorVault.sol`):
+
+```solidity
+struct PendingBridge { uint128 amount; uint64 enqueueBlock; }
+PendingBridge[] internal pending;          // append-only FIFO
+uint256 internal pendingStart;              // head pointer
+uint256 public pendingBridgedUsdc;          // running sum of live entries
+uint256 internal lastCheckedCoreSpot;       // observation checkpoint
+uint256 internal inFlightFromPerp;          // moveOnCore(toPerp=false) expected inflow
+uint256 public constant SETTLEMENT_BLOCKS_FALLBACK = 100;
+```
+
+Algorithm: `_settlePending()` is called at entry of every state-mutating
+function. Three-step:
+
+1. **Reserve perp→spot inflows.** If `currentSpot > lastCheckedCoreSpot`,
+   consume the growth against `inFlightFromPerp` first. Prevents
+   misattribution of `moveOnCore(toPerp=false)` settlements as bridge
+   settlements.
+2. **Observation-based drain.** Remaining growth drains pending entries
+   oldest-first. Partial entries supported.
+3. **Time-based fallback expiry.** Walk pending head-forward and hard-expire
+   entries older than `SETTLEMENT_BLOCKS_FALLBACK`. Silent-failure safety
+   net (per testnet history).
+
+`totalAssets()` returns `_coreSpotUSDC() + _corePerpAccountValue() + pendingBridgedUsdc`.
+This is the single edit that closes both KNOWN_ISSUES §1 (sandwich
+window) and KNOWN_ISSUES §2 (transient breach state).
+
+### 12.3 Sizing decision: `SETTLEMENT_BLOCKS_FALLBACK = 100`
+
+Justification:
+
+- **Measured cross-block settlement (3 probes):** 0 blocks (probe 3),
+  bounded above at 81 (probe 1) and 90 (probe 2) due to polling lag.
+- **Observation-based detection** clears pending entries within 1-2
+  `_settlePending` calls under normal operation. The fallback never
+  fires in the common case.
+- **Fallback purpose:** silent-failure-mode recovery (per testnet
+  history, May 9). If a bridge's EVM-side succeeds but HyperCore never
+  credits, the pending entry would otherwise accumulate forever. The
+  fallback caps the impact at 100 blocks (~100s) of stale NAV
+  over-counting.
+- **100 blocks = ~100× safety margin** vs measured 0-block latency.
+  Generous; auditor-friendly. Tighter would require a measurement
+  scheme that we don't have today.
+
+### 12.4 PR 3-NEW commit map
+
+| Commit | Hash | Scope | Tests |
+|---|---|---|---|
+| 1 — hardening | `edd7dde` | `ReentrancyGuard` (7 fns), `SafeCast.toUint64`, fee config validation (`FeeConfigInvalid`), structured redeem errors (`RedeemPerpPositionsOpen`, `RedeemInsufficient`, replacing `InsufficientSpot`) | +6 |
+| 2 — tracker state | `b287f0b` | `PendingBridge` struct, `pending` queue, `pendingStart` head pointer, `pendingBridgedUsdc`, `_settlePending`, `_enqueuePending`, `totalAssets()` change, `CreatorVaultHarness` for isolated tests | +9 |
+| 3 — wiring | `84031a1` | `_settlePending` at entry of `_doDeposit`, `redeemCore`, `moveOnCore`, `placeOrder`, `setBuilderFee`, `sweepStrandedEvmUsdc`. `_enqueuePending` after bridge in `_doDeposit` and `sweepStrandedEvmUsdc`. `RedeemPendingSettlement` error + cascade insertion. `inFlightFromPerp += amount` in `moveOnCore(toPerp=false)` | +5 |
+| 4 — cap default | `7f329d3` | `depositTvlCapBps` default flipped to `DEPOSIT_TVL_CAP_DISABLED`. Admin opt-in path retained | (test refactor) |
+| 5 — docs | this commit | INVESTIGATION §11.7-§11.8, §12; KNOWN_ISSUES closures + new entries; README integration notes; `RedeemAmountZero` patch | +1 |
+
 ---
 
 ## 11. PHASE 2 MAINNET PROBE — EXECUTED (May 12)
