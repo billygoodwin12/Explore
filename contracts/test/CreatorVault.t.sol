@@ -5,6 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
 import {HLConstants} from "../src/HLConstants.sol";
 
@@ -631,14 +632,27 @@ contract CreatorVaultTest is Test {
         vault.setDepositFee(1001, treasury);
     }
 
-    function test_fee_zero_recipient_disables_skim() public {
-        vm.prank(admin); vault.setDepositFee(100, address(0));
+    function test_fee_config_rejects_bps_with_zero_recipient() public {
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(100), address(0))
+        );
+        vault.setDepositFee(100, address(0));
+    }
 
-        vm.prank(creator);
-        uint256 shares = vault.deposit(100e6, creator);
+    function test_fee_config_rejects_zero_bps_with_recipient() public {
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(0), treasury)
+        );
+        vault.setDepositFee(0, treasury);
+    }
 
-        assertEq(usdc.balanceOf(address(cdw)), 100e6);
-        assertGt(shares, 0);
+    function test_fee_config_allows_clearing_both_zero() public {
+        vm.prank(admin); vault.setDepositFee(100, treasury);
+        vm.prank(admin); vault.setDepositFee(0, address(0));
+        assertEq(vault.depositFeeBps(), 0);
+        assertEq(vault.feeRecipient(), address(0));
     }
 
     // ─── Stake invariant: breach state machine ─────────────────────────────
@@ -805,7 +819,9 @@ contract CreatorVaultTest is Test {
         assertEq(vault.totalSupply(), 0);
     }
 
-    function test_redeem_insufficient_spot_reverts() public {
+    function test_redeem_perp_positions_open_reverts() public {
+        // Shortfall in spot ($5) is covered by creator's open perp position
+        // ($95) → structured error tells caller to close positions.
         vm.prank(creator); vault.deposit(100e6, creator);
         _settleBridge(100e6);
 
@@ -813,10 +829,27 @@ contract CreatorVaultTest is Test {
         _setCorePerp(95e6);
 
         uint256 sh = vault.balanceOf(creator);
+        // Approximate amount the redeem would compute against current NAV.
+        uint256 expectedAmount = Math.mulDiv(
+            sh, vault.totalAssets() + 1, vault.totalSupply() + 1e6
+        );
         vm.prank(creator);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.RedeemPerpPositionsOpen.selector,
+                uint256(5e6),
+                expectedAmount,
+                uint256(95e6)
+            )
+        );
         vault.redeemCore(sh, creator);
     }
+
+    // `RedeemInsufficient` is structurally unreachable in PR 2-NEW
+    // because amount ≤ totalAssets() always (share-math invariant). The
+    // error path becomes reachable in PR 3-NEW when `pendingBridgedUsdc`
+    // is included in totalAssets() but spot has not yet settled. Test
+    // deferred to PR 3-NEW's test suite.
 
     function test_redeem_zero_shares_reverts() public {
         vm.prank(creator);
@@ -866,5 +899,73 @@ contract CreatorVaultTest is Test {
 
         vm.prank(creator);
         vault.moveOnCore(40e6, true);
+    }
+
+    // ─── Hardening: SafeCast ────────────────────────────────────────
+
+    function test_moveOnCore_reverts_on_uint64_overflow() public {
+        // amount > type(uint64).max should revert at the safe cast boundary.
+        uint256 oversized = uint256(type(uint64).max) + 1;
+        vm.prank(creator);
+        vm.expectRevert(); // SafeCastOverflowedUintDowncast(64, oversized)
+        vault.moveOnCore(oversized, true);
+    }
+
+    // ─── Hardening: Reentrancy guard ────────────────────────────────
+
+    function test_reentrancy_guard_blocks_recursive_deposit() public {
+        // Deploy a malicious CDW that re-enters vault.deposit() during its
+        // depositFor() call. With nonReentrant in place, the recursive call
+        // must revert with ReentrancyGuardReentrantCall.
+        ReentrantCdw maliciousCdw = new ReentrantCdw(address(usdc));
+        CreatorVault rentVault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(maliciousCdw), "x", "y"
+        );
+        maliciousCdw.setVault(rentVault);
+
+        // Mock the spot precompile for the new vault (pre-activated).
+        vm.mockCall(
+            HLConstants.SPOT_BALANCE_PRECOMPILE,
+            abi.encode(address(rentVault), HLConstants.USDC_SPOT_INDEX),
+            abi.encode(uint64(1e6 * 100), uint64(0), uint64(0))
+        );
+        vm.mockCall(
+            HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE,
+            abi.encode(uint32(0), address(rentVault)),
+            abi.encode(int64(0), uint64(0), uint64(0), int64(0))
+        );
+
+        // Disable TVL cap so we don't trip on that first.
+        uint16 capDisabled = rentVault.DEPOSIT_TVL_CAP_DISABLED();
+        vm.prank(admin);
+        rentVault.setDepositTvlCapBps(capDisabled);
+
+        usdc.mint(creator, 1000e6);
+        vm.prank(creator); usdc.approve(address(rentVault), type(uint256).max);
+        vm.prank(creator);
+        vm.expectRevert(); // ReentrancyGuardReentrantCall propagates up
+        rentVault.deposit(100e6, creator);
+    }
+}
+
+/// @dev Malicious CoreDepositWallet stub. During `depositFor`, attempts to
+///      re-enter vault.deposit(). With nonReentrant in place, the recursive
+///      call reverts and the outer call propagates the revert.
+contract ReentrantCdw {
+    using SafeERC20 for IERC20;
+    address public immutable USDC;
+    CreatorVault public vault;
+    bool internal reentered;
+
+    constructor(address usdc) { USDC = usdc; }
+    function setVault(CreatorVault v) external { vault = v; }
+
+    function depositFor(address /*recipient*/, uint256 amount, uint32 /*destinationDex*/) external {
+        IERC20(USDC).safeTransferFrom(msg.sender, address(this), amount);
+        if (!reentered) {
+            reentered = true;
+            // Attempt re-entry. Should revert with ReentrancyGuardReentrantCall.
+            vault.deposit(10e6, address(this));
+        }
     }
 }

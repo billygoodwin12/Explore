@@ -6,7 +6,9 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 
@@ -40,8 +42,9 @@ import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 ///         stale `totalAssets()`. Interim mitigation: per-tx cap at
 ///         `DEPOSIT_TVL_CAP_BPS` of TVL (default 5%), bounding exploit
 ///         lift to that fraction. See KNOWN_ISSUES.md.
-contract CreatorVault is ERC4626, Ownable {
+contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
 
     address public immutable CREATOR;
     address public immutable CORE_DEPOSIT_WALLET;
@@ -94,11 +97,21 @@ contract CreatorVault is ERC4626, Ownable {
     error SharesRoundToZero();
     error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
-    error InsufficientSpot(uint256 spot, uint256 needed);
+    /// @notice Redeem amount exceeds Core spot, but creator has open perp
+    ///         positions that account for the shortfall. Creator must close
+    ///         positions (or `moveOnCore` perp→spot) before this redeem fits.
+    error RedeemPerpPositionsOpen(uint256 spotAvailable, uint256 amountRequested, uint256 perpAccountValue);
+    /// @notice Redeem amount exceeds settled assets; vault is genuinely
+    ///         under-capitalized. Should not happen in normal operation.
+    error RedeemInsufficient(uint256 spotAvailable, uint256 amountRequested);
     error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
     error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
     error TvlCapBpsOutOfBounds(uint16 newBps, uint16 minBps, uint16 maxBps);
     error DepositFeeTooHigh(uint16 bps, uint16 cap);
+    /// @notice `setDepositFee` rejects nonzero bps with a zero recipient
+    ///         (would silently disable the fee in `_splitFee` — surface it
+    ///         explicitly so admin misconfigurations are caught at the call).
+    error FeeConfigInvalid(uint16 bps, address recipient);
     error PrecompileFailed(address precompile);
     error NotCreator();
     error ZeroAmount();
@@ -218,7 +231,23 @@ contract CreatorVault is ERC4626, Ownable {
     ///         is intentional: it preserves ERC-4626 invariants against
     ///         the observable Core state. Sandwich-window risk during the
     ///         settlement interval is bounded by the per-tx TVL cap.
-    function deposit(uint256 assets, address receiver) public override returns (uint256 shares) {
+    function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256 shares) {
+        return _doDeposit(assets, receiver);
+    }
+
+    /// @notice Standard ERC-4626 mint. Computes gross USDC, then routes
+    ///         through the shared deposit pathway. Returns the gross asset
+    ///         amount used.
+    function mint(uint256 shares, address receiver) public override nonReentrant returns (uint256 assets) {
+        assets = previewMint(shares);
+        _doDeposit(assets, receiver);
+    }
+
+    /// @dev Shared deposit logic. Internal to allow `mint` to reuse it
+    ///      without double-tripping the `nonReentrant` guard (OZ's guard
+    ///      blocks same-contract reentry, so the public `mint` and `deposit`
+    ///      can't call each other directly).
+    function _doDeposit(uint256 assets, address receiver) internal returns (uint256 shares) {
         if (assets < MIN_DEPOSIT_USDC) revert DepositBelowMinimum(assets, MIN_DEPOSIT_USDC);
         if (receiver == address(0)) revert ZeroAddress();
         _requireStakeWithinCure();
@@ -255,13 +284,6 @@ contract CreatorVault is ERC4626, Ownable {
         emit Deposited(msg.sender, receiver, assets, fee, shares);
     }
 
-    /// @notice Standard ERC-4626 mint. Computes gross USDC, then routes
-    ///         through `deposit`. Returns the gross asset amount used.
-    function mint(uint256 shares, address receiver) public override returns (uint256 assets) {
-        assets = previewMint(shares);
-        deposit(assets, receiver);
-    }
-
     /// @notice EVM-side withdraw is not supported. Use `redeemCore`.
     function withdraw(uint256, address, address) public pure override returns (uint256) {
         revert UseCoreRedeem();
@@ -278,7 +300,7 @@ contract CreatorVault is ERC4626, Ownable {
     ///         "donations enrich shareholders" semantics — anyone who
     ///         sends USDC directly to the vault contract on EVM can call
     ///         this to push it into the accounted-for Core balance.
-    function sweepStrandedEvmUsdc() external {
+    function sweepStrandedEvmUsdc() external nonReentrant {
         IERC20 token = IERC20(asset());
         uint256 balance = token.balanceOf(address(this));
         if (balance == 0) return;
@@ -339,6 +361,10 @@ contract CreatorVault is ERC4626, Ownable {
     // ─── Admin: fee + cap + TVL cap ──────────────────────────────────────────
     function setDepositFee(uint16 bps, address recipient) external onlyOwner {
         if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
+        // Reject combinations that would silently disable the fee. Either bps
+        // and recipient are both set, or both unset (clearing the fee).
+        if (bps > 0 && recipient == address(0)) revert FeeConfigInvalid(bps, recipient);
+        if (bps == 0 && recipient != address(0)) revert FeeConfigInvalid(bps, recipient);
         depositFeeBps = bps;
         feeRecipient = recipient;
         emit DepositFeeUpdated(bps, recipient);
@@ -366,7 +392,7 @@ contract CreatorVault is ERC4626, Ownable {
     // ─── Core-side redeem ────────────────────────────────────────────
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
-    function redeemCore(uint256 shares, address coreReceiver) external returns (uint256 amount) {
+    function redeemCore(uint256 shares, address coreReceiver) external nonReentrant returns (uint256 amount) {
         if (shares == 0) revert ZeroAmount();
         if (coreReceiver == address(0)) revert ZeroAddress();
 
@@ -376,7 +402,17 @@ contract CreatorVault is ERC4626, Ownable {
         amount = Math.mulDiv(shares, totalAssets() + 1, supply + 10 ** _decimalsOffset(), Math.Rounding.Floor);
 
         uint256 spot = _coreSpotUSDC();
-        if (spot < amount) revert InsufficientSpot(spot, amount);
+        if (spot < amount) {
+            // Structured shortfall: distinguish "perp positions are tying up
+            // funds" from "vault is genuinely under-capitalized." The first
+            // case is recoverable by the creator (close positions / move
+            // perp→spot); the second is a hard error.
+            uint256 perpValue = _corePerpAccountValue();
+            if (spot + perpValue >= amount) {
+                revert RedeemPerpPositionsOpen(spot, amount, perpValue);
+            }
+            revert RedeemInsufficient(spot, amount);
+        }
 
         _burn(msg.sender, shares);
         _spotSendCore(coreReceiver, amount);
@@ -386,16 +422,16 @@ contract CreatorVault is ERC4626, Ownable {
     }
 
     // ─── Trading actions (creator-only) ───────────────────────────────────
-    function moveOnCore(uint256 amount, bool toPerp) external onlyCreator {
+    function moveOnCore(uint256 amount, bool toPerp) external onlyCreator nonReentrant {
         if (amount == 0) revert ZeroAmount();
         _requireStakeWithinCure();
-        bytes memory payload = abi.encode(uint64(amount), toPerp);
+        bytes memory payload = abi.encode(amount.toUint64(), toPerp);
         _sendAction(HLConstants.ACTION_USD_CLASS_TRANSFER, payload);
         emit MovedOnCore(amount, toPerp);
     }
 
     function placeOrder(uint32 asset_, bool isBuy, uint64 limitPx, uint64 sz, bool reduceOnly, uint8 tif)
-        external onlyCreator
+        external onlyCreator nonReentrant
     {
         _requireStakeWithinCure();
         bytes memory payload = abi.encode(asset_, isBuy, limitPx, sz, reduceOnly, tif, uint128(0));
@@ -403,7 +439,7 @@ contract CreatorVault is ERC4626, Ownable {
         emit OrderPlaced(asset_, isBuy, limitPx, sz, tif);
     }
 
-    function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner {
+    function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner nonReentrant {
         bytes memory payload = abi.encode(maxFeeRate, builder);
         _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
         emit BuilderApproved(builder, maxFeeRate);
@@ -438,7 +474,9 @@ contract CreatorVault is ERC4626, Ownable {
     }
 
     function _spotSendCore(address coreReceiver, uint256 amount6) internal {
-        uint64 amount8 = uint64(amount6 * 100);
+        // amount6 (6-dec USDC) × 100 → 8-dec native. SafeCast surfaces
+        // overflow at the boundary rather than silently truncating.
+        uint64 amount8 = (amount6 * 100).toUint64();
         bytes memory payload = abi.encode(coreReceiver, HLConstants.USDC_SPOT_INDEX, amount8);
         _sendAction(HLConstants.ACTION_SPOT_SEND, payload);
     }
