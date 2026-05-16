@@ -147,6 +147,25 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error SharesRoundToZero();
     error NoSupply();
     error SlippageExceeded(uint256 got, uint256 min);
+    /// @notice Redeem amount exceeds Core spot, but the shortfall is
+    ///         covered by `pendingBridgedUsdc` (in-flight bridges from
+    ///         recent deposits). Caller should retry after settlement.
+    /// @param spotAvailable Current Core spot USDC (6-dec).
+    /// @param amountRequested Asset amount the redeem would withdraw.
+    /// @param pendingInflight Total in-flight bridges right now.
+    /// @param estimatedBlocksUntilSettlement Upper bound on blocks the
+    ///         caller may need to wait before retrying. Computed as
+    ///         `SETTLEMENT_BLOCKS_FALLBACK - age_of_oldest_pending`.
+    ///         Actual settlement is typically much faster — sub-block in
+    ///         observed mainnet probes (INVESTIGATION §11.6). The bound
+    ///         is the worst-case fallback time; treat as "wait up to N
+    ///         blocks" not "wait exactly N blocks."
+    error RedeemPendingSettlement(
+        uint256 spotAvailable,
+        uint256 amountRequested,
+        uint256 pendingInflight,
+        uint256 estimatedBlocksUntilSettlement
+    );
     /// @notice Redeem amount exceeds Core spot, but creator has open perp
     ///         positions that account for the shortfall. Creator must close
     ///         positions (or `moveOnCore` perp→spot) before this redeem fits.
@@ -302,7 +321,20 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///      without double-tripping the `nonReentrant` guard (OZ's guard
     ///      blocks same-contract reentry, so the public `mint` and `deposit`
     ///      can't call each other directly).
+    ///
+    ///      Tracker invariants:
+    ///      - `_settlePending()` at entry ensures `pendingBridgedUsdc`
+    ///        reflects only genuinely in-flight bridges (drains any prior
+    ///        deposits whose Core credit has now landed). Without this, the
+    ///        share calculation at step 5 would double-count settled bridges
+    ///        (once in `coreSpot`, once in `pendingBridgedUsdc`).
+    ///      - `_enqueuePending(net)` after `_bridgeToCore` and before
+    ///        `_mint` + `_updateStakeBreachState` ensures the post-deposit
+    ///        NAV includes this deposit's contribution. Eliminates
+    ///        KNOWN_ISSUES §2's transient false-positive breach event.
     function _doDeposit(uint256 assets, address receiver) internal returns (uint256 shares) {
+        _settlePending();
+
         if (assets < MIN_DEPOSIT_USDC) revert DepositBelowMinimum(assets, MIN_DEPOSIT_USDC);
         if (receiver == address(0)) revert ZeroAddress();
         _requireStakeWithinCure();
@@ -333,6 +365,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
         if (fee > 0) token.safeTransfer(feeRecipient, fee);
         _bridgeToCore(token, net);
+        _enqueuePending(net);
 
         _mint(receiver, shares);
         _updateStakeBreachState();
@@ -356,10 +389,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         sends USDC directly to the vault contract on EVM can call
     ///         this to push it into the accounted-for Core balance.
     function sweepStrandedEvmUsdc() external nonReentrant {
+        _settlePending();
         IERC20 token = IERC20(asset());
         uint256 balance = token.balanceOf(address(this));
         if (balance == 0) return;
         _bridgeToCore(token, balance);
+        _enqueuePending(balance);
         emit StrandedUsdcSwept(balance);
     }
 
@@ -448,6 +483,8 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
     function redeemCore(uint256 shares, address coreReceiver) external nonReentrant returns (uint256 amount) {
+        _settlePending();
+
         if (shares == 0) revert ZeroAmount();
         if (coreReceiver == address(0)) revert ZeroAddress();
 
@@ -458,10 +495,19 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
         uint256 spot = _coreSpotUSDC();
         if (spot < amount) {
-            // Structured shortfall: distinguish "perp positions are tying up
-            // funds" from "vault is genuinely under-capitalized." The first
-            // case is recoverable by the creator (close positions / move
-            // perp→spot); the second is a hard error.
+            // Structured shortfall cascade:
+            //   1. Shortfall covered by pending bridges → caller retries.
+            //   2. Shortfall covered by perp value → creator action needed.
+            //   3. Vault truly under-capitalized → hard error.
+            uint256 pendingNow = pendingBridgedUsdc;
+            if (spot + pendingNow >= amount) {
+                // Oldest pending entry's age determines worst-case wait.
+                uint256 ageBlocks = block.number - pending[pendingStart].enqueueBlock;
+                uint256 blocksLeft = ageBlocks < SETTLEMENT_BLOCKS_FALLBACK
+                    ? SETTLEMENT_BLOCKS_FALLBACK - ageBlocks
+                    : 0;
+                revert RedeemPendingSettlement(spot, amount, pendingNow, blocksLeft);
+            }
             uint256 perpValue = _corePerpAccountValue();
             if (spot + perpValue >= amount) {
                 revert RedeemPerpPositionsOpen(spot, amount, perpValue);
@@ -478,16 +524,24 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
     // ─── Trading actions (creator-only) ───────────────────────────────────
     function moveOnCore(uint256 amount, bool toPerp) external onlyCreator nonReentrant {
+        _settlePending();
         if (amount == 0) revert ZeroAmount();
         _requireStakeWithinCure();
         bytes memory payload = abi.encode(amount.toUint64(), toPerp);
         _sendAction(HLConstants.ACTION_USD_CLASS_TRANSFER, payload);
+        if (!toPerp) {
+            // Track expected Core-spot inflow so the next `_settlePending`
+            // doesn't misattribute it as a bridge settlement and drain
+            // `pendingBridgedUsdc` incorrectly.
+            inFlightFromPerp += amount;
+        }
         emit MovedOnCore(amount, toPerp);
     }
 
     function placeOrder(uint32 asset_, bool isBuy, uint64 limitPx, uint64 sz, bool reduceOnly, uint8 tif)
         external onlyCreator nonReentrant
     {
+        _settlePending();
         _requireStakeWithinCure();
         bytes memory payload = abi.encode(asset_, isBuy, limitPx, sz, reduceOnly, tif, uint128(0));
         _sendAction(HLConstants.ACTION_LIMIT_ORDER, payload);
@@ -495,6 +549,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     }
 
     function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner nonReentrant {
+        _settlePending();
         bytes memory payload = abi.encode(maxFeeRate, builder);
         _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
         emit BuilderApproved(builder, maxFeeRate);
@@ -613,17 +668,19 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         lastCheckedCoreSpot = currentSpot;
     }
 
-    /// @notice Append a new pending bridge entry. Intended for internal
-    ///         use by `_doDeposit` / `sweepStrandedEvmUsdc` once wired in
-    ///         commit 3. Caller is responsible for having already moved
-    ///         the USDC via `_bridgeToCore`.
+    /// @notice Append a new pending bridge entry. Called by `_doDeposit`
+    ///         and `sweepStrandedEvmUsdc` immediately after `_bridgeToCore`
+    ///         and before `_mint` / `_updateStakeBreachState`, so that
+    ///         `totalAssets()` includes this bridge's contribution when
+    ///         the breach check runs (eliminates KNOWN_ISSUES §2's
+    ///         transient false-positive).
     function _enqueuePending(uint256 amount) internal {
-        PendingBridge memory entry = PendingBridge({
-            amount: uint128(amount),
+        uint128 amount128 = amount.toUint128();
+        pending.push(PendingBridge({
+            amount: amount128,
             enqueueBlock: uint64(block.number)
-        });
-        pending.push(entry);
+        }));
         pendingBridgedUsdc += amount;
-        emit PendingBridgeEnqueued(entry.amount, entry.enqueueBlock);
+        emit PendingBridgeEnqueued(amount128, uint64(block.number));
     }
 }

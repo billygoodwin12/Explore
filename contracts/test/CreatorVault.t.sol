@@ -112,6 +112,16 @@ contract CreatorVaultTest is Test {
         _setCoreSpot(coreSpot + net);
     }
 
+    /// @dev Trigger the vault's `_settlePending()` without changing user
+    ///      state. Uses `placeOrder` as a benign side-effect (CoreWriter
+    ///      is mocked to no-op). Equivalent to "the next on-chain action
+    ///      observes the settled state." Use after `_settleBridge` when
+    ///      a test wants `totalAssets()` to reflect the post-drain value.
+    function _poke() internal {
+        vm.prank(creator);
+        vault.placeOrder(0, true, 1, 1, false, HLConstants.TIF_IOC);
+    }
+
     // ─── Deploy invariants ────────────────────────────────────────
 
     function test_creator_stored() public view {
@@ -194,9 +204,22 @@ contract CreatorVaultTest is Test {
         assertEq(usdc.balanceOf(address(vault)), 0, "vault holds no EVM USDC");
         assertEq(usdc.balanceOf(address(cdw)), 100e6, "bridged via CDW");
 
-        _settleBridge(100e6);
-        // Pre-activation 1e6 + this deposit 100e6 = 101e6.
+        // Right after deposit: pendingBridgedUsdc = 100e6 (entry queued by
+        // _enqueuePending). totalAssets = preActivation + pending = 101e6.
         assertEq(vault.totalAssets(), 101e6);
+        assertEq(vault.pendingBridgedUsdc(), 100e6);
+
+        // Simulate bridge landing on Core. Without a subsequent state-
+        // mutating call, totalAssets temporarily double-counts (Core spot
+        // grew to 101e6 AND pending still holds 100e6 = 201e6).
+        _settleBridge(100e6);
+        assertEq(vault.totalAssets(), 201e6);
+
+        // The next state-mutating call invokes _settlePending and drains
+        // the now-settled pending entry. totalAssets converges to 101e6.
+        _poke();
+        assertEq(vault.totalAssets(), 101e6);
+        assertEq(vault.pendingBridgedUsdc(), 0);
     }
 
     function test_second_deposit_pro_rata() public {
@@ -353,6 +376,7 @@ contract CreatorVaultTest is Test {
         vm.prank(creator);
         vault.deposit(100e6, creator);
         _settleBridge(99e6); // 1% fee skim; bridged 99e6
+        _poke();              // drain the now-settled pending entry
 
         // Use creator's actual shares as the target — robust to bootstrap rounding.
         uint256 want = vault.balanceOf(creator);
@@ -527,41 +551,46 @@ contract CreatorVaultTest is Test {
 
     // ─── Async-window behaviour ──────────────────────────────────────────
 
-    function test_async_two_deposits_same_block_diverge() public {
+    /// @notice PR 3-NEW: the in-flight tracker closes the sandwich window
+    ///         that PR 2-NEW's interim cap merely bounded. This test
+    ///         repurposes the prior divergence demonstration: alice and bob
+    ///         deposit in the same block (before alice's bridge settles).
+    ///         With pendingBridgedUsdc in totalAssets(), bob's deposit
+    ///         prices against the post-bridge NAV — same rate as alice.
+    function test_async_two_deposits_same_block_closed_by_tracker() public {
         vm.prank(creator); vault.deposit(1_000_000e6, creator);
         _settleBridge(1_000_000e6);
-
-        uint256 supplyBefore = vault.totalSupply();
-        uint256 navBefore = vault.totalAssets();
+        _poke(); // settle creator's pending so we start from a clean state
 
         vm.prank(alice);
         uint256 aliceShares = vault.deposit(100_000e6, alice);
 
+        // No _settleBridge between alice and bob — alice's bridge is still
+        // in-flight from the precompile's perspective. With the tracker,
+        // pendingBridgedUsdc captures her in-flight 100K; bob sees the
+        // correct post-deposit NAV.
         vm.prank(bob);
         uint256 bobShares = vault.deposit(1_000e6, bob);
 
         uint256 aliceRate = aliceShares / 100_000;
         uint256 bobRate   = bobShares   / 1_000;
 
-        assertGt(bobRate, aliceRate, "bob did not get cheaper shares");
-        assertGe(
-            (bobRate - aliceRate) * 100 / aliceRate,
-            5,
-            "divergence under 5%"
-        );
-
-        _settleBridge(101_000e6);
-        assertEq(vault.totalAssets(), navBefore + 101_000e6);
-        assertEq(vault.totalSupply(), supplyBefore + aliceShares + bobShares);
+        // Rates match (within 1 wei of integer-division rounding). Sandwich
+        // window closed.
+        assertApproxEqAbs(bobRate, aliceRate, 1, "rates diverge under tracker");
     }
 
-    function test_tvl_cap_bounds_sandwich_window() public {
+    /// @notice With the in-flight tracker, the per-tx TVL cap is no longer
+    ///         load-bearing for the sandwich window — bob and alice get the
+    ///         same per-USDC share rate even when both deposits land before
+    ///         alice's bridge settles. The cap remains as defense-in-depth
+    ///         and admin-controlled risk lever, but does not bound any
+    ///         active exploit.
+    function test_sandwich_window_eliminated_by_tracker_under_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
-        // Pre-activate at $1M so the cap is non-binding on the bootstrap
-        // deposit and we can immediately test the sandwich-window bounds.
         _setCoreSpot(1_000_000e6);
         _setCorePerp(0);
         usdc.mint(creator, 10_000_000e6);
@@ -571,24 +600,22 @@ contract CreatorVaultTest is Test {
         vm.prank(alice);   usdc.approve(address(vault), type(uint256).max);
         vm.prank(bob);     usdc.approve(address(vault), type(uint256).max);
 
-        // Bootstrap creator under the cap: 5% of $1M = $50K.
+        // Bootstrap creator under the default 5% cap.
         vm.prank(creator); vault.deposit(50_000e6, creator);
         _settleBridge(50_000e6);
 
         vm.prank(alice);
         uint256 aliceShares = vault.deposit(50_000e6, alice);
 
-        // Bob deposits same $50K *before* alice's bridge settles. Sandwich
-        // window: bob prices against pre-bridge NAV but post-mint supply,
-        // so he gets more shares per dollar than alice did.
+        // Bob deposits the same $50K BEFORE alice's bridge settles. Without
+        // the tracker, bob would have priced against pre-bridge NAV and
+        // gotten more shares per dollar. With the tracker, alice's pending
+        // is included in totalAssets(), so bob's rate matches.
         vm.prank(bob);
         uint256 bobShares = vault.deposit(50_000e6, bob);
 
-        // Compare share counts directly — same $ in means bob with more
-        // shares ⇒ cheaper share price (sandwich lift).
-        assertGt(bobShares, aliceShares);
-        uint256 liftPct = ((bobShares - aliceShares) * 100) / aliceShares;
-        assertLe(liftPct, 6, "lift exceeded interim mitigation budget");
+        // Same dollars in, same shares out (within 1 wei rounding).
+        assertApproxEqAbs(bobShares, aliceShares, 1, "tracker did not close window");
     }
 
     function test_sync_two_deposits_with_settlement_between() public {
@@ -825,12 +852,14 @@ contract CreatorVaultTest is Test {
         // ($95) → structured error tells caller to close positions.
         vm.prank(creator); vault.deposit(100e6, creator);
         _settleBridge(100e6);
+        _poke(); // drain pending so the shortfall cascade isn't masked
 
         _setCoreSpot(5e6);
         _setCorePerp(95e6);
 
         uint256 sh = vault.balanceOf(creator);
         // Approximate amount the redeem would compute against current NAV.
+        // After _poke drains pending, totalAssets = spot + perp = 5 + 95 = 100.
         uint256 expectedAmount = Math.mulDiv(
             sh, vault.totalAssets() + 1, vault.totalSupply() + 1e6
         );
@@ -900,6 +929,146 @@ contract CreatorVaultTest is Test {
 
         vm.prank(creator);
         vault.moveOnCore(40e6, true);
+    }
+
+    // ─── PR 3-NEW: tracker wired into mutators ────────────────────────
+
+    /// @notice Transient false-positive breach state (KNOWN_ISSUES §2) is
+    ///         eliminated by the tracker. Setup: creator deposits a small
+    ///         amount, then a large follower deposit lands. Pre-tracker,
+    ///         the breach check inside the follower's deposit ran against
+    ///         stale totalAssets (Core not yet credited) but post-mint
+    ///         supply, firing a transient StakeBreachStarted that would
+    ///         self-heal on the next state-mutating call. With the tracker,
+    ///         totalAssets() includes the follower's pending bridge during
+    ///         their own deposit's breach check; no transient event fires.
+    function test_no_transient_breach_event_during_deposit_settlement() public {
+        // Creator deposits $300K — clearly above the $250K cap so post-
+        // dilution they have comfortable margin (no 1-wei floor-rounding
+        // edge against the cap). Pre-tracker, a $9.7M follower deposit
+        // would leave totalAssets stale at $300K (Core only), so creator's
+        // apparent stake = creator_shares × $300K / new_supply ≈ $9K,
+        // versus required = min(5% × $300K = $15K, $250K cap) = $15K.
+        // Creator at $9K < required $15K → transient breach fires.
+        // With tracker, totalAssets includes Bob's pending $9.7M → creator
+        // stake reads ~$300K, required = $250K cap binds, $300K > $250K
+        // with comfortable margin → no breach.
+        vm.prank(creator); vault.deposit(300_000e6, creator);
+        _settleBridge(300_000e6);
+        _poke();
+
+        usdc.mint(bob, 9_700_000e6);
+        vm.prank(bob); usdc.approve(address(vault), type(uint256).max);
+
+        vm.recordLogs();
+        vm.prank(bob); vault.deposit(9_700_000e6, bob);
+
+        bytes32 breachTopic = keccak256("StakeBreachStarted(uint256,uint256,uint256)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertFalse(
+                logs[i].topics.length > 0 && logs[i].topics[0] == breachTopic,
+                "transient StakeBreachStarted fired despite tracker"
+            );
+        }
+        assertEq(vault.stakeBreachStartedAt(), 0);
+    }
+
+    /// @notice Redemption during the pending-settlement window fires the
+    ///         structured RedeemPendingSettlement error so the UI can
+    ///         suggest a retry-after-N-blocks wait to the user.
+    function test_redeem_pending_settlement_fires_during_window() public {
+        // Set up a scenario where Core spot is low relative to pending:
+        // both creator and bob deposit, neither bridge has settled. Core
+        // spot stays at the pre-activation 1 USDC; pending holds both
+        // deposits. Creator's redeem amount (a fraction of inflated NAV)
+        // exceeds current spot, but the shortfall is covered by pending.
+        vm.prank(creator); vault.deposit(100e6, creator);
+        // NO _settleBridge / _poke between deposits — both stay pending.
+        vm.prank(bob); vault.deposit(200e6, bob);
+
+        // At this point: coreSpot=1e6 (mock, never settled), pending=300e6,
+        // totalAssets=301e6. Creator's shares (~99_999_900) redeem to ~100e6,
+        // far above current spot=1e6 but within spot + pending.
+        uint256 sh = vault.balanceOf(creator);
+        vm.prank(creator);
+        try vault.redeemCore(sh, creator) {
+            revert("expected RedeemPendingSettlement");
+        } catch (bytes memory data) {
+            bytes4 selector = bytes4(data);
+            assertEq(
+                selector,
+                CreatorVault.RedeemPendingSettlement.selector,
+                "wrong error selector"
+            );
+        }
+    }
+
+    /// @notice moveOnCore(toPerp=false) credits Core spot but the tracker
+    ///         should NOT drain pending — the inflow is accounted for via
+    ///         inFlightFromPerp, consumed first in _settlePending.
+    function test_moveOnCore_to_spot_does_not_drain_pending() public {
+        // Bootstrap. Creator deposits, bridge settles, pending drained.
+        vm.prank(creator); vault.deposit(100e6, creator);
+        _settleBridge(100e6);
+        _poke();
+        assertEq(vault.pendingBridgedUsdc(), 0);
+
+        // Move 40e6 perp→spot via moveOnCore(toPerp=false). This bumps
+        // inFlightFromPerp; Core spot will grow async.
+        vm.prank(creator); vault.moveOnCore(40e6, false);
+
+        // Bob deposits 50e6 — adds 50e6 to pending.
+        vm.prank(bob); vault.deposit(50e6, bob);
+        assertEq(vault.pendingBridgedUsdc(), 50e6);
+
+        // Core grows by 40e6 (the perp→spot move settled). Trigger settle.
+        // The tracker should reserve 40e6 against inFlightFromPerp, leaving
+        // bob's 50e6 in pending untouched.
+        _settleBridge(40e6);
+        _poke();
+        assertEq(vault.pendingBridgedUsdc(), 50e6, "perp inflow incorrectly drained pending");
+    }
+
+    /// @notice Multi-deposit sequencing: alice, bob, settle, redeem. Verify
+    ///         pending accounting + share math stays consistent.
+    function test_multi_deposit_settle_redeem_consistency() public {
+        // Bootstrap creator.
+        vm.prank(creator); vault.deposit(100_000e6, creator);
+        _settleBridge(100_000e6);
+        _poke();
+
+        uint256 creatorShares = vault.balanceOf(creator);
+
+        // Alice deposits 10K, bob deposits 20K — both before either settles.
+        vm.prank(alice); uint256 aliceShares = vault.deposit(10_000e6, alice);
+        vm.prank(bob);   uint256 bobShares   = vault.deposit(20_000e6, bob);
+
+        assertEq(vault.pendingBridgedUsdc(), 30_000e6);
+
+        // Both bridges land on Core.
+        _settleBridge(30_000e6);
+        _poke();
+        assertEq(vault.pendingBridgedUsdc(), 0, "pending not drained after both settle");
+
+        // Verify totalAssets converges: pre-activation 1e6 + 100K + 30K = 130_001e6.
+        assertEq(vault.totalAssets(), 130_001e6);
+
+        // Alice redeems all her shares. Should succeed (spot has enough).
+        vm.prank(alice);
+        uint256 aliceOut = vault.redeemCore(aliceShares, alice);
+        // Alice deposited 10K; should withdraw approximately the same.
+        assertApproxEqAbs(aliceOut, 10_000e6, 50e6);
+
+        // Bob redeems all his shares. Should also succeed.
+        // Simulate alice's redeem outflow on the mock first.
+        _setCoreSpot(coreSpot - aliceOut);
+        vm.prank(bob);
+        uint256 bobOut = vault.redeemCore(bobShares, bob);
+        assertApproxEqAbs(bobOut, 20_000e6, 50e6);
+
+        // Creator still holds their full balance.
+        assertEq(vault.balanceOf(creator), creatorShares);
     }
 
     // ─── Hardening: SafeCast ────────────────────────────────────────
