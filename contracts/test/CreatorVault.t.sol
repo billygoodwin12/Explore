@@ -5,6 +5,7 @@ import {Test, Vm} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CreatorVault} from "../src/CreatorVault.sol";
 import {HLConstants} from "../src/HLConstants.sol";
@@ -943,8 +944,244 @@ contract CreatorVaultTest is Test {
         usdc.mint(creator, 1000e6);
         vm.prank(creator); usdc.approve(address(rentVault), type(uint256).max);
         vm.prank(creator);
-        vm.expectRevert(); // ReentrancyGuardReentrantCall propagates up
+        vm.expectRevert(
+            abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
+        );
         rentVault.deposit(100e6, creator);
+    }
+}
+
+/// @dev Test harness exposing the in-flight tracker internals for direct
+///      testing. Used by `CreatorVaultTrackerTest` to exercise
+///      `_settlePending`, `_enqueuePending`, and observe `pending` /
+///      `pendingStart` / `inFlightFromPerp` state without going through
+///      `_doDeposit` (which is wired in commit 3).
+contract CreatorVaultHarness is CreatorVault {
+    constructor(
+        IERC20 usdc,
+        address creator_,
+        address admin_,
+        address coreDepositWallet_,
+        string memory name_,
+        string memory symbol_
+    ) CreatorVault(usdc, creator_, admin_, coreDepositWallet_, name_, symbol_) {}
+
+    function exposed_settlePending() external {
+        _settlePending();
+    }
+
+    function exposed_enqueuePending(uint256 amount) external {
+        _enqueuePending(amount);
+    }
+
+    function exposed_pendingLength() external view returns (uint256) {
+        return pending.length;
+    }
+
+    function exposed_pendingStart() external view returns (uint256) {
+        return pendingStart;
+    }
+
+    function exposed_pendingAt(uint256 i) external view returns (uint128 amount, uint64 enqueueBlock) {
+        PendingBridge memory e = pending[i];
+        return (e.amount, e.enqueueBlock);
+    }
+
+    function exposed_inFlightFromPerp() external view returns (uint256) {
+        return inFlightFromPerp;
+    }
+
+    function exposed_setInFlightFromPerp(uint256 v) external {
+        inFlightFromPerp = v;
+    }
+
+    function exposed_lastCheckedCoreSpot() external view returns (uint256) {
+        return lastCheckedCoreSpot;
+    }
+}
+
+/// @dev Tracker-focused tests. Uses CreatorVaultHarness to inject pending
+///      entries directly without going through `_doDeposit` wiring (which
+///      arrives in commit 3).
+contract CreatorVaultTrackerTest is Test {
+    MockUSDC usdc;
+    MockCoreDepositWallet cdw;
+    CreatorVaultHarness vault;
+
+    address admin = address(0xAD);
+    address creator = address(0xC1);
+
+    uint256 internal coreSpot;
+
+    function setUp() public {
+        usdc = new MockUSDC();
+        cdw = new MockCoreDepositWallet(address(usdc));
+        vault = new CreatorVaultHarness(
+            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+        );
+        vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
+        _setCoreSpot(0);
+        _setCorePerp(0);
+    }
+
+    function _setCoreSpot(uint256 sixDec) internal {
+        coreSpot = sixDec;
+        vm.mockCall(
+            HLConstants.SPOT_BALANCE_PRECOMPILE,
+            abi.encode(address(vault), HLConstants.USDC_SPOT_INDEX),
+            abi.encode(uint64(sixDec * 100), uint64(0), uint64(0))
+        );
+    }
+
+    function _setCorePerp(uint256 sixDec) internal {
+        vm.mockCall(
+            HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE,
+            abi.encode(uint32(0), address(vault)),
+            abi.encode(int64(uint64(sixDec)), uint64(0), uint64(0), int64(0))
+        );
+    }
+
+    // ─── totalAssets includes pendingBridgedUsdc ─────────────────────
+
+    function test_totalAssets_includes_pending() public {
+        _setCoreSpot(100e6);
+        _setCorePerp(50e6);
+        assertEq(vault.totalAssets(), 150e6);
+
+        vault.exposed_enqueuePending(25e6);
+        assertEq(vault.pendingBridgedUsdc(), 25e6);
+        assertEq(vault.totalAssets(), 175e6);
+    }
+
+    // ─── Observation-based settlement ────────────────────────────────
+
+    function test_settle_drains_oldest_first() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending(); // initial checkpoint
+
+        // Enqueue 3 deposits, total 60 USDC pending.
+        vault.exposed_enqueuePending(10e6);
+        vault.exposed_enqueuePending(20e6);
+        vault.exposed_enqueuePending(30e6);
+        assertEq(vault.pendingBridgedUsdc(), 60e6);
+        assertEq(vault.exposed_pendingLength(), 3);
+        assertEq(vault.exposed_pendingStart(), 0);
+
+        // Core grows by 25 USDC (enough for entry 0 + part of entry 1).
+        _setCoreSpot(1e6 + 25e6);
+        vault.exposed_settlePending();
+
+        // Entry 0 (10) fully settled; entry 1 partially (15 of 20).
+        assertEq(vault.pendingBridgedUsdc(), 35e6);
+        assertEq(vault.exposed_pendingStart(), 1);
+        (uint128 amt1,) = vault.exposed_pendingAt(1);
+        assertEq(amt1, 5e6); // 20 - 15 = 5 left in entry 1
+    }
+
+    function test_settle_handles_exact_drain() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(40e6);
+        vault.exposed_enqueuePending(20e6);
+
+        // Growth exactly equals first entry → drain entry 0, leave entry 1.
+        _setCoreSpot(1e6 + 40e6);
+        vault.exposed_settlePending();
+
+        assertEq(vault.pendingBridgedUsdc(), 20e6);
+        assertEq(vault.exposed_pendingStart(), 1);
+    }
+
+    function test_settle_no_growth_no_drain() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(10e6);
+        // Core does NOT grow.
+        vault.exposed_settlePending();
+        assertEq(vault.pendingBridgedUsdc(), 10e6);
+        assertEq(vault.exposed_pendingStart(), 0);
+    }
+
+    function test_settle_growth_exceeds_pending() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(10e6);
+        // Core grows by 100 (much more than the 10 pending).
+        _setCoreSpot(1e6 + 100e6);
+        vault.exposed_settlePending();
+
+        // Pending fully drained; excess growth becomes part of new checkpoint.
+        assertEq(vault.pendingBridgedUsdc(), 0);
+        assertEq(vault.exposed_pendingStart(), 1);
+        assertEq(vault.exposed_lastCheckedCoreSpot(), 1e6 + 100e6);
+    }
+
+    // ─── Time-based fallback ─────────────────────────────────────────
+
+    function test_settle_expires_old_entries() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(10e6);
+        uint256 oldBlock = block.number;
+
+        // Advance past the fallback window with NO Core growth.
+        vm.roll(oldBlock + vault.SETTLEMENT_BLOCKS_FALLBACK() + 1);
+        vault.exposed_settlePending();
+
+        // Entry expired via time-based fallback.
+        assertEq(vault.pendingBridgedUsdc(), 0);
+        assertEq(vault.exposed_pendingStart(), 1);
+    }
+
+    function test_settle_keeps_recent_entries() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(10e6);
+
+        // Advance only halfway through the fallback window.
+        vm.roll(block.number + vault.SETTLEMENT_BLOCKS_FALLBACK() / 2);
+        vault.exposed_settlePending();
+
+        // Entry still pending — within the window.
+        assertEq(vault.pendingBridgedUsdc(), 10e6);
+        assertEq(vault.exposed_pendingStart(), 0);
+    }
+
+    // ─── inFlightFromPerp consumption ────────────────────────────────
+
+    function test_settle_reserves_perp_inflow_before_pending() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(20e6);
+        vault.exposed_setInFlightFromPerp(15e6);
+
+        // Core grows by 30 — 15 reserved for perp inflow, 15 drains pending.
+        _setCoreSpot(1e6 + 30e6);
+        vault.exposed_settlePending();
+
+        assertEq(vault.exposed_inFlightFromPerp(), 0); // fully reserved
+        assertEq(vault.pendingBridgedUsdc(), 5e6);     // 20 - 15 left
+    }
+
+    function test_settle_perp_inflow_alone_does_not_drain() public {
+        _setCoreSpot(1e6);
+        vault.exposed_settlePending();
+
+        vault.exposed_enqueuePending(10e6);
+        vault.exposed_setInFlightFromPerp(50e6);
+
+        // Core grows by 30 — all reserved for perp inflow.
+        _setCoreSpot(1e6 + 30e6);
+        vault.exposed_settlePending();
+
+        assertEq(vault.exposed_inFlightFromPerp(), 20e6); // 50 - 30 = 20 still expected
+        assertEq(vault.pendingBridgedUsdc(), 10e6);       // pending untouched
     }
 }
 

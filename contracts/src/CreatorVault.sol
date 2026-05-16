@@ -78,6 +78,56 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     uint16 public constant DEPOSIT_TVL_CAP_BPS_MAX = 10_000; // 100% (= NAV-sized)
     uint16 public constant DEPOSIT_TVL_CAP_DISABLED = type(uint16).max;
 
+    // ─── In-flight bridge tracker (PR 3-NEW) ────────────────────────────
+    /// @notice One pending entry per bridge fired from `_doDeposit` or
+    ///         `sweepStrandedEvmUsdc`. `enqueueBlock` lets the time-based
+    ///         fallback identify entries old enough to consider settled
+    ///         (or silently failed) without further on-chain evidence.
+    struct PendingBridge {
+        uint128 amount;       // 6-dec USDC, fits comfortably (max 3.4e38)
+        uint64  enqueueBlock; // block.number when bridge fired
+    }
+
+    /// @notice Append-only FIFO queue. Live entries are
+    ///         `pending[pendingStart .. pending.length - 1]`. We never
+    ///         shift the array — `pendingStart` advances as entries
+    ///         settle or expire. Old slots are abandoned (cheap on
+    ///         HyperEVM); periodic compaction is a future optimization
+    ///         only if monitoring shows `pending.length` growing into
+    ///         millions.
+    PendingBridge[] internal pending;
+    uint256 internal pendingStart;
+
+    /// @notice Sum of `pending[pendingStart..].amount`. Counted in
+    ///         `totalAssets()` so subsequent deposits price against the
+    ///         post-bridge NAV during the settlement window, closing the
+    ///         async-bridge sandwich window.
+    uint256 public pendingBridgedUsdc;
+
+    /// @notice High-water mark of `_coreSpotUSDC()` observed at the most
+    ///         recent `_settlePending` call. Growth above this checkpoint
+    ///         drives observation-based settlement detection.
+    uint256 internal lastCheckedCoreSpot;
+
+    /// @notice Tracks expected Core-spot inflow from `moveOnCore(toPerp=false)`
+    ///         that hasn't yet settled. Decremented by the same observation
+    ///         logic as `pendingBridgedUsdc`, but consumed *first* so the
+    ///         tracker doesn't misattribute perp→spot moves as bridge
+    ///         settlements. Wired in commit 3; defined here so storage
+    ///         layout is locked.
+    uint256 internal inFlightFromPerp;
+
+    /// @notice Time-based fallback for settlement. Sized at 100 blocks
+    ///         (~100s) against empirically-measured cross-block latency
+    ///         of 0 blocks across 3 mainnet probes — see INVESTIGATION
+    ///         §11.6. Observation-based detection is the primary
+    ///         mechanism; this is the silent-failure safety net.
+    uint256 public constant SETTLEMENT_BLOCKS_FALLBACK = 100;
+
+    event PendingBridgeEnqueued(uint128 amount, uint64 enqueueBlock);
+    event PendingBridgeSettled(uint256 amountSettled, uint256 pendingStartAfter);
+    event PendingBridgeExpired(uint256 amountExpired, uint256 pendingStartAfter);
+
     event DepositFeeUpdated(uint16 bps, address recipient);
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed owner, address indexed coreReceiver, uint256 shares, uint256 amount);
@@ -142,11 +192,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     }
 
     // ─── Asset accounting ───────────────────────────────────────────
-    /// @notice Vault NAV in 6-dec USDC. Reads only Core (spot + perp). Any
-    ///         transient EVM USDC sitting between transferFrom and bridge
-    ///         is intentionally NOT counted — see `deposit()` for why.
+    /// @notice Vault NAV in 6-dec USDC. Includes Core spot + perp +
+    ///         `pendingBridgedUsdc` (in-flight bridges from prior
+    ///         deposits whose Core credit has not been observed yet).
+    ///         Counting pending closes the async-bridge sandwich window:
+    ///         a deposit landing during another deposit's settlement
+    ///         interval prices against the post-bridge NAV, not the
+    ///         stale Core-only value. See `_settlePending` for the
+    ///         settlement-detection logic that drains pending.
     function totalAssets() public view override returns (uint256) {
-        return _coreSpotUSDC() + _corePerpAccountValue();
+        return _coreSpotUSDC() + _corePerpAccountValue() + pendingBridgedUsdc;
     }
 
     function _coreSpotUSDC() internal view returns (uint256) {
@@ -484,5 +539,91 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     function _sendAction(uint24 actionId, bytes memory payload) internal {
         bytes memory data = bytes.concat(bytes1(0x01), bytes3(actionId), payload);
         ICoreWriter(HLConstants.CORE_WRITER).sendRawAction(data);
+    }
+
+    // ─── In-flight tracker: settlement detection ───────────────────────────
+    /// @notice Consume Core-spot growth since the last checkpoint:
+    ///         1. First, reserve any growth that corresponds to a pending
+    ///            `moveOnCore(toPerp=false)` inflow — those don't drain
+    ///            pending bridges.
+    ///         2. Remaining growth drains pending entries oldest-first
+    ///            (observation-based settlement).
+    ///         3. Walk pending from the head and hard-expire entries
+    ///            older than `SETTLEMENT_BLOCKS_FALLBACK` (silent-failure
+    ///            safety net).
+    ///         4. Update `lastCheckedCoreSpot` to the current observed value.
+    ///
+    /// @dev Iteration is bounded by live entries (`pending.length - pendingStart`),
+    ///      which in practice is the number of unsettled bridges within
+    ///      the fallback window. Realistic cap: ~tens of entries.
+    function _settlePending() internal {
+        uint256 currentSpot = _coreSpotUSDC();
+        uint256 grew = currentSpot > lastCheckedCoreSpot
+            ? currentSpot - lastCheckedCoreSpot
+            : 0;
+
+        // Step 1: reserve perp→spot inflows.
+        if (grew > 0 && inFlightFromPerp > 0) {
+            uint256 reserved = grew < inFlightFromPerp ? grew : inFlightFromPerp;
+            inFlightFromPerp -= reserved;
+            grew -= reserved;
+        }
+
+        // Step 2: observation-based settlement (oldest first).
+        if (grew > 0) {
+            uint256 i = pendingStart;
+            uint256 endIdx = pending.length;
+            uint256 settled = 0;
+            while (i < endIdx && grew > 0) {
+                PendingBridge storage entry = pending[i];
+                if (entry.amount <= grew) {
+                    grew -= entry.amount;
+                    settled += entry.amount;
+                    i++;
+                } else {
+                    entry.amount -= uint128(grew);
+                    settled += grew;
+                    grew = 0;
+                }
+            }
+            if (settled > 0) {
+                pendingBridgedUsdc -= settled;
+                pendingStart = i;
+                emit PendingBridgeSettled(settled, pendingStart);
+            }
+        }
+
+        // Step 3: time-based fallback expiry (silent-failure safety net).
+        uint256 cutoff = block.number > SETTLEMENT_BLOCKS_FALLBACK
+            ? block.number - SETTLEMENT_BLOCKS_FALLBACK
+            : 0;
+        uint256 j = pendingStart;
+        uint256 endLen = pending.length;
+        uint256 expired = 0;
+        while (j < endLen && pending[j].enqueueBlock <= cutoff) {
+            expired += pending[j].amount;
+            j++;
+        }
+        if (expired > 0) {
+            pendingBridgedUsdc -= expired;
+            pendingStart = j;
+            emit PendingBridgeExpired(expired, pendingStart);
+        }
+
+        lastCheckedCoreSpot = currentSpot;
+    }
+
+    /// @notice Append a new pending bridge entry. Intended for internal
+    ///         use by `_doDeposit` / `sweepStrandedEvmUsdc` once wired in
+    ///         commit 3. Caller is responsible for having already moved
+    ///         the USDC via `_bridgeToCore`.
+    function _enqueuePending(uint256 amount) internal {
+        PendingBridge memory entry = PendingBridge({
+            amount: uint128(amount),
+            enqueueBlock: uint64(block.number)
+        });
+        pending.push(entry);
+        pendingBridgedUsdc += amount;
+        emit PendingBridgeEnqueued(entry.amount, entry.enqueueBlock);
     }
 }
