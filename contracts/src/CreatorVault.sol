@@ -69,11 +69,14 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
     // ─── Per-tx TVL cap (interim sandwich-window mitigation) ─────────
     /// @notice Per-tx cap on deposit size as a fraction of `totalAssets()`,
-    ///         in basis points. Defaults to 500 (5%). Admin-tunable inside
-    ///         [DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX], or set
-    ///         to `DEPOSIT_TVL_CAP_DISABLED` to skip the check entirely
-    ///         (intended for when PR 3-NEW's in-flight tracker lands).
-    uint16 public depositTvlCapBps = 500;
+    ///         in basis points. **Defaults to `DEPOSIT_TVL_CAP_DISABLED`**
+    ///         in PR 3-NEW: the in-flight tracker closes the async-bridge
+    ///         sandwich window that the cap was originally introduced (in
+    ///         PR 2-NEW) to bound. The cap mechanism is retained as
+    ///         defense-in-depth: admin can re-enable on a per-vault basis
+    ///         (inside [DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX])
+    ///         if production observation surfaces issues.
+    uint16 public depositTvlCapBps = type(uint16).max; // = DEPOSIT_TVL_CAP_DISABLED
     uint16 public constant DEPOSIT_TVL_CAP_BPS_MIN = 100;    // 1%
     uint16 public constant DEPOSIT_TVL_CAP_BPS_MAX = 10_000; // 100% (= NAV-sized)
     uint16 public constant DEPOSIT_TVL_CAP_DISABLED = type(uint16).max;

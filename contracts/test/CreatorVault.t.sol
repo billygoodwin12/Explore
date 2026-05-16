@@ -434,14 +434,18 @@ contract CreatorVaultTest is Test {
 
     // ─── Per-tx TVL cap ───────────────────────────────────────────────
 
-    function test_tvl_cap_default_is_5pct() public {
+    function test_tvl_cap_default_is_disabled() public {
+        // PR 3-NEW: default is DEPOSIT_TVL_CAP_DISABLED. The in-flight
+        // tracker closes the sandwich window that the cap was originally
+        // sized for. Admin retains the ability to re-enable as defense-in-
+        // depth (per-vault basis).
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
         _setCoreSpot(0);
         _setCorePerp(0);
-        assertEq(vault.depositTvlCapBps(), 500);
+        assertEq(vault.depositTvlCapBps(), vault.DEPOSIT_TVL_CAP_DISABLED());
     }
 
     function test_deposit_reverts_when_vault_not_activated() public {
@@ -470,10 +474,13 @@ contract CreatorVaultTest is Test {
     }
 
     function test_tvl_cap_blocks_oversized_deposit() public {
+        // Cap is disabled by default in PR 3-NEW. Admin opts in to 5%.
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
+        vm.prank(admin); vault.setDepositTvlCapBps(500);
+
         _setCoreSpot(1000e6); // NAV = $1000; cap = 5% = $50
         _setCorePerp(0);
 
@@ -490,6 +497,8 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
+        vm.prank(admin); vault.setDepositTvlCapBps(500);
+
         _setCoreSpot(1000e6);
         _setCorePerp(0);
         vm.prank(bob); usdc.approve(address(vault), type(uint256).max);
@@ -504,6 +513,8 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
+        vm.prank(admin); vault.setDepositTvlCapBps(500);
+
         _setCoreSpot(1e6); // 1 USDC NAV
         _setCorePerp(0);
         // 5% of 1 USDC = 0.05 USDC; floor = MIN_DEPOSIT_USDC = 10 USDC.
@@ -519,6 +530,8 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
+        vm.prank(admin); vault.setDepositTvlCapBps(500);
+
         _setCoreSpot(1000e6);
         _setCorePerp(0);
         // NAV = $1000, cap = 5% = $50, above floor of $10. Reports $50.
@@ -591,6 +604,10 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
+        // Cap defaults to disabled in PR 3-NEW. Admin opts back in to the
+        // 5% cap so this test still verifies "no divergence under cap."
+        vm.prank(admin); vault.setDepositTvlCapBps(500);
+
         _setCoreSpot(1_000_000e6);
         _setCorePerp(0);
         usdc.mint(creator, 10_000_000e6);
@@ -600,7 +617,7 @@ contract CreatorVaultTest is Test {
         vm.prank(alice);   usdc.approve(address(vault), type(uint256).max);
         vm.prank(bob);     usdc.approve(address(vault), type(uint256).max);
 
-        // Bootstrap creator under the default 5% cap.
+        // Bootstrap creator at 5% of $1M = $50K.
         vm.prank(creator); vault.deposit(50_000e6, creator);
         _settleBridge(50_000e6);
 
