@@ -444,7 +444,16 @@ that Theorise explicitly excluded. PR 2-NEW keeps inline bridging — the
 bridge call happens inside the user's `deposit()` tx, fully self-contained.
 The interim cap bounds the residual sandwich-window risk.
 
-### 10.7 CoreWriter callback semantics (verified)
+---
+
+## 11. PRODUCTION DESIGN NOTES (PR 3-NEW)
+
+Forward-looking design rationale that complements the historical
+investigation (§§1-10) and the PR 3-NEW tracker implementation (§13).
+Audit reviewers should treat this section as the "why we built it this
+way" reference.
+
+### 11.1 CoreWriter callback semantics (verified)
 
 Reentrancy guards added in PR 3-NEW (commit `edd7dde`) as defense-in-depth.
 CoreWriter's `sendRawAction` was verified to be fire-and-forget via three
@@ -493,7 +502,7 @@ own `depositFor` callback. Specific selector assertion:
 `ReentrancyGuard.ReentrancyGuardReentrantCall`. Smoke-test demonstrates
 the wiring; OZ's library tests cover the modifier mechanics.
 
-### 10.8 AQAv2 framework reference (May 14, 2026)
+### 11.2 AQAv2 framework reference (May 14, 2026)
 
 Coinbase and Circle jointly announced the AQAv2 framework: Coinbase
 becomes the official USDC treasury deployer on HyperLiquid; Circle
@@ -505,7 +514,7 @@ Coinbase shares the majority of USDC reserve yield with the HyperLiquid
 Foundation.
 
 **Implications for Theorise:** none at the contract layer. The bridge
-mechanism we verified empirically on May 12 (mainnet probes 1-3) is
+mechanism we verified empirically on May 12-13 (mainnet probes 1-3) is
 unchanged. USDC's institutional backing on HyperEVM is stronger; the
 choice of USDC as vault asset is validated. Worth re-reading the
 AQAv2 technical spec when published for any contract-level integration
@@ -517,14 +526,119 @@ Sources:
 
 ---
 
-## 12. PR 3-NEW: IN-FLIGHT BRIDGE TRACKER
+## 12. PHASE 2 MAINNET PROBES — historical record
 
-PR 3-NEW (commits `edd7dde`, `b287f0b`, `84031a1`, `7f329d3`, and this
-docs commit) closes the async-bridge sandwich window via an in-flight
-tracker that includes pending bridge amounts in `totalAssets()` until
-HyperCore has settled them.
+**Historical record of the May 2026 mainnet probe sequence.** For the
+consolidated bridge-verification argument that audit reviewers should
+reference, see **§13.1** ("Bridge verification — three mainnet probes
+consolidated"). This section is retained for context and to preserve
+the empirical iteration trail.
 
-### 12.1 Bridge verification — three mainnet probes consolidated
+Ran the updated `MainnetBridgeProbe.s.sol` (CDW pattern) on HyperEVM
+mainnet from a fresh, throwaway deployer EOA. Two separate bridge txs
+gave us two empirical data points (a third probe with pre-fired
+polling followed on May 13).
+
+### 12.1 First bridge — fresh Core account
+
+```
+Deployer EOA:       0xA9e3F1cE0358252f74FcE41E27213E7d1B4aDD8F  (fresh)
+Probe contract:     0x2c9e2a1A329520026A0E523B72fF4FEF816217C7
+Bridge tx hash:     0x20c5e98545faec9605963dafa5ce1fa1c1d337a4ded5dc8f436a07eb5d2374cd
+Bridge tx block:    34,954,695
+Amount sent in:     5,000,000  (5 USDC)
+Amount credited:    4,000,000  (4 USDC)  ← 1 USDC short
+First poll block:   34,954,776  (delta = 81 blocks)
+First poll showed:  4,000,000   (credit had already landed)
+```
+
+**Finding A — `newCoreAccountFee` is 1 USDC, not 0.** The Phase 3 agent
+inferred from CDW source that the fee was 0 on mainnet. Empirically false:
+a fresh Core account (probe had never held Core USDC before) pays a 1 USDC
+activation fee on its first inbound. This is a `NewCoreAccountFeeApplied`
+event the agent did not observe in advance.
+
+**Finding B — settlement latency upper bound: 81 blocks (~80s).** The first
+poll already saw the credit, so actual latency is *somewhere between 1 and
+81 blocks*. Probably much faster; the 80s gap is mostly the wall-clock
+time between bridge submission and the first poll iteration.
+
+### 12.2 Second bridge — already-activated Core account
+
+```
+Bridge tx hash:     0x148a35fec04775831c0c6b4b2a2583e4b7e6dbde5e3c44f42147ce593031c5af
+Bridge tx block:    34,955,573
+Amount sent in:     1,000,000  (1 USDC)
+Amount credited:    1,000,000  (1 USDC)  ← no fee
+First poll showed:  5,000,000  (= prior 4 + new 1; credit had landed)
+First poll delta:   92 blocks
+```
+
+**Finding C — steady-state bridges credit 1:1.** Once a Core account is
+activated, subsequent inbound bridges via CDW credit the full amount with
+no further deduction. Confirms the activation fee is one-time per Core
+account (per-recipient).
+
+**Finding D — steady-state latency upper bound: ≤92 blocks (~92s).** Same
+measurement limitation as the first bridge: the polling loop's baseline
+read happened *after* Core had already credited. The lower bound is sub-
+block (settlement may be synchronous with the bridge tx itself); the upper
+bound is 92 blocks. We can't tighten without running a third probe with
+polling started *before* the bridge tx is sent.
+
+### 12.3 Implications for PR 2-NEW
+
+| Question | Answer |
+|---|---|
+| Does the CDW bridge work on mainnet? | Yes. |
+| Does it work from a contract caller? | Yes. |
+| Are there silent failures? | No, both bridges credited as expected. |
+| Activation fee? | 1 USDC, per Core account, one-time. |
+| Settlement latency? | ≤92 blocks (~92s) upper bound; likely much less. |
+| Is the 5% TVL cap right-sized? | Yes — bounds sandwich window regardless of exact latency. |
+
+### 12.4 Operational consequence — vault pre-activation
+
+Because of Finding A, the first user to deposit into a fresh vault would
+silently lose 1 USDC to the activation fee, while the share-math computes
+against the gross deposit. This is a small but real dilution of subsequent
+depositors (the first depositor mints against pre-bridge NAV which doesn't
+know about the 1 USDC shortfall).
+
+PR 2-NEW addresses this with:
+
+1. **Code-side guard.** `deposit()` reverts with `VaultNotActivated()` if
+   the vault's Core spot balance is zero. Forces admin to pre-activate
+   before any user deposit.
+2. **Operational runbook.** Admin sends 2 USDC directly to the vault's
+   Core address (via HL UI or `usdSend`) immediately after deployment.
+   After the 1 USDC activation fee, the vault has 1 USDC on Core (>0) and
+   `deposit()` becomes callable. See README §"Deployment runbook".
+
+### 12.5 Latency margin for PR 3-NEW in-flight tracker
+
+The in-flight tracker should expire pending entries after at least
+**~100 blocks (~2 minutes)** for safety. That's the observed 92-block
+upper bound plus a small headroom for occasional slow settlements. Tighter
+bounds require a third probe with pre-bridge polling (which became
+§13.1's third probe on May 13).
+
+### 12.6 Funds disposition
+
+Per operational discipline: leave the 5 USDC on the probe's Core spot,
+drain HYPE from deployer EOA back to main wallet, abandon the EOA. Do not
+reuse the deployer key.
+
+---
+
+## 13. PR 3-NEW: IN-FLIGHT BRIDGE TRACKER
+
+PR 3-NEW (commits `edd7dde`, `b287f0b`, `84031a1`, `7f329d3`, `0459fb8`)
+closes the async-bridge sandwich window via an in-flight tracker that
+includes pending bridge amounts in `totalAssets()` until HyperCore has
+settled them.
+
+### 13.1 Bridge verification — three mainnet probes consolidated
 
 | Probe | Date | Bridge block | Credit block | Δ blocks | Δ wallclock | Notes |
 |---|---|---|---|---|---|---|
@@ -543,7 +657,7 @@ This empirical evidence reframes the tracker's purpose: not load-bearing
 for cross-block correctness, but defense-in-depth against same-block
 ordering ambiguity and silent-failure-mode recovery.
 
-### 12.2 Tracker design
+### 13.2 Tracker design
 
 State (storage layout at `CreatorVault.sol`):
 
@@ -574,7 +688,7 @@ function. Three-step:
 This is the single edit that closes both KNOWN_ISSUES §1 (sandwich
 window) and KNOWN_ISSUES §2 (transient breach state).
 
-### 12.3 Sizing decision: `SETTLEMENT_BLOCKS_FALLBACK = 100`
+### 13.3 Sizing decision: `SETTLEMENT_BLOCKS_FALLBACK = 100`
 
 Justification:
 
@@ -592,7 +706,7 @@ Justification:
   Generous; auditor-friendly. Tighter would require a measurement
   scheme that we don't have today.
 
-### 12.4 PR 3-NEW commit map
+### 13.4 PR 3-NEW commit map
 
 | Commit | Hash | Scope | Tests |
 |---|---|---|---|
@@ -600,101 +714,5 @@ Justification:
 | 2 — tracker state | `b287f0b` | `PendingBridge` struct, `pending` queue, `pendingStart` head pointer, `pendingBridgedUsdc`, `_settlePending`, `_enqueuePending`, `totalAssets()` change, `CreatorVaultHarness` for isolated tests | +9 |
 | 3 — wiring | `84031a1` | `_settlePending` at entry of `_doDeposit`, `redeemCore`, `moveOnCore`, `placeOrder`, `setBuilderFee`, `sweepStrandedEvmUsdc`. `_enqueuePending` after bridge in `_doDeposit` and `sweepStrandedEvmUsdc`. `RedeemPendingSettlement` error + cascade insertion. `inFlightFromPerp += amount` in `moveOnCore(toPerp=false)` | +5 |
 | 4 — cap default | `7f329d3` | `depositTvlCapBps` default flipped to `DEPOSIT_TVL_CAP_DISABLED`. Admin opt-in path retained | (test refactor) |
-| 5 — docs | this commit | INVESTIGATION §11.7-§11.8, §12; KNOWN_ISSUES closures + new entries; README integration notes; `RedeemAmountZero` patch | +1 |
+| 5 — docs | `0459fb8` + this commit | §11 production design notes, §12 historical record marker + renumber, §13 tracker design; KNOWN_ISSUES closures + new entries; README integration notes; `RedeemAmountZero` patch | +1 |
 
----
-
-## 11. PHASE 2 MAINNET PROBE — EXECUTED (May 12)
-
-Ran the updated `MainnetBridgeProbe.s.sol` (CDW pattern) on HyperEVM
-mainnet from a fresh, throwaway deployer EOA. Two separate bridge txs
-gave us two empirical data points.
-
-### 11.1 First bridge — fresh Core account
-
-```
-Deployer EOA:       0xA9e3F1cE0358252f74FcE41E27213E7d1B4aDD8F  (fresh)
-Probe contract:     0x2c9e2a1A329520026A0E523B72fF4FEF816217C7
-Bridge tx hash:     0x20c5e98545faec9605963dafa5ce1fa1c1d337a4ded5dc8f436a07eb5d2374cd
-Bridge tx block:    34,954,695
-Amount sent in:     5,000,000  (5 USDC)
-Amount credited:    4,000,000  (4 USDC)  ← 1 USDC short
-First poll block:   34,954,776  (delta = 81 blocks)
-First poll showed:  4,000,000   (credit had already landed)
-```
-
-**Finding A — `newCoreAccountFee` is 1 USDC, not 0.** The Phase 3 agent
-inferred from CDW source that the fee was 0 on mainnet. Empirically false:
-a fresh Core account (probe had never held Core USDC before) pays a 1 USDC
-activation fee on its first inbound. This is a `NewCoreAccountFeeApplied`
-event the agent did not observe in advance.
-
-**Finding B — settlement latency upper bound: 81 blocks (~80s).** The first
-poll already saw the credit, so actual latency is *somewhere between 1 and
-81 blocks*. Probably much faster; the 80s gap is mostly the wall-clock
-time between bridge submission and the first poll iteration.
-
-### 11.2 Second bridge — already-activated Core account
-
-```
-Bridge tx hash:     0x148a35fec04775831c0c6b4b2a2583e4b7e6dbde5e3c44f42147ce593031c5af
-Bridge tx block:    34,955,573
-Amount sent in:     1,000,000  (1 USDC)
-Amount credited:    1,000,000  (1 USDC)  ← no fee
-First poll showed:  5,000,000  (= prior 4 + new 1; credit had landed)
-First poll delta:   92 blocks
-```
-
-**Finding C — steady-state bridges credit 1:1.** Once a Core account is
-activated, subsequent inbound bridges via CDW credit the full amount with
-no further deduction. Confirms the activation fee is one-time per Core
-account (per-recipient).
-
-**Finding D — steady-state latency upper bound: ≤92 blocks (~92s).** Same
-measurement limitation as the first bridge: the polling loop's baseline
-read happened *after* Core had already credited. The lower bound is sub-
-block (settlement may be synchronous with the bridge tx itself); the upper
-bound is 92 blocks. We can't tighten without running a third probe with
-polling started *before* the bridge tx is sent.
-
-### 11.3 Implications for PR 2-NEW
-
-| Question | Answer |
-|---|---|
-| Does the CDW bridge work on mainnet? | Yes. |
-| Does it work from a contract caller? | Yes. |
-| Are there silent failures? | No, both bridges credited as expected. |
-| Activation fee? | 1 USDC, per Core account, one-time. |
-| Settlement latency? | ≤92 blocks (~92s) upper bound; likely much less. |
-| Is the 5% TVL cap right-sized? | Yes — bounds sandwich window regardless of exact latency. |
-
-### 11.4 Operational consequence — vault pre-activation
-
-Because of Finding A, the first user to deposit into a fresh vault would
-silently lose 1 USDC to the activation fee, while the share-math computes
-against the gross deposit. This is a small but real dilution of subsequent
-depositors (the first depositor mints against pre-bridge NAV which doesn't
-know about the 1 USDC shortfall).
-
-PR 2-NEW addresses this with:
-
-1. **Code-side guard.** `deposit()` reverts with `VaultNotActivated()` if
-   the vault's Core spot balance is zero. Forces admin to pre-activate
-   before any user deposit.
-2. **Operational runbook.** Admin sends 2 USDC directly to the vault's
-   Core address (via HL UI or `usdSend`) immediately after deployment.
-   After the 1 USDC activation fee, the vault has 1 USDC on Core (>0) and
-   `deposit()` becomes callable. See README §"Deployment runbook".
-
-### 11.5 Latency margin for PR 3-NEW in-flight tracker
-
-The in-flight tracker should expire pending entries after at least
-**~100 blocks (~2 minutes)** for safety. That's the observed 92-block
-upper bound plus a small headroom for occasional slow settlements. Tighter
-bounds require a third probe with pre-bridge polling.
-
-### 11.6 Funds disposition
-
-Per operational discipline: leave the 5 USDC on the probe's Core spot,
-drain HYPE from deployer EOA back to main wallet, abandon the EOA. Do not
-reuse the deployer key.
