@@ -652,7 +652,20 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         });
         emit DepositFeeChangeProposed(newBps, newRecipient, executableAt);
     }
-    function executeDepositFeeChange() external onlyOwner {}
+    function executeDepositFeeChange() external onlyOwner {
+        PendingFeeChange memory p = pendingFeeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        depositFeeBps = p.newBps;
+        feeRecipient = p.newRecipient;
+        delete pendingFeeChange;
+
+        emit DepositFeeUpdated(p.newBps, p.newRecipient);
+        emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
+    }
     function cancelPendingFeeChange() external onlyOwner {}
 
     function proposeStakeCapChange(uint256 newCap) external onlyOwner {
@@ -667,7 +680,20 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         pendingStakeCap = PendingStakeCap({newCap: newCap, executableAt: executableAt});
         emit StakeCapChangeProposed(newCap, executableAt);
     }
-    function executeStakeCapChange() external onlyOwner {}
+    function executeStakeCapChange() external onlyOwner {
+        PendingStakeCap memory p = pendingStakeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        uint256 old = creatorStakeCapUsdc;
+        creatorStakeCapUsdc = p.newCap;
+        delete pendingStakeCap;
+
+        emit StakeCapUpdated(old, p.newCap);
+        emit StakeCapChangeExecuted(p.newCap);
+    }
     function cancelPendingStakeCapChange() external onlyOwner {}
 
     function proposeTvlCapChange(uint16 newBps) external onlyOwner {
@@ -683,7 +709,20 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         pendingTvlCap = PendingTvlCap({newBps: newBps, executableAt: executableAt});
         emit TvlCapChangeProposed(newBps, executableAt);
     }
-    function executeTvlCapChange() external onlyOwner {}
+    function executeTvlCapChange() external onlyOwner {
+        PendingTvlCap memory p = pendingTvlCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        uint16 old = depositTvlCapBps;
+        depositTvlCapBps = p.newBps;
+        delete pendingTvlCap;
+
+        emit DepositTvlCapUpdated(old, p.newBps);
+        emit TvlCapChangeExecuted(p.newBps);
+    }
     function cancelPendingTvlCapChange() external onlyOwner {}
 
     function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {
@@ -699,7 +738,22 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         });
         emit BuilderFeeChangeProposed(builder, maxFeeRate, executableAt);
     }
-    function executeBuilderFeeChange() external onlyOwner {}
+    function executeBuilderFeeChange() external onlyOwner nonReentrant {
+        PendingBuilderFee memory p = pendingBuilderFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        _settlePending();
+        delete pendingBuilderFee;
+
+        bytes memory payload = abi.encode(p.maxFeeRate, p.builder);
+        _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
+
+        emit BuilderApproved(p.builder, p.maxFeeRate);
+        emit BuilderFeeChangeExecuted(p.builder, p.maxFeeRate);
+    }
     function cancelPendingBuilderFeeChange() external onlyOwner {}
 
     // ─── Internals ─────────────────────────────────────────────────
