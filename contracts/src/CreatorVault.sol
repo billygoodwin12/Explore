@@ -666,7 +666,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit DepositFeeUpdated(p.newBps, p.newRecipient);
         emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
     }
-    function cancelPendingFeeChange() external onlyOwner {}
+    function cancelPendingFeeChange() external onlyOwner {
+        PendingFeeChange memory p = pendingFeeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingFeeChange;
+        emit DepositFeeChangeCancelled(p.newBps, p.newRecipient);
+    }
 
     function proposeStakeCapChange(uint256 newCap) external onlyOwner {
         if (pendingStakeCap.executableAt != 0) {
@@ -694,7 +699,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit StakeCapUpdated(old, p.newCap);
         emit StakeCapChangeExecuted(p.newCap);
     }
-    function cancelPendingStakeCapChange() external onlyOwner {}
+    function cancelPendingStakeCapChange() external onlyOwner {
+        PendingStakeCap memory p = pendingStakeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingStakeCap;
+        emit StakeCapChangeCancelled(p.newCap);
+    }
 
     function proposeTvlCapChange(uint16 newBps) external onlyOwner {
         if (pendingTvlCap.executableAt != 0) {
@@ -723,7 +733,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit DepositTvlCapUpdated(old, p.newBps);
         emit TvlCapChangeExecuted(p.newBps);
     }
-    function cancelPendingTvlCapChange() external onlyOwner {}
+    function cancelPendingTvlCapChange() external onlyOwner {
+        PendingTvlCap memory p = pendingTvlCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingTvlCap;
+        emit TvlCapChangeCancelled(p.newBps);
+    }
 
     function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {
         if (pendingBuilderFee.executableAt != 0) {
@@ -754,7 +769,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit BuilderApproved(p.builder, p.maxFeeRate);
         emit BuilderFeeChangeExecuted(p.builder, p.maxFeeRate);
     }
-    function cancelPendingBuilderFeeChange() external onlyOwner {}
+    function cancelPendingBuilderFeeChange() external onlyOwner {
+        PendingBuilderFee memory p = pendingBuilderFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderFee;
+        emit BuilderFeeChangeCancelled(p.builder, p.maxFeeRate);
+    }
 
     // ─── Internals ─────────────────────────────────────────────────
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
