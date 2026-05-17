@@ -307,6 +307,41 @@ deduplication and UI trust signals.
 
 ---
 
+### Implementation note (commit 3) — within-tx Core credit visibility unverified
+
+The atomic `createVault` flow (decisions 2 + 9) assumes that
+within-transaction the precompile reads at `_coreSpotUSDC()` see the
+Core credit produced by an earlier `CoreDepositWallet.depositFor` call
+in the **same transaction**. This is unverified empirically: the third
+mainnet probe measured **cross-block** settlement (sub-block from a
+separate `cast call`'s vantage), not same-tx visibility.
+
+Two possible outcomes:
+
+- **(a) Within-tx credit visibility works.** Factory's
+  `_bridgeFromFloat` (step 3) credits the vault's Core spot; vault's
+  `deposit` (step 6) calls `_coreSpotUSDC()` and sees it as nonzero;
+  `VaultNotActivated` guard passes; atomic flow succeeds as designed.
+- **(b) Cross-tx-only credit visibility.** Step 6's `_coreSpotUSDC()`
+  reads zero (credit not yet propagated within the same tx); `deposit`
+  reverts `VaultNotActivated`; entire `createVault` reverts.
+
+**Verification before merging commit 3.** Deploy a throwaway probe on
+mainnet that mimics the factory flow: call `CDW.depositFor` then
+immediately call the spot precompile in the same tx. Confirm the read
+sees the credit. ~$1-2 cost, definitive answer.
+
+**Fallback if verification shows (b).** Add a factory-only bootstrap
+entry point on the vault (e.g., `bootstrapDeposit` that skips the
+`VaultNotActivated` guard for `msg.sender == factory`). Adds one
+function to the vault's audit surface but unblocks the atomic flow.
+Decisions 1-11 unchanged; only the wiring inside commit 3 shifts.
+
+This isn't a decision change — it's an implementation-level
+prerequisite for commit 3. Decisions stay locked.
+
+---
+
 ### Decision 11 — Float withdrawal timelock (7 days)
 
 `withdrawFloat` is a protocol-asset withdrawal operation; matches the
