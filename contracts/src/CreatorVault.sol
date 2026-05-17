@@ -636,19 +636,69 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     // Bodies wired in commits 2-4. Signatures locked here so storage layout
     // and selectors stabilise for the test suite and indexer.
 
-    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {}
+    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {
+        if (pendingFeeChange.executableAt != 0) {
+            revert PendingChangeExists(pendingFeeChange.executableAt);
+        }
+        if (newBps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(newBps, MAX_DEPOSIT_FEE_BPS);
+        if (newBps > 0 && newRecipient == address(0)) revert FeeConfigInvalid(newBps, newRecipient);
+        if (newBps == 0 && newRecipient != address(0)) revert FeeConfigInvalid(newBps, newRecipient);
+
+        uint64 executableAt = uint64(block.timestamp + FEE_CHANGE_DELAY);
+        pendingFeeChange = PendingFeeChange({
+            newBps: newBps,
+            newRecipient: newRecipient,
+            executableAt: executableAt
+        });
+        emit DepositFeeChangeProposed(newBps, newRecipient, executableAt);
+    }
     function executeDepositFeeChange() external onlyOwner {}
     function cancelPendingFeeChange() external onlyOwner {}
 
-    function proposeStakeCapChange(uint256 newCap) external onlyOwner {}
+    function proposeStakeCapChange(uint256 newCap) external onlyOwner {
+        if (pendingStakeCap.executableAt != 0) {
+            revert PendingChangeExists(pendingStakeCap.executableAt);
+        }
+        if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
+            revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + STAKE_CAP_CHANGE_DELAY);
+        pendingStakeCap = PendingStakeCap({newCap: newCap, executableAt: executableAt});
+        emit StakeCapChangeProposed(newCap, executableAt);
+    }
     function executeStakeCapChange() external onlyOwner {}
     function cancelPendingStakeCapChange() external onlyOwner {}
 
-    function proposeTvlCapChange(uint16 newBps) external onlyOwner {}
+    function proposeTvlCapChange(uint16 newBps) external onlyOwner {
+        if (pendingTvlCap.executableAt != 0) {
+            revert PendingChangeExists(pendingTvlCap.executableAt);
+        }
+        bool inRange = newBps >= DEPOSIT_TVL_CAP_BPS_MIN && newBps <= DEPOSIT_TVL_CAP_BPS_MAX;
+        if (!inRange && newBps != DEPOSIT_TVL_CAP_DISABLED) {
+            revert TvlCapBpsOutOfBounds(newBps, DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + TVL_CAP_CHANGE_DELAY);
+        pendingTvlCap = PendingTvlCap({newBps: newBps, executableAt: executableAt});
+        emit TvlCapChangeProposed(newBps, executableAt);
+    }
     function executeTvlCapChange() external onlyOwner {}
     function cancelPendingTvlCapChange() external onlyOwner {}
 
-    function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {}
+    function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {
+        if (pendingBuilderFee.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderFee.executableAt);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + BUILDER_FEE_CHANGE_DELAY);
+        pendingBuilderFee = PendingBuilderFee({
+            builder: builder,
+            maxFeeRate: maxFeeRate,
+            executableAt: executableAt
+        });
+        emit BuilderFeeChangeProposed(builder, maxFeeRate, executableAt);
+    }
     function executeBuilderFeeChange() external onlyOwner {}
     function cancelPendingBuilderFeeChange() external onlyOwner {}
 
