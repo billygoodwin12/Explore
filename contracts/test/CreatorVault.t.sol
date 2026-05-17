@@ -1166,6 +1166,184 @@ contract CreatorVaultTest is Test {
         );
         rentVault.deposit(100e6, creator);
     }
+
+    // ─── PR 4: time-locked admin operations ───────────────────────────
+
+    function test_delay_constants_have_expected_values() public view {
+        assertEq(vault.FEE_CHANGE_DELAY(),         24 hours);
+        assertEq(vault.TVL_CAP_CHANGE_DELAY(),     24 hours);
+        assertEq(vault.BUILDER_FEE_CHANGE_DELAY(), 24 hours);
+        assertEq(vault.STAKE_CAP_CHANGE_DELAY(),   7 days);
+    }
+
+    function test_propose_fee_emits_and_sets_pending() public {
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.DepositFeeChangeProposed(
+            100, treasury, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin);
+        vault.proposeDepositFeeChange(100, treasury);
+
+        (uint16 newBps, address newRecipient, uint64 executableAt) = vault.pendingFeeChange();
+        assertEq(newBps, 100);
+        assertEq(newRecipient, treasury);
+        assertEq(executableAt, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_propose_fee_reverts_if_pending_exists() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        (, , uint64 existing) = vault.pendingFeeChange();
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
+        );
+        vault.proposeDepositFeeChange(100, treasury);
+    }
+
+    function test_execute_fee_reverts_before_delay() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        uint64 ea = uint64(block.timestamp + 24 hours);
+
+        vm.warp(block.timestamp + 24 hours - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        vault.executeDepositFeeChange();
+    }
+
+    function test_execute_fee_reverts_when_no_pending() public {
+        vm.prank(admin);
+        vm.expectRevert(CreatorVault.NoPendingChange.selector);
+        vault.executeDepositFeeChange();
+    }
+
+    function test_propose_execute_fee_happy_path() public {
+        _adminSetDepositFee(75, treasury);
+        assertEq(vault.depositFeeBps(), 75);
+        assertEq(vault.feeRecipient(), treasury);
+        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
+        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
+    }
+
+    function test_cancel_fee_clears_pending_and_emits() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.DepositFeeChangeCancelled(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+
+        (, , uint64 ea) = vault.pendingFeeChange();
+        assertEq(ea, 0);
+    }
+
+    function test_cancel_fee_reverts_when_no_pending() public {
+        vm.prank(admin);
+        vm.expectRevert(CreatorVault.NoPendingChange.selector);
+        vault.cancelPendingFeeChange();
+    }
+
+    function test_re_propose_after_cancel_works() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
+
+        (uint16 newBps, , ) = vault.pendingFeeChange();
+        assertEq(newBps, 100);
+    }
+
+    function test_execute_stake_cap_reverts_before_7_days() public {
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        uint64 ea = uint64(block.timestamp + 7 days);
+
+        vm.warp(block.timestamp + 7 days - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        vault.executeStakeCapChange();
+    }
+
+    function test_propose_execute_stake_cap_happy_path() public {
+        _adminSetCreatorStakeCap(500_000e6);
+        assertEq(vault.creatorStakeCapUsdc(), 500_000e6);
+    }
+
+    function test_propose_stake_cap_reverts_if_pending_exists() public {
+        vm.prank(admin); vault.proposeStakeCapChange(300_000e6);
+        (, uint64 existing) = vault.pendingStakeCap();
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
+        );
+        vault.proposeStakeCapChange(400_000e6);
+    }
+
+    function test_propose_execute_tvl_cap_happy_path() public {
+        _adminSetDepositTvlCapBps(250);
+        assertEq(vault.depositTvlCapBps(), 250);
+    }
+
+    function test_propose_tvl_cap_disabled_sentinel_allowed() public {
+        // First tighten to a real value, then propose the DISABLED
+        // sentinel to confirm the sentinel passes the bounds check.
+        _adminSetDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(vault.DEPOSIT_TVL_CAP_DISABLED());
+        assertEq(vault.depositTvlCapBps(), vault.DEPOSIT_TVL_CAP_DISABLED());
+    }
+
+    function test_propose_execute_builder_fee_fires_action() public {
+        // executeBuilderFeeChange must emit BuilderApproved (legacy event)
+        // alongside BuilderFeeChangeExecuted (new event).
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.BuilderApproved(address(0xBEE), 50);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.BuilderFeeChangeExecuted(address(0xBEE), 50);
+
+        vm.prank(admin); vault.executeBuilderFeeChange();
+    }
+
+    function test_non_admin_cannot_propose_any() public {
+        vm.startPrank(creator);
+        vm.expectRevert(); vault.proposeDepositFeeChange(50, treasury);
+        vm.expectRevert(); vault.proposeStakeCapChange(500_000e6);
+        vm.expectRevert(); vault.proposeTvlCapChange(500);
+        vm.expectRevert(); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.stopPrank();
+    }
+
+    function test_non_admin_cannot_execute_any() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        vm.prank(admin); vault.proposeTvlCapChange(500);
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.warp(block.timestamp + 7 days);
+
+        vm.startPrank(creator);
+        vm.expectRevert(); vault.executeDepositFeeChange();
+        vm.expectRevert(); vault.executeStakeCapChange();
+        vm.expectRevert(); vault.executeTvlCapChange();
+        vm.expectRevert(); vault.executeBuilderFeeChange();
+        vm.stopPrank();
+    }
+
+    function test_non_admin_cannot_cancel_any() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.startPrank(creator);
+        vm.expectRevert(); vault.cancelPendingFeeChange();
+        vm.expectRevert(); vault.cancelPendingStakeCapChange();
+        vm.expectRevert(); vault.cancelPendingTvlCapChange();
+        vm.expectRevert(); vault.cancelPendingBuilderFeeChange();
+        vm.stopPrank();
+    }
 }
 
 /// @dev Test harness exposing the in-flight tracker internals for direct
