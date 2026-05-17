@@ -1,6 +1,6 @@
 # PR 5 design notes — factory contract
 
-**Status:** draft for review. Not implemented.
+**Status:** decisions locked. Ready to implement.
 **Working branch:** `feat/v0.1-pr5-factory`
 **Predecessor:** PR 4 (time-locked admin operations) — in PR #2.
 
@@ -15,195 +15,153 @@ creator initial-stake deposit at deploy time. Closes
 This is the gate between "contract PRs complete" and "audit firm
 engaged + UI work startable."
 
-## Decisions surfaced for review (before implementation)
+## Locked decisions
 
-Eight decisions. Each has a recommendation, rationale, and the
-alternatives I considered with their trade-offs.
-
----
-
-### Decision 1 — Username uniqueness, normalization, reserved list
-
-**Recommendation:** Case-insensitive uniqueness via lowercase
-normalization at registration. ASCII alphanumerics + underscore.
-Length **3–32**. Reserved-name list hardcoded in factory constructor,
-~50 names sized once at deploy.
-
-**Sub-decisions:**
-
-- **Normalization.** Store the user-supplied original casing for
-  display in a `usernameDisplay[vault]` mapping, but key the
-  uniqueness check on the lowercased version: `usernameToVault[
-  lowercase(name)]`. UI shows the original casing; collisions detected
-  on lowercase.
-- **Allowed characters.** `[a-z0-9_]` (case-insensitive). Reject
-  unicode (homoglyph attacks), hyphens (UX ambiguity with URLs),
-  leading/trailing underscore (style consistency).
-- **Length.** Min 3 (avoid "a" / "x" single-char squat), max 32 (gas
-  efficiency + URL safety).
-- **Reserved list.** Hardcoded `bytes32[] memory reserved` in
-  constructor; stored as `mapping(bytes32 => bool) isReserved` keyed
-  by `keccak256(lowercase(name))`. ~50 names covering: protocol
-  identifiers ("theorise", "admin", "support", "team"), common
-  offensive words, single-letter "i" / "u" type squats.
-
-**Alternatives considered:**
-- *Admin-managed reserved list (add/remove fns).* Adds admin powers
-  that should themselves be timelocked. More complexity for marginal
-  benefit; reserved list rarely needs runtime updates. Rejected.
-- *Bloom filter / merkle root for compact reserved-list storage.*
-  Useful at 1000s of names; overkill at 50. Rejected.
-- *Mixed-case uniqueness ("Alice" and "alice" both valid).* Invites
-  user confusion + impersonation. Rejected.
-
-**Open sub-question for you:** is the 32-char max too tight for any
-creator personas you've already promised to (longer brand names)?
+Eleven decisions. Original eight from the design pass + three added
+during review (atomic semantics, view surface, float-withdrawal
+timelock).
 
 ---
 
-### Decision 2 — Atomic creator initial stake deposit at deploy
+### Decision 1 — Username scheme + reserved list
 
-**Recommendation:** Factory absorbs the 1 USDC `newCoreAccountFee`
-per deployment from a factory-held USDC float. `createVault` is a
-single tx that: deploys vault → bridges 2 USDC from factory's float
-to vault Core (1 consumed as fee, 1 settles → vault activated) →
-pulls creator's stake → calls `vault.deposit(stake, creator)` →
-emits `VaultDeployed`. Creator gets shares atomically, no exposure
-to the activation-fee mechanic.
+Case-insensitive uniqueness via lowercase normalization. ASCII
+alphanumerics + underscore. Length **3–30** (not 32: most social
+platforms cap below this; usernames appear in URLs, share tickers,
+ERC-20 token names, OG cards, and 30 keeps headroom for themed
+suffixes if needed later). Reserved-name list hardcoded in factory
+constructor, ~50 names sized once at deploy.
 
-**Why factory funds the fee.** Two practical options:
-- (a) Creator absorbs the 1 USDC fee themselves. Their initial stake
-  is `N`, but only `N - 1` ends up backing shares. Slightly
-  user-hostile, exposes the implementation detail.
-- (b) Factory absorbs the 1 USDC fee from a protocol-funded float.
-  Clean creator UX; ongoing protocol cost = $1 × N_vaults.
+Username validator enforces, in order:
+- length 3–30
+- regex equivalent: `^[a-z0-9_]+$` (after lowercasing input)
+- no consecutive underscores (prevents `___bill___` Discord-spam style)
+- no leading or trailing underscore
+- not in reserved list
 
-At Theorise's vault count (low 1000s in year 1), $1000-ish of
-cumulative activation fees is rounding error against any other
-operational cost. (b) is cleaner.
+Storage:
+- `mapping(bytes32 => address) usernameToVault` keyed by
+  `keccak256(lowercase(name))`.
+- `mapping(address => string) usernameDisplay` for the original casing
+  (UI surface).
+- `mapping(bytes32 => bool) isReserved` keyed by
+  `keccak256(lowercase(name))`.
 
-**Funding model.** Factory has a `usdcFloat` balance, topped up by
-admin via `topUpFloat(uint256 amount)`. `createVault` reverts
-`FactoryFloatInsufficient(have, need)` if float < 2 USDC. Admin's
-runbook: monitor float, top up in batches of, say, 100 USDC (=50
-vaults of headroom).
-
-**Alternatives considered:**
-- *Two-step deploy + activate + deposit, separate txs.* Matches
-  current operational flow but creator has to wait for admin to
-  pre-activate. Poor UX. Rejected.
-- *Vault constructor changes to bypass `VaultNotActivated` for the
-  factory caller.* Adds factory-aware code paths to the vault, which
-  the audit-scope-discipline says no. Rejected. The vault stays
-  factory-agnostic; the factory does the pre-activation by bridging
-  before depositing.
-
-**Open sub-question for you:** is `2 USDC` per vault from a
-protocol-funded float acceptable as ongoing overhead, or would you
-prefer the simpler creator-absorbs-fee path?
+**Open item.** If any handles longer than 30 chars have been promised
+out-of-band, raise to 32 and document. None known at notes-time —
+staying at 30.
 
 ---
 
-### Decision 3 — CREATE2 vs CREATE
+### Decision 2 — Atomic creator deposit at deploy, protocol-funded float
 
-**Recommendation:** CREATE2, with salt =
-`keccak256(creator_address, lowercase(username))`. Vault addresses
-become deterministic and computable client-side before tx confirms.
+Factory absorbs the 1 USDC `newCoreAccountFee` per deployment from a
+factory-held USDC float (framed as "protocol operational expense" —
+admin tops up; treasury-funded). `createVault` is a single tx, all-or-
+nothing.
 
-**Why CREATE2:**
-- Indexer can compute the canonical vault address from
-  `(creator, username)` without watching `VaultDeployed`.
-- UI can show "your vault will be deployed at `0xABC…`" during the
-  creation flow.
-- Easy to verify a claimed vault is the factory's canonical output
-  for a given (creator, username) pair — no spoofing risk.
+**Flow:**
+1. Factory pulls 1 USDC from its own `usdcFloat` balance, bridges to
+   the new vault's Core spot address (consumed as activation fee →
+   vault Core spot reaches 0 + 1 USDC fee absorbed → next bridge
+   credits normally).
+2. Factory pulls creator's stake from creator's EVM address (via
+   pre-existing USDC `approve`).
+3. Factory deploys the vault via CREATE2.
+4. Factory approves the freshly deployed vault to spend the stake and
+   calls `vault.deposit(stake, creator)`. Vault's deposit pulls the
+   stake, bridges it, mints shares to creator.
+5. Factory emits `VaultDeployed` (+ `UsernameClaimed`, see decision 6).
 
-**Cost:** marginal gas overhead (~32k vs CREATE), one extra hashing
-op. Trivial against the rest of `createVault`.
+If any step reverts, the whole tx reverts atomically — no partial
+state where a vault exists but isn't initialized (see decision 9).
 
-**Constraint surfaced.** Constructor cannot use `msg.sender`-dependent
-initialization (CREATE2's deterministic address assumes deterministic
-init code). The current vault constructor takes creator + admin +
-CDW as explicit args; passes already.
+**Factory float surface:**
+- `treasuryFundFloat(uint256 amount)` — admin tops up the float.
+  **Immediate, not timelocked** (adding assets is never grief).
+- `floatBalance() public view returns (uint256)` — read for
+  monitoring + UI alerts.
+- `proposeFloatWithdrawal(address to, uint256 amount)` /
+  `executeFloatWithdrawal()` — admin drains unused float, gated by
+  7-day timelock (see decision 11). Same delay as stake cap (both are
+  protocol-asset withdrawals).
+- `FloatExhausted(uint256 have, uint256 need)` — revert on `createVault`
+  when float < 1 USDC.
 
-**Alternatives considered:**
-- *CREATE (nonce-based).* Address depends on factory's nonce;
-  unpredictable without an `eth_call` against the factory. Rejected.
-- *CREATE2 with sequential nonce as salt.* Loses the
-  "(creator, username) → address" determinism. Rejected.
+**Operational mitigation for float exhaustion.** UI / indexer monitors
+`floatBalance()` and alerts admin to top up. Documented in README
+factory runbook. Suggested top-up cadence: in batches of 100 USDC
+(= ~50 vaults of headroom).
 
----
-
-### Decision 4 — Factory upgradeability
-
-**Recommendation:** **Immutable factory.** Future improvements deploy
-a new factory contract; existing vaults remain valid; indexer follows
-both factories.
-
-**Why immutable.** Upgradeable factories require either UUPS or
-Transparent proxy, both of which:
-- Add a `_implementation` slot, proxy admin, and upgrade flow to audit.
-- Introduce another admin power that should itself be timelocked,
-  adding propose/execute scaffolding to the factory mirroring PR 4.
-- Risk: admin key compromise = factory logic swap = all future
-  vault deployments compromised. Existing deployed vaults are
-  unaffected (their bytecode is immutable), but the trust narrative
-  weakens.
-
-If we need a v2 factory with new features, deploy alongside v1.
-Vaults from each are valid; the indexer subscribes to both factories'
-`VaultDeployed` events. Username registry in v1 stays canonical;
-v2 either imports v1's registry via constructor arg (read-only) or
-manages its own namespace.
-
-**Alternatives considered:**
-- *UUPS with timelocked upgrade.* Complete pattern; audit-acceptable
-  but adds substantial surface area. Rejected for v1.
-- *Diamond pattern (EIP-2535).* Even more complex. Hard pass.
+**Sizing.** At 10,000 vaults the cumulative protocol cost is ~$10K
+in activation fees — rounding error against launch costs. Creator UX
+is clean: deposit `N` USDC, get shares backed by `N` USDC.
 
 ---
 
-### Decision 5 — Admin role propagation
+### Decision 3 — CREATE2 with factory-versioned salt
 
-**Recommendation:** Factory has a `protocolAdmin` set at deploy
-(immutable). Every vault created by the factory is deployed with
-`admin = factory.protocolAdmin`. Creator is `msg.sender` (the trader
-opening their own vault).
+CREATE2 with salt =
+`keccak256(abi.encodePacked(address(this), creator, lowercase(username)))`.
 
-**Why centralized admin.** Theorise's trust model:
-- Creator = the trading user. Has `onlyCreator` controls on
-  `moveOnCore`, `placeOrder`. Day-to-day operator.
-- Admin = the protocol entity. Has `onlyOwner` (timelocked) controls
-  on fee / cap / TVL cap / builder fee.
+Including the factory's own address in the salt ensures that if the
+factory is ever redeployed, salts across old + new factories don't
+collide. (Without the factory address, CREATE2's determinism would
+produce the same vault address from the same `(creator, username)`
+pair across factory versions, which is exactly the wrong property
+when v1 + v2 factories coexist.)
 
-The admin is *not* the creator. It's the Theorise protocol team /
-multi-sig / treasury operator. Single key (or multisig) covering all
-vaults is consistent with this model and matches the existing
-single-admin assumption in PR 4's timelock design.
+Vault constructor is already CREATE2-compatible: takes creator, admin,
+CDW as explicit args; no `msg.sender`-dependent init.
 
-**Compromise consideration.** A single admin key compromise affects
-every vault — but each parametric change is bounded by the PR 4
-timelock (24h / 7d). And the off-chain mitigation (multisig /
-hardware wallet) is the practical primary control. Distributing admin
-per-vault wouldn't help: if the creator is the admin, creators have
-to learn fee management and timelock ops, which is bad UX.
-
-**Alternatives considered:**
-- *Creator = admin per-vault.* Decentralizes risk but offloads
-  protocol-level decisions (fee structure, builder approval) to each
-  creator. Bad UX, bad ops. Rejected.
-- *Per-vault admin specified at `createVault` call.* Adds optionality
-  with no clear use case. Rejected.
-
-**Open sub-question for you:** is the immutable `protocolAdmin` on
-the factory acceptable, or do you want a path to rotate it (which
-itself would need to be timelocked — adds factory surface area)?
+OZ's `Create2.deploy` helper handles the low-level deploy + address
+prediction.
 
 ---
 
-### Decision 6 — `VaultDeployed` event surface
+### Decision 4 — Immutable factory
 
-**Recommendation:**
+No upgradeability. If a bug is found in the factory post-launch,
+remediation = deploy a new factory, migrate. Existing vaults are
+unaffected (their bytecode is immutable). New vault deployments happen
+through the new factory; old + new factories coexist.
+
+**Documented in KNOWN_ISSUES §13 (new).** Migration path: indexer
+follows both factories; UI reads from both; username registry stays
+canonical on v1 unless v2 imports v1's registry via constructor arg.
+Acceptable for v1 at small AUMs.
+
+**Revisit trigger.** If any single vault holds >$10M, upgradeability
+becomes the right answer (beacon-proxy `CreatorVault.sol` with
+multi-day timelock for upgrades). Not for v1.
+
+---
+
+### Decision 5 — Immutable factory `protocolAdmin`; admin rotation NOT supported
+
+Factory has `protocolAdmin` set at deploy (immutable). Every vault
+deployed by the factory is created with `admin = factory.protocolAdmin`.
+Creator is `msg.sender`.
+
+Admin rotation is **intentionally not supported**, on either the
+factory or the per-vault admin. Reasons:
+- Rotation primitive doesn't solve admin-compromise problem: a
+  compromised admin can pre-emptively rotate to attacker-controlled
+  key before discovery.
+- Per-vault rotation surface scales linearly with N vaults — high
+  audit cost, no real benefit.
+- The previous-relayer-design rotation pattern (`proposeRelayerRotation` /
+  `executeRelayerRotation`) was removed when the relayer was removed.
+  Don't reintroduce it here.
+
+**Documented in KNOWN_ISSUES §14 (new).** Operational mitigation:
+admin key held in cold storage / multi-sig / hardware-backed key, not
+a hot wallet. Compromised admin = factory migration (per decision 4),
+not in-place rotation.
+
+---
+
+### Decision 6 — `VaultDeployed` + `UsernameClaimed` events
 
 ```solidity
 event VaultDeployed(
@@ -212,156 +170,260 @@ event VaultDeployed(
     string username,
     uint256 initialStake,
     uint256 sharesMinted,
+    uint256 vaultIndex,
     uint256 timestamp
 );
+
+event UsernameClaimed(string username, address vault);
 ```
 
-Fields rationale:
-- `vault` — primary key, indexed.
-- `creator` — for "vaults by creator" queries, indexed.
-- `username` — for username → vault lookup. Not indexed (dynamic
-  strings can't be indexed efficiently); indexer reads the data field.
-- `initialStake` — the creator's deposit amount at create time.
-  Indexer surfaces this as "seeded with X USDC."
-- `sharesMinted` — the share count credited to the creator. Useful
-  for "initial share price" indicator.
-- `timestamp` — `block.timestamp`. Indexer can use this for
-  chronological sorting without re-querying the chain.
+`VaultDeployed` fields:
+- `vault` — indexed, primary key.
+- `creator` — indexed, for "vaults by creator" queries.
+- `username` — original casing (not lowercased) for display. Not
+  indexed (dynamic strings would be hash-indexed, defeating purpose);
+  off-chain code filters via `usernameToVault` lookup.
+- `initialStake` — creator's deposit at create time.
+- `sharesMinted` — shares credited to creator.
+- `vaultIndex` — position in the on-chain `vaults` array. Lets
+  indexers reconcile pagination without re-deriving from event order.
+- `timestamp` — `block.timestamp`. (No `block.number` — redundant with
+  timestamp for sorting on HyperEVM's deterministic block cadence.)
 
-`block.number` is redundant with `timestamp` for sorting on HyperEVM
-(deterministic relationship); skip it.
-
-**Alternatives considered:**
-- *Emit only `(vault, creator)` minimal event; indexer reconstructs
-  the rest from logs.* Forces indexer to do extra calls. Modest gas
-  saving on factory side; not worth it.
-- *Add `salt` and `vaultBytecodeHash` for CREATE2 verification.*
-  Pure indexer convenience; both can be computed off-chain from the
-  factory's public state. Skip.
+`UsernameClaimed` is a separate, dedicated event for indexers tracking
+the username namespace independently. Redundant data vs `VaultDeployed`,
+trivial to emit, decouples username-registry indexers from vault
+indexers.
 
 ---
 
-### Decision 7 — Vault list storage: on-chain vs indexer-only
+### Decision 7 — On-chain `vaults` array + paginated getter, page limit 100
 
-**Recommendation:** **On-chain** `address[] public vaults` with a
-paginated getter `getVaults(uint256 offset, uint256 limit) returns
-(address[] memory)`. Plus `mapping(address => bool) isCanonicalVault`
-for cheap "is this a factory-deployed vault?" checks.
+`address[] public vaults` + `mapping(address => bool) isCanonicalVault`.
 
-**Why on-chain for v1.**
-- Theorise's expected scale in year 1: low 1000s of vaults. 1000
-  SSTOREs of address-array growth = ~22k gas marginal per
-  `createVault`. Acceptable.
-- Indexer infra dependency removed: UI can paginate the list directly
-  from the contract for v1. Simpler ops.
-- `isCanonicalVault` is useful for client safety checks
-  ("is this address really a factory vault, or a malicious lookalike?").
+Paginated getter:
+```solidity
+function getVaults(uint256 offset, uint256 limit)
+    external view returns (address[] memory);
+```
+Hard limit `limit <= 100` per call. RPC view calls under HyperEVM
+block-gas-limit at any reasonable vault count. UI requests pages of
+50 by default.
 
-**Re-evaluation trigger.** If vault count grows past ~10k, the
-`getVaults` getter starts hitting RPC block-gas-limit issues. At that
-point, indexer-only is the right answer; the on-chain array becomes
-a legacy artifact that the indexer can ignore.
+Storage cost: ~20K gas per vault one-time SSTORE (~$0.001 at HL
+prices). At 10K vaults that's $10 of cumulative protocol cost —
+negligible.
 
-**Alternatives considered:**
-- *Indexer-only via events.* Cleaner architecturally; requires
-  indexer infra (subgraph or custom) to ship before UI works. Pushes
-  the dependency forward. Rejected for v1.
-- *Linked-list with `prev` / `next` pointers for removal.* No removal
-  use case (vaults are never deleted). Over-engineered. Rejected.
+**Re-evaluation trigger.** Not storage-bound; gas-on-read-bound. At
+100K+ vaults, indexer-only becomes the right answer. The on-chain
+array would become a legacy artifact ignored by the indexer.
 
 ---
 
-### Decision 8 — Factory access control on `createVault`
+### Decision 8 — Permissionless `createVault` with `MIN_INITIAL_STAKE` spam guard
 
-**Recommendation:** **Permissionless** `createVault` — anyone can
-deploy a vault for themselves, paying gas. No allowlist, no fee
-beyond gas + the factory's `usdcFloat` consumption.
+Anyone can call `createVault(string username, uint256 initialStake)`
+for themselves, paying gas. **No allowlist, no admin approval.**
 
-**Why permissionless.** Theorise's go-to-market is "let any trader
-spin up their vault." Gating creation behind admin approval adds
-friction without security benefit:
-- Username uniqueness already prevents impersonation.
-- Reserved-name list already protects protocol identifiers.
-- Creator economics are pure self-interest (they put their own USDC
-  in); no rent-extraction vector via squatting.
-- Admin retains the timelocked levers (fee, builder, caps) regardless
-  of who created the vault.
+**Spam guard:** `MIN_INITIAL_STAKE_USDC = 1000e6` ($1,000). The
+creator must put up ≥$1K of their own USDC to claim a username +
+vault. Reasoning:
+- Without a minimum, 1,000 spam vaults cost the protocol $1,000 of
+  float-fee. With $1K minimum, the spam attacker must front $1M of
+  real capital. Economics flip.
+- $1K is low enough to be accessible (creators with real intent
+  comfortably clear it) and high enough to bound the spam vector.
+- Revisit if production observation shows the floor is too high
+  (creators dropping off pre-deposit) or too low (residual spam).
 
-**Operational safeguard.** If a vault is created with abusive content
-(e.g., creator address ties to a sanctioned entity), admin can:
-- Set `depositTvlCapBps = 100` (1%) to throttle deposits via PR 4
-  timelock, OR
-- Add the username to a "blocked" list (separate from "reserved")
-  via an admin function. **Not in v1 scope; revisit if abuse pattern
-  emerges.**
+Constant on the factory, not per-vault — applies uniformly at create
+time. (Vault's `MIN_DEPOSIT_USDC = 10e6` is independent and applies to
+subsequent follower deposits; it's a share-precision floor, not a
+spam floor.)
 
-**Alternatives considered:**
-- *Allowlist-gated creation (admin pre-approves creators).* Adds
-  manual ops burden, slows GTM. Rejected.
-- *Per-creation fee (e.g., 5 USDC).* Anti-spam, but Theorise's spam
-  surface is low (creators stake real USDC; bots don't show up).
-  Rejected for v1; revisit if spam emerges.
+**Known operational issue (KNOWN_ISSUES §15 new).** Username
+squatting via $1K-stake vaults is still possible (someone with $100K
+can claim 100 desirable usernames). Acceptable for v1; out of scope to
+solve here. Potential v2 mitigations (per-creator vault cap, dispute
+resolution, decay-on-inactivity) noted for future work.
 
 ---
 
-## Out of scope (deferred)
+### Decision 9 — Atomic `createVault` semantics
 
-- **Username transfers between addresses.** Locked at deploy per the
-  brief. If a creator wants to migrate their vault to a new EOA, they
-  redeem from the old and deploy a new (with a different username, or
-  with the same username only after the old vault is paused / removed
-  from the registry — which itself isn't supported in v1).
-- **Multi-vault per creator.** Each creator gets one vault per
-  username. A single creator address could deploy multiple vaults
-  with different usernames; the factory allows this naturally
-  (`usernameToVault` keyed on username, not creator).
-- **Vault pause / decommission.** No "retire this vault" path. If a
-  creator stops trading, the vault remains; redemptions remain open.
-  Decommission is PR N+1 if ever.
-- **Username changes after deploy.** Not supported. Username is
-  effectively immutable (stored on vault construction params if
-  needed; primary registry is factory's `usernameToVault`).
+`createVault` is a single transaction with all-or-nothing semantics.
+If any step reverts (username collision, float exhausted, USDC
+approve insufficient, vault `deposit` reverts, CREATE2 fails), the
+entire tx reverts.
 
-## Commit plan (after sign-off)
+**Why this matters.** Without atomicity, a partial-failure mode could
+leave a deployed-but-not-initialized vault, registered-but-empty
+username, or charged-but-not-credited creator. Single-tx semantics
+prevent all of these.
 
-Mirroring PR 4's discipline: scaffolding first, logic next, tests
-last, docs after.
+**Implementation note.** Solidity reverts unwind state; the only
+non-atomic primitive in scope is the CoreWriter `sendRawAction` (which
+is fire-and-forget). The factory deliberately avoids any "send action
+and continue" pattern — every Core-side change in `createVault` flows
+through the vault's own `deposit`, which is already audited.
 
-1. **Commit 1 — scaffolding.** `Factory.sol` with state vars,
-   structs, events, errors. `createVault` stub. ~80 lines.
-2. **Commit 2 — username validation + reserved list.** Length,
-   character set, reserved check. Pure functions; testable in
-   isolation.
-3. **Commit 3 — `createVault` logic.** CREATE2 deploy, factory-funded
-   pre-activation bridge, creator deposit pull + vault `deposit`,
-   registry writes, event emission.
-4. **Commit 4 — `topUpFloat` admin op, paginated `getVaults`,
-   `isCanonicalVault` getter.** Operational surface.
-5. **Commit 5 — tests.** Username validation (happy + revert paths),
-   uniqueness collision, reserved-list rejection, CREATE2
-   determinism (compute address client-side, compare), end-to-end
-   `createVault` happy path, float-insufficient revert, paginated
-   getter, vault is callable via factory's known address.
-6. **Commit 6 — deploy script for factory.** `DeployFactory.s.sol`
-   that takes USDC + CDW + protocolAdmin from env, deploys, prints
-   address.
+Tested via failure-injection tests in commit 6 (mock CDW reverts, mock
+USDC reverts, username collision mid-tx).
+
+---
+
+### Decision 10 — View functions (factory lookup surface)
+
+```solidity
+function usernameToVault(string memory username)
+    external view returns (address);
+function creatorToVault(address creator)
+    external view returns (address);
+function isUsernameAvailable(string memory username)
+    external view returns (bool);
+function getVaults(uint256 offset, uint256 limit)
+    external view returns (address[] memory);
+function isCanonicalVault(address vault)
+    external view returns (bool);
+function floatBalance()
+    external view returns (uint256);
+```
+
+`usernameToVault` accepts the user's input casing (lowercases
+internally), returns `address(0)` if unclaimed.
+
+`creatorToVault` is **singular**, not plural — one vault per creator
+per design (decision 8). If decision changes to multi-vault per
+creator later, the signature breaks ABI for indexers; flagged as
+constraint.
+
+`isUsernameAvailable` is a UI convenience: returns `true` iff the
+username passes validation, isn't reserved, and isn't claimed. Single
+call replaces three.
+
+`isCanonicalVault` is a safety check for clients: "is this address
+really a factory vault, or a lookalike?" Useful for indexer
+deduplication and UI trust signals.
+
+---
+
+### Decision 11 — Float withdrawal timelock (7 days)
+
+`withdrawFloat` is a protocol-asset withdrawal operation; matches the
+risk profile of stake-cap changes. Use the same 7-day propose/execute
+pattern from PR 4.
+
+```solidity
+struct PendingFloatWithdrawal {
+    address to;
+    uint256 amount;
+    uint64 executableAt;
+}
+PendingFloatWithdrawal public pendingFloatWithdrawal;
+
+uint256 public constant FLOAT_WITHDRAWAL_DELAY = 7 days;
+
+function proposeFloatWithdrawal(address to, uint256 amount) external onlyAdmin;
+function executeFloatWithdrawal() external onlyAdmin;
+function cancelPendingFloatWithdrawal() external onlyAdmin;
+
+event FloatWithdrawalProposed(address to, uint256 amount, uint64 executableAt);
+event FloatWithdrawalExecuted(address to, uint256 amount);
+event FloatWithdrawalCancelled(address to, uint256 amount);
+```
+
+Same `PendingChangeExists` / `TimelockNotElapsed` / `NoPendingChange`
+error surface from PR 4 (factory imports / redeclares as needed). At
+most one pending withdrawal at a time.
+
+`treasuryFundFloat` (admin adding USDC) remains **immediate** — adding
+assets is never grief.
+
+---
+
+## Out of scope (deferred, with explicit framing)
+
+- **Username transfers between addresses.** Locked at deploy. Adds
+  significant complexity around share-token retitling. Defer
+  indefinitely.
+- **Multi-vault per creator.** Each creator → one vault. A given EOA
+  can re-deploy by paying a new minimum stake under a new username,
+  but the canonical `creatorToVault` mapping holds one. Product
+  question, not contract question. Defer.
+- **Vault pause / decommission — flagged operationally.** No
+  admin path exists (or will exist in v1) to forcibly retire an
+  inactive vault. Documented framing for KNOWN_ISSUES §16:
+
+  > "If a creator becomes inactive, the vault continues to operate
+  > indefinitely. Followers can always redeem; creator can always
+  > redeem (subject to stake-floor cure period). There is no admin
+  > path to forcibly retire a vault. This is a deliberate design
+  > choice — admin doesn't have unilateral power to retire user
+  > funds. Vaults effectively self-retire as creator and followers
+  > all redeem to zero."
+
+  Defensible for v1. Auditors and creators will ask; the answer is
+  prepared.
+- **Username changes after deploy.** Permanent. Surface in creator
+  onboarding UI: "This is permanent — choose carefully." No contract
+  support.
+
+---
+
+## Commit plan
+
+1. **Commit 1 — scaffolding.** `Factory.sol`: state vars, structs,
+   events, errors, function signatures with empty bodies. No logic.
+   ~120 lines.
+2. **Commit 2 — username validation + reserved list + uniqueness
+   storage.** Pure-function validator (length, charset, underscore
+   rules), reserved-list check, `usernameToVault` /
+   `usernameDisplay` writes. Independently testable.
+3. **Commit 3 — `createVault` implementation.** CREATE2 deploy,
+   factory-funded pre-activation bridge, creator stake pull + vault
+   `deposit`, registry writes, `VaultDeployed` + `UsernameClaimed`
+   event emission. Atomic by construction.
+4. **Commit 4 — view functions + pagination.** `getVaults` with
+   `limit ≤ 100`, `isCanonicalVault`, `isUsernameAvailable`,
+   `creatorToVault`, `floatBalance`.
+5. **Commit 5 — float management + timelocked withdrawal.**
+   `treasuryFundFloat` (immediate), `proposeFloatWithdrawal` +
+   `executeFloatWithdrawal` + `cancelPendingFloatWithdrawal` with
+   7-day delay. Mirrors PR 4's propose/execute pattern.
+6. **Commit 6 — tests.** Username validation (length, charset,
+   underscore rules, reserved-list, collision), CREATE2 determinism
+   (compute address client-side, compare), full `createVault` happy
+   path (factory deposit → vault deposit → shares minted), atomic
+   failure cases (USDC pull reverts, CDW reverts, username collision
+   mid-tx), `FloatExhausted` revert, paginated getter (offset / limit
+   / out-of-range), float withdrawal timelock state machine,
+   permissionless creation, `MIN_INITIAL_STAKE` enforcement,
+   `isCanonicalVault` truthy + falsy. Estimated 25-30 tests.
 7. **Commit 7 — docs.** `INVESTIGATION_EVM_DEPOSIT.md` §15 (factory
-   design), `KNOWN_ISSUES.md` §10 closure, README factory section,
-   GAS_ANALYSIS.md update for `createVault` gas budget.
+   design + commit map), `KNOWN_ISSUES.md` updates (§10 closure,
+   §13 factory migration path, §14 admin rotation deferral, §15
+   username squatting, §16 vault decommission framing), README
+   factory runbook + float top-up runbook, `GAS_ANALYSIS.md` update
+   for `createVault` gas.
 
-Estimated 2-3 days, comparable to PR 4.
+Seven commits. About 2 days of focused work.
 
-## Decisions surfaced — quick reference
+---
 
-| # | Decision | Recommendation |
+## Quick reference
+
+| # | Decision | Locked answer |
 |---|---|---|
-| 1 | Username scheme + reserved list | Case-insensitive lowercase, 3-32 chars `[a-z0-9_]`, hardcoded ~50 reserved names |
-| 2 | Atomic creator deposit at deploy | Factory absorbs 1 USDC activation fee from a protocol-funded float; creator deposit happens in same tx |
-| 3 | CREATE2 vs CREATE | CREATE2 with salt = `keccak256(creator, lowercase(username))` |
-| 4 | Factory upgradeability | Immutable; v2 deploys alongside if needed |
-| 5 | Admin role | Factory's `protocolAdmin` (immutable) becomes every vault's admin |
-| 6 | `VaultDeployed` event | `(vault, creator, username, initialStake, sharesMinted, timestamp)` |
-| 7 | Vault list | On-chain `address[]` + paginated getter; revisit at 10k+ |
-| 8 | `createVault` access | Permissionless |
+| 1 | Username scheme | Case-insensitive, 3-30 chars `[a-z0-9_]`, no consec/leading/trailing `_`, hardcoded ~50 reserved |
+| 2 | Atomic creator deposit | Protocol-funded float absorbs 1 USDC activation fee per vault; `createVault` is single tx |
+| 3 | CREATE2 | Salt = `keccak256(factory_addr, creator, lowercase_username)` |
+| 4 | Upgradeability | Immutable; v2 via parallel deploy |
+| 5 | Admin | Factory `protocolAdmin` (immutable) becomes every vault's admin; no rotation |
+| 6 | Events | `VaultDeployed(vault, creator, username, initialStake, sharesMinted, vaultIndex, timestamp)` + `UsernameClaimed(username, vault)` |
+| 7 | Vault list | On-chain `address[]` + paginated getter, `limit ≤ 100` |
+| 8 | Creation access | Permissionless; `MIN_INITIAL_STAKE = $1000` spam guard |
+| 9 | `createVault` atomicity | All-or-nothing tx; any revert unwinds everything |
+| 10 | View surface | `usernameToVault`, `creatorToVault` (singular), `isUsernameAvailable`, `getVaults`, `isCanonicalVault`, `floatBalance` |
+| 11 | Float withdrawal | 7-day timelock (matches stake cap); fund-in is immediate |
 
-Awaiting your decision-by-decision response before commit 1.
+Ready to start commit 1 on confirmation.
