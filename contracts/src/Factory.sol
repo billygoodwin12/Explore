@@ -152,13 +152,99 @@ contract Factory is ReentrancyGuard {
         revert NotImplemented();
     }
 
-    // ─── View functions (PR 5 commit 4) ────────────────────────────
-    function usernameToVault(string calldata /*username*/) external view returns (address) {
-        revert NotImplemented();
+    // ─── Username validation (PR 5 commit 2) ───────────────────────
+    //
+    // Cheap-revert-first ordering: length, leading/trailing underscore,
+    // per-char + consecutive underscore walk, reserved, uniqueness.
+    //
+    // Case sensitivity: validator REJECTS uppercase rather than
+    // normalising. The frontend is responsible for lowercasing before
+    // submission; if it forgets, the user sees a clear revert. This
+    // keeps the validator's job to "reject invalid input," not
+    // "transform input," and avoids any indexer divergence between
+    // "what the user typed" and "what's stored on-chain."
+
+    /// @notice Pure structural check. Returns ok + hash + machine-readable
+    ///         failure code (used by both the revert-flavored validator
+    ///         and the bool-flavored `isUsernameAvailable`). Sharing one
+    ///         walk eliminates drift risk between the two paths.
+    /// @return ok True iff the username passes all structural rules.
+    /// @return errorCode 0 ok, 1 length, 2 leading-underscore,
+    ///         3 trailing-underscore, 4 invalid-char, 5 consec-underscore.
+    /// @return errorPosition 0-based index of the offending byte (valid
+    ///         for codes 4 and 5; 0 otherwise).
+    /// @return nameHash keccak256 of the raw bytes; valid only when ok.
+    function _checkUsernameStructure(string calldata username)
+        internal pure
+        returns (bool ok, uint8 errorCode, uint256 errorPosition, bytes32 nameHash)
+    {
+        bytes calldata raw = bytes(username);
+        uint256 len = raw.length;
+
+        if (len < MIN_USERNAME_LENGTH || len > MAX_USERNAME_LENGTH) {
+            return (false, 1, 0, bytes32(0));
+        }
+        if (raw[0] == 0x5f) return (false, 2, 0, bytes32(0));
+        if (raw[len - 1] == 0x5f) return (false, 3, len - 1, bytes32(0));
+
+        bytes1 prev = 0x00;
+        for (uint256 i = 0; i < len; i++) {
+            bytes1 c = raw[i];
+            bool isLower = (c >= 0x61 && c <= 0x7a);
+            bool isDigit = (c >= 0x30 && c <= 0x39);
+            bool isUnder = (c == 0x5f);
+            if (!(isLower || isDigit || isUnder)) {
+                return (false, 4, i, bytes32(0));
+            }
+            if (isUnder && prev == 0x5f) {
+                return (false, 5, i, bytes32(0));
+            }
+            prev = c;
+        }
+
+        return (true, 0, 0, keccak256(raw));
     }
 
-    function isUsernameAvailable(string calldata /*username*/) external view returns (bool) {
-        revert NotImplemented();
+    /// @notice Revert-flavored validator used by `createVault`. Combines
+    ///         the pure structural check with reserved + uniqueness
+    ///         lookups, reusing the single hash computation.
+    function _validateUsernameOrRevert(string calldata username)
+        internal view
+        returns (bytes32 nameHash)
+    {
+        (bool ok, uint8 code, uint256 pos, bytes32 hash) = _checkUsernameStructure(username);
+        if (!ok) {
+            if (code == 1) {
+                revert UsernameInvalidLength(
+                    bytes(username).length, MIN_USERNAME_LENGTH, MAX_USERNAME_LENGTH
+                );
+            }
+            if (code == 2 || code == 3) revert UsernameLeadingOrTrailingUnderscore();
+            if (code == 4) revert UsernameInvalidCharacter(pos);
+            if (code == 5) revert UsernameConsecutiveUnderscore(pos);
+        }
+
+        if (_isReservedByHash[hash]) revert UsernameReserved();
+        address existing = _usernameToVaultByHash[hash];
+        if (existing != address(0)) revert UsernameTaken(existing);
+
+        return hash;
+    }
+
+    // ─── View functions (PR 5 commit 4 in part; canonical UI-side
+    //     check `isUsernameAvailable` wired here in commit 2) ──────
+    function usernameToVault(string calldata username) external view returns (address) {
+        // Pure lookup: returns address(0) for unclaimed OR structurally
+        // invalid names alike. Callers wanting a validity check should
+        // use `isUsernameAvailable`.
+        return _usernameToVaultByHash[keccak256(bytes(username))];
+    }
+
+    function isUsernameAvailable(string calldata username) external view returns (bool) {
+        (bool ok, , , bytes32 hash) = _checkUsernameStructure(username);
+        if (!ok) return false;
+        if (_isReservedByHash[hash]) return false;
+        return _usernameToVaultByHash[hash] == address(0);
     }
 
     function getVaults(uint256 /*offset*/, uint256 /*limit*/)
