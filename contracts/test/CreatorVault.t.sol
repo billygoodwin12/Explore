@@ -1215,6 +1215,19 @@ contract CreatorVaultTest is Test {
         vault.executeDepositFeeChange();
     }
 
+    function test_execute_fee_succeeds_exactly_at_executable_at() public {
+        // Boundary check: `block.timestamp == executableAt` must succeed.
+        // Guard uses strict `<`, so this is the first instant execute is
+        // allowed. Catches the common off-by-one bug.
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        (, , uint64 ea) = vault.pendingFeeChange();
+
+        vm.warp(uint256(ea));
+        vm.prank(admin);
+        vault.executeDepositFeeChange();
+        assertEq(vault.depositFeeBps(), 50);
+    }
+
     function test_execute_fee_reverts_when_no_pending() public {
         vm.prank(admin);
         vm.expectRevert(CreatorVault.NoPendingChange.selector);
@@ -1253,6 +1266,24 @@ contract CreatorVaultTest is Test {
 
         (uint16 newBps, , ) = vault.pendingFeeChange();
         assertEq(newBps, 100);
+    }
+
+    function test_propose_cancel_propose_execute_lands_second_value() public {
+        // End-to-end: propose value A, cancel, propose value B, wait,
+        // execute. Final live state must reflect B and pending must be
+        // fully cleared. Guards against partial-cancel bugs where state
+        // bleeds from the abandoned proposal into the next.
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+
+        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
+        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
+        vm.prank(admin); vault.executeDepositFeeChange();
+
+        assertEq(vault.depositFeeBps(), 100);
+        assertEq(vault.feeRecipient(), treasury);
+        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
+        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
     }
 
     function test_execute_stake_cap_reverts_before_7_days() public {

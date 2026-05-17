@@ -73,6 +73,27 @@ Treat it as a deployment overhead. Subsequent inbound bridges to the
 same vault (via the user `deposit()` flow) credit 1:1 with no
 additional fee.
 
+### Post-deploy admin config has a 24h-7d delay (PR 4)
+
+A freshly deployed vault has **no deposit fee, no builder approved,
+and TVL cap disabled** (the constructor defaults). The first three
+admin parameter changes take 24h to take effect; stake-cap changes
+take 7 days. If your launch plan requires a non-zero fee or a
+particular builder approved before opening to users, plan the
+propose-execute sequence accordingly:
+
+```
+T+0    : vault deployed
+T+0    : admin calls proposeDepositFeeChange(bps, recipient)
+         admin calls proposeBuilderFeeChange(builder, maxFeeRate)
+T+24h  : admin calls executeDepositFeeChange()
+         admin calls executeBuilderFeeChange()
+         vault now has fee + builder live
+```
+
+See "Admin operations are time-locked (PR 4)" below for the full
+parameter → propose/execute mapping.
+
 ## Mainnet bridge verification protocol
 
 Before exposing a freshly-deployed vault to users on mainnet, run
