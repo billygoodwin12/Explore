@@ -259,3 +259,51 @@ The factory will be a separate file with its own audit scope. The
 vault's constructor is intentionally factory-agnostic (no
 factory-specific roles or hooks); the factory will be a thin wrapper
 that handles name registration + vault deployment.
+
+---
+
+## 11. `transferOwnership` is immediate (not timelocked) — **OPEN — deferred (target PR 4.1 or future work)**
+
+**What.** PR 4 places `setDepositFee`, `setCreatorStakeCap`,
+`setDepositTvlCapBps`, and `setBuilderFee` behind a propose/execute
+delay. `Ownable.transferOwnership` (inherited from OZ) is **not**
+timelocked; an `onlyOwner` caller can hand off the admin role
+immediately to any address.
+
+**Why deferred.** `transferOwnership` is a different kind of operation
+(admin role handoff, not parametric). Wrapping it requires either
+overriding the inherited fn with its own propose/execute pattern or
+moving to `Ownable2Step` plus a custom delay. Conflating it with PR 4's
+parametric scope blurs the audit narrative. Treated as separate work.
+
+**Risk.** Compromised admin key can immediately transfer ownership
+away (or to a controlled address). PR 4's parametric timelocks bound
+the *parametric* abuse window but not this. Mitigated operationally:
+admin key handling (multisig / hardware wallet) is the primary control.
+
+**Target.** PR 4.1 (own scope) or accept indefinitely. Revisit when
+the multi-sig / role separation story is designed (likely tied to
+the factory work in PR 8).
+
+---
+
+## 12. Builder identity changes are not timelocked — **OPEN — accepted v1**
+
+**What.** `executeBuilderFeeChange` (PR 4) fires
+CoreWriter action 13 (`approveBuilderFee`) with the
+`(builder, maxFeeRate)` tuple. The `maxFeeRate` parameter is timelocked;
+the `builder` address parameter rides along with it in the same
+proposal. So *changing which address is the approved builder* uses the
+same 24h delay as a fee change.
+
+**Why this is fine.** The proposed design treats `builder` and
+`maxFeeRate` as a single tuple. Admin proposing a change to either
+field starts the 24h timer. There's no separate "fast path" for
+builder-identity-only changes that would bypass the delay.
+
+**What's *not* timelocked.** Switching to an entirely different
+builder address requires going through `proposeBuilderFeeChange` with
+both fields. This is correct and intentional — the delay applies.
+
+**Residual.** None. This entry exists to confirm the design covers the
+case, so the auditor sees that `builder` identity isn't a back door.

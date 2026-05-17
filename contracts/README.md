@@ -89,8 +89,9 @@ async-bridge sandwich window. PR 3-NEW's in-flight tracker eliminates
 that window structurally, so the cap is no longer load-bearing.
 
 - **Default in PR 3-NEW: `DEPOSIT_TVL_CAP_DISABLED`** — no cap applied.
-- Admin can re-enable on a per-vault basis with
-  `setDepositTvlCapBps(uint16 bps)`. Bounds: `[100, 10_000]` (1% to 100%).
+- Admin can re-enable on a per-vault basis via the PR 4 timelock:
+  `proposeTvlCapChange(uint16 bps)` then `executeTvlCapChange()` after
+  24h. Bounds: `[100, 10_000]` (1% to 100%).
 - Sentinel `DEPOSIT_TVL_CAP_DISABLED = type(uint16).max` restores the
   default (no cap).
 
@@ -98,6 +99,47 @@ that window structurally, so the cap is no longer load-bearing.
 HyperLiquid block-time changes, CoreWriter behavior change, large
 single-deposit risk concern for a specific creator). Otherwise leave
 disabled.
+
+## Admin operations are time-locked (PR 4)
+
+Four admin parameter changes go through a propose / execute flow with
+a mandatory delay. The immediate setters from prior PRs were removed
+in PR 4 (`ac63901`); admin tooling and ops runbooks must use the new
+flow.
+
+| Parameter | Propose fn | Execute fn | Cancel fn | Delay |
+|---|---|---|---|---|
+| Deposit fee (bps + recipient) | `proposeDepositFeeChange(uint16, address)` | `executeDepositFeeChange()` | `cancelPendingFeeChange()` | 24 hours |
+| Per-tx TVL cap | `proposeTvlCapChange(uint16)` | `executeTvlCapChange()` | `cancelPendingTvlCapChange()` | 24 hours |
+| Builder fee | `proposeBuilderFeeChange(address, uint64)` | `executeBuilderFeeChange()` | `cancelPendingBuilderFeeChange()` | 24 hours |
+| Creator stake cap | `proposeStakeCapChange(uint256)` | `executeStakeCapChange()` | `cancelPendingStakeCapChange()` | 7 days |
+
+**Operational flow.**
+
+1. Admin calls `propose<X>` with the new value. Emits `*Proposed` with
+   `executableAt = block.timestamp + delay`.
+2. Wait at least the delay. Off-chain monitors / UI surface the
+   pending change to depositors during this window.
+3. Admin calls `execute<X>` (no args; reads the stored proposal).
+   Emits the legacy event (`DepositFeeUpdated` /
+   `StakeCapUpdated` / `DepositTvlCapUpdated` / `BuilderApproved`)
+   alongside the new `*Executed` event.
+
+**Aborting a proposal.** `cancelPending<X>` can be called any time
+before execute. Emits `*Cancelled`. Required if admin wants to propose
+a different value while one is in flight — `propose<X>` reverts
+`PendingChangeExists` until cancel.
+
+**Errors to expect in tooling:**
+- `PendingChangeExists(uint64 executableAt)` — a proposal is already
+  in flight for this parameter.
+- `TimelockNotElapsed(uint64 executableAt, uint64 currentTime)` —
+  execute called too early.
+- `NoPendingChange()` — execute or cancel called with no proposal.
+
+**Not yet timelocked.** `Ownable.transferOwnership` (immediate) and
+builder-identity-only switches that route through the same
+`proposeBuilderFeeChange` tuple. See `KNOWN_ISSUES.md` §11-§12.
 
 ## Integration notes for UI and indexer
 
