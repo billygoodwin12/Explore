@@ -127,6 +127,46 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         mechanism; this is the silent-failure safety net.
     uint256 public constant SETTLEMENT_BLOCKS_FALLBACK = 100;
 
+    // ─── Time-locked admin operations (PR 4) ────────────────────────────
+    /// @notice Per-function delay constants. Different operations have
+    ///         different blast radii, hence different delays. See
+    ///         `PR4_DESIGN_NOTES.md` for rationale.
+    uint256 public constant FEE_CHANGE_DELAY         = 24 hours;
+    uint256 public constant TVL_CAP_CHANGE_DELAY     = 24 hours;
+    uint256 public constant BUILDER_FEE_CHANGE_DELAY = 24 hours;
+    uint256 public constant STAKE_CAP_CHANGE_DELAY   = 7 days;
+
+    /// @notice Pending admin changes. `executableAt == 0` is the
+    ///         sentinel for "no pending change for this parameter".
+    ///         At most one pending change per parameter at any time;
+    ///         admin must `cancelPending<X>` an existing proposal
+    ///         before re-proposing.
+    struct PendingFeeChange {
+        uint16  newBps;
+        address newRecipient;
+        uint64  executableAt;
+    }
+    PendingFeeChange public pendingFeeChange;
+
+    struct PendingStakeCap {
+        uint256 newCap;
+        uint64  executableAt;
+    }
+    PendingStakeCap public pendingStakeCap;
+
+    struct PendingTvlCap {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingTvlCap public pendingTvlCap;
+
+    struct PendingBuilderFee {
+        address builder;
+        uint64  maxFeeRate;
+        uint64  executableAt;
+    }
+    PendingBuilderFee public pendingBuilderFee;
+
     event PendingBridgeEnqueued(uint128 amount, uint64 enqueueBlock);
     event PendingBridgeSettled(uint256 amountSettled, uint256 pendingStartAfter);
     event PendingBridgeExpired(uint256 amountExpired, uint256 pendingStartAfter);
@@ -142,6 +182,22 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event StakeBreachCured(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
     event DepositTvlCapUpdated(uint16 oldBps, uint16 newBps);
+
+    event DepositFeeChangeProposed(uint16 newBps, address newRecipient, uint64 executableAt);
+    event DepositFeeChangeExecuted(uint16 newBps, address newRecipient);
+    event DepositFeeChangeCancelled(uint16 newBps, address newRecipient);
+
+    event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
+    event StakeCapChangeExecuted(uint256 newCap);
+    event StakeCapChangeCancelled(uint256 newCap);
+
+    event TvlCapChangeProposed(uint16 newBps, uint64 executableAt);
+    event TvlCapChangeExecuted(uint16 newBps);
+    event TvlCapChangeCancelled(uint16 newBps);
+
+    event BuilderFeeChangeProposed(address builder, uint64 maxFeeRate, uint64 executableAt);
+    event BuilderFeeChangeExecuted(address builder, uint64 maxFeeRate);
+    event BuilderFeeChangeCancelled(address builder, uint64 maxFeeRate);
 
     error UseCoreRedeem();
     error DepositBelowMinimum(uint256 assets, uint256 floor);
@@ -193,6 +249,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error NotCreator();
     error ZeroAmount();
     error ZeroAddress();
+    /// @notice `execute<X>` called before `block.timestamp` reached
+    ///         the proposal's `executableAt`.
+    error TimelockNotElapsed(uint64 executableAt, uint64 currentTime);
+    /// @notice `execute<X>` or `cancelPending<X>` called when no
+    ///         proposal exists (`executableAt == 0`).
+    error NoPendingChange();
+    /// @notice `propose<X>` called while a proposal is already in
+    ///         flight for the same parameter. Admin must cancel the
+    ///         existing proposal first.
+    error PendingChangeExists(uint64 executableAt);
 
     modifier onlyCreator() {
         if (msg.sender != CREATOR) revert NotCreator();
@@ -565,6 +631,26 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
         emit BuilderApproved(builder, maxFeeRate);
     }
+
+    // ─── Time-locked admin: propose / execute / cancel (PR 4 scaffolding) ────
+    // Bodies wired in commits 2-4. Signatures locked here so storage layout
+    // and selectors stabilise for the test suite and indexer.
+
+    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {}
+    function executeDepositFeeChange() external onlyOwner {}
+    function cancelPendingFeeChange() external onlyOwner {}
+
+    function proposeStakeCapChange(uint256 newCap) external onlyOwner {}
+    function executeStakeCapChange() external onlyOwner {}
+    function cancelPendingStakeCapChange() external onlyOwner {}
+
+    function proposeTvlCapChange(uint16 newBps) external onlyOwner {}
+    function executeTvlCapChange() external onlyOwner {}
+    function cancelPendingTvlCapChange() external onlyOwner {}
+
+    function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {}
+    function executeBuilderFeeChange() external onlyOwner {}
+    function cancelPendingBuilderFeeChange() external onlyOwner {}
 
     // ─── Internals ─────────────────────────────────────────────────
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {

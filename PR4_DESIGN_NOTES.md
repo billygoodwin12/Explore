@@ -1,8 +1,8 @@
 # PR 4 design notes — time-locked admin operations
 
-**Status:** draft for review. Not implemented.
+**Status:** decisions locked. Implementation starting.
 **Working branch:** `feat/v0.1-pr4-timelocked-admin`
-**Predecessor:** PR 3-NEW (in-flight tracker + hardening) — already in PR #1.
+**Predecessor:** PR 3-NEW (in-flight tracker + hardening) — in PR #1.
 
 ## Goal
 
@@ -11,99 +11,137 @@ mandatory delay. Closes the trust-narrative gap where a compromised admin
 key can immediately raise fees, lower the creator stake cap, or tighten
 the per-tx TVL cap to grief users.
 
-## Scope — which admin functions get timelocked?
+## Scope — four functions, two deferrals
 
-| Function | Effect on users | Direction-sensitive? | Recommend |
-|---|---|---|---|
-| `setDepositFee(bps, recipient)` | Bps>0 → users pay fee per deposit | **Yes** — raising hurts users, lowering helps | Timelock raises only (or any change to recipient). Lowering bps + clearing fee = immediate. |
-| `setCreatorStakeCap(newCap)` | Affects creator's required stake | **Yes** — lowering can push creator into breach; raising tightens skin-in-game | Timelock both directions. Either direction can grief either the creator or users. |
-| `setDepositTvlCapBps(newBps)` | Tightening (lower bps) can DOS users | **Yes** — tightening hurts users, loosening / disabling helps | Timelock tightens only. Loosen / `DEPOSIT_TVL_CAP_DISABLED` = immediate. |
-| `setBuilderFee(builder, maxFeeRate)` | Affects trading economics | **Yes** — raising max fee hurts users via worse trade execution; lowering helps | Timelock raises only. |
+In scope (timelocked):
+1. `setDepositFee(uint16 bps, address recipient)` — fee economics.
+2. `setCreatorStakeCap(uint256 newCap)` — creator skin-in-game floor.
+3. `setDepositTvlCapBps(uint16 newBps)` — per-tx TVL cap.
+4. `setBuilderFee(address builder, uint64 maxFeeRate)` — trading fee.
 
-**Out of scope (intentionally):**
-- `Ownable.transferOwnership` — out-of-band admin transition. Adding a
-  timelock to this complicates emergency rotation. **Open for discussion.**
-- `nonReentrant` is not config; no timelock needed.
-- `_settlePending`, `_enqueuePending` are internal; no timelock needed.
-- `moveOnCore`, `placeOrder`, `setBuilderFee.builder` (when builder is
-  fresh): these are creator-day-to-day operations, not admin config
-  changes affecting depositor economics. Builder *fee* is timelocked
-  above; builder *identity* could be timelocked too — flagged for review.
+Deferred (out of scope, separate work):
+- **`Ownable.transferOwnership`** — different operation (handing off the
+  admin role itself, not a parameter change). Wrapping OZ's inherited
+  fn requires its own propose/execute pattern. Conflating it with
+  parametric changes blurs the audit narrative. Target: future PR
+  (4.1) or accept indefinitely. Documented in `KNOWN_ISSUES.md`.
+- **Builder identity changes** — separate from builder fee. Changing
+  which address is the approved builder is a different operation touching
+  HL's builder system. Target: defer indefinitely; revisit if production
+  ops require it.
 
-## Delay length
+## Delays — per-function, not uniform
 
-**Recommend: 48 hours (172,800 seconds).**
+Different operations have different blast radii. Single 48h constant is
+too coarse. Four explicit constants:
 
-Industry convention:
-- Compound, MakerDAO: 48h-7d
-- Aave: 24h-7d
-- Curve: 48h-7d
-- Synthetix: 48h
-
-48h gives depositors time to redeem if they object to a pending change.
-Shorter delays (24h) are common for emergency tightening (e.g., security
-patches); longer (7d) for permissionless governance. Theorise is
-single-admin, so a single delay value is cleaner.
-
-**Configurable?** No. Hardcoded constant in the contract. Reasoning:
-- Configurable delay = "admin can set delay to 1 second then make any
-  change immediately." Defeats the purpose unless the delay-change
-  itself is timelocked, which adds complexity.
-- Per-vault customization is not required at this stage.
-- Auditor-friendly: single number, easy to reason about.
-
-**Constant:**
 ```solidity
-uint256 public constant ADMIN_TIMELOCK_DELAY = 48 hours;
+uint256 public constant FEE_CHANGE_DELAY = 24 hours;
+uint256 public constant TVL_CAP_CHANGE_DELAY = 24 hours;
+uint256 public constant BUILDER_FEE_CHANGE_DELAY = 24 hours;
+uint256 public constant STAKE_CAP_CHANGE_DELAY = 7 days;
 ```
 
-## Architecture — inline vs separate `TimelockController`
+Rationale:
+- **24h** for fee / TVL cap / builder fee: direct economic impact on
+  every depositor. Off-chain monitors alert; users have a day to
+  deposit/withdraw before the change takes effect.
+- **7 days** for stake cap: cap changes can push creators into breach
+  state (raising cap from $250K to $1M makes any creator with $260K
+  stake suddenly under-capitalized). Creators need real notice to top
+  up, regardless of direction.
 
-**Recommend: inline.** Per-function `pending` storage + `propose` /
-`execute` / `cancel` pattern.
+Explicit per-function constants (not all named `TIMELOCK_DELAY`) make
+the audit narrative clean: "different operations have different blast
+radii, hence different delays."
 
-**Rationale:**
-- OZ `TimelockController` is heavyweight: scheduling arbitrary calls
-  with arbitrary calldata. We only need 4 specific admin functions to
-  be timelocked. Over-general.
-- Separate controller adds a deployment step per vault (or shared
-  controller introduces shared-admin coupling we don't want).
-- Inline state is cheap (1 storage slot per pending param) and gives
-  us tight, function-specific error types.
-- Factory deployment in PR 8 stays simple — no additional contract
-  to wire.
+## Uniform timelocking — no direction-sensitive paths
 
-**Cost:** Each timelocked function gets a `pending<X>` struct and three
-new fns (`propose<X>`, `execute<X>`, `cancel<X>`). ~120 lines per fn ×
-4 = ~480 lines added. Acceptable.
+**All changes go through propose/execute.** No "lowering = immediate,
+raising = timelocked" optimization.
 
-## Symmetric direction-sensitive pattern
+Rejected the direction-sensitive optimization because:
+- Encoding "lowering" vs "raising" per parameter adds two code paths
+  per function, each needing tests. Audit firm verifies both paths.
+- Some directions are ambiguous (raising stake cap — restrictive for
+  creators, protective for depositors? Depends on POV).
+- Admin mistakes are likely ("forgot the shortcut exists, used the
+  slow path").
 
-For each direction-sensitive function, two paths:
+Simpler model: every parameter change is timelocked at the appropriate
+delay. Users get consistent notice. Audit narrative is one sentence:
+"all admin parameter changes are timelocked." Admin operations are
+slightly slower than they could be — not a real cost; admins rarely
+change parameters and 24h isn't onerous for legitimate operations.
 
-1. **Immediate path** (`set<X>` retained): allowed only for changes
-   that benefit users (lower fee, looser cap, raise stake cap).
-2. **Timelocked path** (`propose<X>` + `execute<X>` + `cancel<X>`):
-   required for changes that hurt users.
+## Fee changes — bps + recipient bundled atomically
 
-Boundary enforced in `set<X>` itself — revert
-`AdminChangeRequiresTimelock(newValue, currentValue)` if the change is
-in the "hurts users" direction.
+`proposeDepositFeeChange(uint16 newBps, address newRecipient)` proposes
+both fields atomically. Single pending struct, both fields updated on
+execute. Rationale:
+- The hardening invariant from PR 3-NEW commit 1 (`edd7dde`) says
+  `bps > 0 ⟹ recipient != 0` and `bps == 0 ⟹ recipient == 0`. Splitting
+  bps and recipient into independent proposals could create transient
+  invariant violations during the proposal window.
+- Admin almost always wants to change both together or neither.
+- Indexer logic is simpler: one event per fee change with both fields.
 
-**Trade-off:** `setDepositFee` has two axes (bps + recipient). A change
-that lowers bps but switches recipient could be construed as
-manipulative. **Recommend: any recipient change requires timelock,
-regardless of bps direction.**
+## Inline state — not OZ `TimelockController`
+
+OZ's `TimelockController` is a general-purpose contract that holds
+queued operations and executes after delay. Designed for DAO-style
+governance with many distinct operations. Wrong fit for Theorise's case:
+one admin, four parameter changes, simple propose/execute.
+
+Inline is simpler:
+- No separate contract per vault.
+- Admin operations are direct vault calls, not routed through a
+  timelock contract.
+- Lower gas; less surface area for the audit firm.
+- Vault stays self-contained — no external contract coupling for
+  parameter changes.
+
+## Stake cap — both-direction timelock
+
+Raising and lowering are both timelocked at 7 days.
+
+Tighten-only would mean "lowering the cap can't hurt anyone" — but it can:
+- Cap currently $5M, creator has $5M stake. Admin lowers cap to $1M.
+  Required stake drops to $1M. Creator can withdraw $4M without triggering
+  breach. Depositors relying on the high stake floor as confidence lose
+  that confidence without notice.
+- Similar arithmetic for any tightening below current stake levels.
+
+Both-direction timelock means depositors always have 7 days notice
+before required-stake levels change. Symmetric, predictable,
+audit-friendly. Cost: admin can't quickly lower the cap in an
+emergency — acceptable, since emergency stake-cap reductions aren't a
+realistic operational scenario.
+
+## In-flight proposal collisions — reject second, explicit cancel
+
+**At most one pending change per parameter at any time.** If admin
+attempts to propose while a change is pending for that parameter,
+revert `PendingChangeExists()`. Admin must call `cancelPendingX()`
+explicitly to abandon a stale proposal.
+
+Rejected alternatives:
+- **Silent overwrite** of pending change. Admin might forget they had a
+  pending change; surprise on review. Bad UX.
+- **Queue multiple proposals.** Overkill for this use case.
+
+Cost: four small `cancelPendingX()` functions, one per parameter.
+Each deletes pending state and emits `*Cancelled` event. Trivial.
 
 ## State layout
 
 ```solidity
 struct PendingFeeChange {
-    uint16 bps;
-    address recipient;
+    uint16 newBps;
+    address newRecipient;
     uint64 executableAt;       // 0 = no pending change
 }
-PendingFeeChange public pendingDepositFee;
+PendingFeeChange public pendingFeeChange;
 
 struct PendingStakeCap {
     uint256 newCap;
@@ -125,71 +163,69 @@ struct PendingBuilderFee {
 PendingBuilderFee public pendingBuilderFee;
 ```
 
-Each `proposeXyz` overwrites the slot (admin can re-propose, restarting
-the timer). `cancelXyz` zeros the slot. `executeXyz` requires
-`block.timestamp >= executableAt && executableAt != 0`.
+`executableAt == 0` is the sentinel for "no pending change". Propose
+sets `executableAt = block.timestamp + delay`. Execute requires
+`block.timestamp >= executableAt && executableAt != 0`. Cancel zeros
+the struct.
 
 ## Events
 
 ```solidity
-event DepositFeeChangeProposed(uint16 bps, address recipient, uint64 executableAt);
-event DepositFeeChangeExecuted(uint16 bps, address recipient);
-event DepositFeeChangeCancelled(uint16 bps, address recipient);
-// ...analogous for stake cap, TVL cap, builder fee
+event DepositFeeChangeProposed(uint16 newBps, address newRecipient, uint64 executableAt);
+event DepositFeeChangeExecuted(uint16 newBps, address newRecipient);
+event DepositFeeChangeCancelled(uint16 newBps, address newRecipient);
+
+event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
+event StakeCapChangeExecuted(uint256 newCap);
+event StakeCapChangeCancelled(uint256 newCap);
+
+event TvlCapChangeProposed(uint16 newBps, uint64 executableAt);
+event TvlCapChangeExecuted(uint16 newBps);
+event TvlCapChangeCancelled(uint16 newBps);
+
+event BuilderFeeChangeProposed(address builder, uint64 maxFeeRate, uint64 executableAt);
+event BuilderFeeChangeExecuted(address builder, uint64 maxFeeRate);
+event BuilderFeeChangeCancelled(address builder, uint64 maxFeeRate);
 ```
 
-Indexer can compute "pending changes" and surface to depositors via UI.
+Indexer computes "pending changes" and surfaces to depositors via UI.
 
 ## Errors
 
 ```solidity
-error AdminChangeRequiresTimelock(uint256 newValue, uint256 currentValue);
 error TimelockNotElapsed(uint64 executableAt, uint64 currentTime);
 error NoPendingChange();
-error PendingChangeMismatch(/* proposed vs execution args */);
+error PendingChangeExists(uint64 executableAt);
 ```
 
-## Test surface
+## Public-ABI changes
 
-- Propose → wait → execute happy path (per fn).
-- Propose → cancel → state unchanged.
-- Execute before delay → revert.
-- Execute with no pending → revert.
-- Re-propose restarts timer.
-- Immediate path allowed for benign direction; reverts for hostile direction.
-- Owner change (`Ownable.transferOwnership`) does **not** clear pending
-  changes — new owner inherits them. (Or: does. Open question, flag for
-  review.)
-- Pending changes survive `Pausable` if we add one in a later PR (out of scope).
+The existing immediate setters (`setDepositFee`, `setCreatorStakeCap`,
+`setDepositTvlCapBps`, `setBuilderFee`) are **removed** from the
+public surface. Replaced by `propose<X>` / `execute<X>` / `cancel<X>`
+triples.
 
-## Migration path for existing deployments
+No production vaults yet; no migration path required. Factory (PR 8)
+deploys post-PR-4 vaults.
 
-PR 4 changes the public ABI of `set<X>` functions (some paths now revert
-with `AdminChangeRequiresTimelock`). For vaults deployed pre-PR-4:
-- N/A. No production vaults yet. All deployments will be post-PR-4.
+## Commit plan
 
-For the factory (PR 8): factory will deploy PR-4-version vaults.
+1. **Commit 1 — scaffolding.** State structs, events, errors. Four
+   propose, four execute, four cancel functions stubbed (revert
+   "unimplemented" or empty bodies). Nothing wired yet. ~80 lines.
+2. **Commit 2 — propose logic.** Set pending state, compute
+   `executableAt`, emit `*Proposed` events. Reject if pending exists.
+3. **Commit 3 — execute logic.** Verify `executableAt` set and reached,
+   copy pending → live, delete pending, emit `*Executed` events.
+4. **Commit 4 — cancel logic.** Trivial: zero the struct, emit
+   `*Cancelled`.
+5. **Commit 5 — replace existing setters.** Remove old immediate
+   `set<X>` functions; callsites move to the propose/execute flow.
+6. **Commit 6 — tests.** 15-20 tests covering propose/execute/cancel
+   happy paths, premature execute, no-pending revert, propose-while-
+   pending revert, re-propose-after-cancel.
+7. **Commit 7 — docs.** INVESTIGATION timelocking section,
+   KNOWN_ISSUES updates (deferrals for `transferOwnership` + builder
+   identity), README admin operations section.
 
-## Decisions surfaced for review (before implementation)
-
-1. **Scope confirmation:** the 4 functions listed (`setDepositFee`,
-   `setCreatorStakeCap`, `setDepositTvlCapBps`, `setBuilderFee`). Anything
-   else? `transferOwnership`? Builder *identity* change?
-2. **Delay = 48h constant.** Acceptable?
-3. **Direction-sensitive immediate vs timelocked.** Acceptable, or
-   prefer "all changes timelocked" (simpler audit narrative, worse UX
-   for benign changes)?
-4. **`setDepositFee`:** any recipient change = timelocked. Acceptable?
-5. **Inline state vs OZ TimelockController.** Inline recommended.
-6. **`setCreatorStakeCap`:** timelock both directions, or only
-   tightening direction? Lowering the cap can put existing creator
-   into breach — this is hostile-by-default. Recommend both directions.
-
-## Next concrete steps after review
-
-1. Commit 1: state layout + events + errors (no logic changes).
-2. Commit 2: propose / execute / cancel for `setDepositFee`.
-3. Commit 3: propose / execute / cancel for `setCreatorStakeCap`.
-4. Commit 4: propose / execute / cancel for `setDepositTvlCapBps`.
-5. Commit 5: propose / execute / cancel for `setBuilderFee`.
-6. Commit 6: docs (KNOWN_ISSUES, README admin runbook updates).
+Smaller than PR 3-NEW. Estimated 2-3 days of focused work.
