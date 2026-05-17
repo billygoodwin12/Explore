@@ -522,37 +522,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         return block.timestamp <= startedAt + STAKE_CURE_PERIOD;
     }
 
-    // ─── Admin: fee + cap + TVL cap ──────────────────────────────────────────
-    function setDepositFee(uint16 bps, address recipient) external onlyOwner {
-        if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
-        // Reject combinations that would silently disable the fee. Either bps
-        // and recipient are both set, or both unset (clearing the fee).
-        if (bps > 0 && recipient == address(0)) revert FeeConfigInvalid(bps, recipient);
-        if (bps == 0 && recipient != address(0)) revert FeeConfigInvalid(bps, recipient);
-        depositFeeBps = bps;
-        feeRecipient = recipient;
-        emit DepositFeeUpdated(bps, recipient);
-    }
-
-    function setCreatorStakeCap(uint256 newCap) external onlyOwner {
-        if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
-            revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
-        }
-        uint256 old = creatorStakeCapUsdc;
-        creatorStakeCapUsdc = newCap;
-        emit StakeCapUpdated(old, newCap);
-    }
-
-    function setDepositTvlCapBps(uint16 newBps) external onlyOwner {
-        bool inRange =
-            newBps >= DEPOSIT_TVL_CAP_BPS_MIN && newBps <= DEPOSIT_TVL_CAP_BPS_MAX;
-        if (!inRange && newBps != DEPOSIT_TVL_CAP_DISABLED) {
-            revert TvlCapBpsOutOfBounds(newBps, DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX);
-        }
-        emit DepositTvlCapUpdated(depositTvlCapBps, newBps);
-        depositTvlCapBps = newBps;
-    }
-
     // ─── Core-side redeem ────────────────────────────────────────────
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
@@ -625,16 +594,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit OrderPlaced(asset_, isBuy, limitPx, sz, tif);
     }
 
-    function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner nonReentrant {
-        _settlePending();
-        bytes memory payload = abi.encode(maxFeeRate, builder);
-        _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
-        emit BuilderApproved(builder, maxFeeRate);
-    }
-
-    // ─── Time-locked admin: propose / execute / cancel (PR 4 scaffolding) ────
-    // Bodies wired in commits 2-4. Signatures locked here so storage layout
-    // and selectors stabilise for the test suite and indexer.
+    // ─── Time-locked admin: propose / execute / cancel (PR 4) ───────────────
+    // All four admin parameter changes go through propose + execute, gated by
+    // per-function delays. See PR4_DESIGN_NOTES.md for rationale.
 
     function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {
         if (pendingFeeChange.executableAt != 0) {
