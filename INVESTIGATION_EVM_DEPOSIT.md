@@ -871,4 +871,63 @@ No changes to the audit-scope discipline: factory remains a thin
 wrapper; the vault stays factory-agnostic except for the single
 `bootstrapDeposit` entry point gated by an immutable address check.
 
+---
+
+## 16. PR 5: FACTORY CONTRACT
+
+PR 5 lands the production deployment surface for `CreatorVault`.
+Closes `KNOWN_ISSUES.md` §10. Full design in
+`../FACTORY_DESIGN_NOTES.md`; this section is the audit-narrative
+summary.
+
+### 16.1 Design choices (locked, see FACTORY_DESIGN_NOTES for trade-offs)
+
+| # | Decision | Choice |
+|---|---|---|
+| 1 | Username scheme | Case-insensitive, 3–30 chars `[a-z0-9_]`, no consec/leading/trailing `_`, ~50 hardcoded reserved names |
+| 2 | Atomic creator deposit | Protocol-funded float absorbs 1 USDC activation fee per vault; `createVault` is a single tx |
+| 3 | CREATE2 | Salt = `keccak256(factory_addr, creator, lowercase_username)` |
+| 4 | Upgradeability | Immutable; v2 via parallel deploy |
+| 5 | Admin | Factory `protocolAdmin` (immutable) becomes every vault's admin; no rotation |
+| 6 | Events | `VaultDeployed(vault, creator, username, initialStake, sharesMinted, vaultIndex, timestamp)` + `UsernameClaimed(username, vault)` |
+| 7 | Vault list | On-chain `address[]` + paginated getter, `limit ≤ 100` |
+| 8 | Creation access | Permissionless; `MIN_INITIAL_STAKE = $1000` spam guard |
+| 9 | `createVault` atomicity | All-or-nothing tx |
+| 10 | View surface | `usernameToVault`, `creatorToVault` (singular), `isUsernameAvailable`, `getVaults`, `isCanonicalVault`, `floatBalance` |
+| 11 | Float withdrawal | 7-day timelock (matches stake cap); fund-in immediate; cancel permissionless |
+
+### 16.2 createVault atomic flow
+
+1. `_validateUsernameOrRevert(username)` → `nameHash`.
+2. Reject if `creatorToVault[msg.sender] != 0`,
+   `initialStake < MIN_INITIAL_STAKE_USDC`, or
+   `floatBalance < NEW_CORE_ACCOUNT_FEE_USDC`.
+3. `USDC.safeTransferFrom(msg.sender, factory, initialStake)`.
+4. CREATE2-deploy vault with salt = `keccak256(factory, creator, nameHash)`.
+5. `CDW.depositFor(vault, 1e6 + initialStake, SPOT)` — single combined
+   bridge. CDW absorbs 1 USDC fee against the fresh Core account;
+   `initialStake` credits cross-block (§15.2).
+6. `floatBalance -= 1e6`.
+7. `vault.bootstrapDeposit(creator, initialStake)` — mints shares
+   against pre-bootstrap NAV (= 0), enqueues `initialStake` (NET,
+   not gross) into the in-flight tracker.
+8. Write registries, emit `VaultDeployed` + `UsernameClaimed`.
+
+Any step revert unwinds the entire tx (Solidity-default).
+
+### 16.3 PR 5 commit map
+
+| Commit | Hash | Scope |
+|---|---|---|
+| 0 — design notes | `1fda9fa` | 11 decisions locked |
+| 1 — scaffolding | `d80d69b` | Factory.sol skeleton (state, events, errors, stubs) |
+| 2 — validation + reserved + uniqueness | `1e7058e` | username validator + GenerateReservedNames script |
+| atomic-flow probe | `ce81302` / `e445da0` | Mainnet probe proving case (b) |
+| probe-result doc | `796a362` | INVESTIGATION §15 |
+| 3a — vault bootstrap | `8ee222c` | FACTORY immutable + `bootstrapDeposit` + guard bypass |
+| 3b — factory createVault | `e2722d3` | createVault + vaultSalt + treasuryFundFloat |
+| 4 — pagination + views | `caec343` | getVaults with limit ≤ 100, isCanonicalVault, vaultCount |
+| 5 — float withdrawal timelock | `b9b29bf` | propose/execute/cancel 7-day, permissionless cancel |
+| 6 — coverage sweep | `0539ee3` | 7 access-control + boundary + bypass-isolation tests |
+| 7 — docs | this commit | INVESTIGATION §16, KNOWN_ISSUES updates, README factory runbook, GAS_ANALYSIS update |
 

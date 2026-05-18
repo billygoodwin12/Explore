@@ -1,8 +1,8 @@
-# Gas analysis — post PR 3-NEW + PR 4
+# Gas analysis — post PR 3-NEW + PR 4 + PR 5
 
-Measured via `forge test --gas-report` on the 111-test suite (PR 4
-tip). All numbers in gas units; convert to USD at the prevailing
-HyperEVM gas price.
+Measured via `forge test --gas-report` on the 197-test suite (PR 5
+commit 6 tip). All numbers in gas units; convert to USD at the
+prevailing HyperEVM gas price.
 
 ## User-facing functions (medians)
 
@@ -99,11 +99,44 @@ The +35k overhead in PR 3-NEW + PR 4 buys:
 For a one-shot deposit per user, 35k gas is a rounding error on
 HyperEVM. Worth it.
 
+## PR 5 factory functions (medians, from 197-test suite)
+
+| Function | Min | Median | Max | Notes |
+|---|---|---|---|---|
+| `createVault` | 29,818 | — | 3,802,735 | Min is the early-revert path (e.g., username invalid). Successful happy-path runs cluster around 3.7–3.8M because they include CREATE2 deploy of a fresh CreatorVault (~564k for the deploy alone) + bridge + bootstrap. **Median is misleading** here since the distribution is bimodal — successful deploys dominate the upper end, revert tests dominate the lower. **Use ~3.8M as the production estimate** for a successful create. |
+| `treasuryFundFloat` | 21,575 | 76,454 | 76,454 | USDC pull + storage update + event. |
+| `proposeFloatWithdrawal` | 21,906 | 92,386 | 92,386 | Pure storage + event; min is the early-revert path. |
+| `executeFloatWithdrawal` | 21,400 | 35,149 | 64,442 | Storage update + USDC transfer. Max includes a successful transfer to a fresh address (SSTORE init cost). |
+| `cancelPendingFloatWithdrawal` | 27,774 | 30,448 | 30,448 | Permissionless; trivial. |
+| `getVaults` | 454 | 2,760 | 8,396 | View; gas scales with `limit` (1 SLOAD per returned slot, ~2k per entry above empty). 100-element max page ≈ 200k gas, well under view-call limits. |
+| `isUsernameAvailable` | 829 | 2,931 | 18,340 | View; max is a 30-char username with full underscore-walk. |
+| `usernameToVault` | 2,973 | 2,973 | 2,973 | Constant — single hash + SLOAD. |
+| `vaultSalt` | 1,090 | 1,090 | 1,090 | Constant — pure keccak. |
+
+**`createVault` headline cost ~3.8M gas.** At HyperEVM gas prices
+(~0.0001 gwei baseline), this is ~$0.0002 per vault creation — the
+creator's $1,000 minimum stake dwarfs the gas overhead by 6 orders of
+magnitude. Even at 100× gas prices it's $0.02. Vault creation is
+gas-cheap; the cost driver is the 1 USDC `newCoreAccountFee` absorbed
+by the protocol float (see `KNOWN_ISSUES.md` §14).
+
+**Deploy-cost decomposition** (~3.8M gas, approximate):
+- CreatorVault CREATE2 deploy: ~564k
+- USDC pull from creator: ~30k (SafeERC20)
+- CDW.depositFor combined bridge: ~30-50k
+- bootstrapDeposit on the new vault: ~250-300k (settle + share math
+  + mint + breach state update)
+- Registry writes (4 SSTOREs): ~100k
+- Events: ~5k
+- Solidity overhead + helpers: balance
+
 ## When to re-run
 
 Re-run `forge test --gas-report` if any of the following land:
 - New state variable added to the hot path
 - `_settlePending` algorithm change (e.g., adding `inFlightFromRedeem`
   per KNOWN_ISSUES §9)
-- Factory contract added (PR 8) — adds a new path for vault creation
-  that needs its own measurement
+- Factory createVault flow change (e.g., adding a per-creation fee
+  or extra registry write)
+- Vault constructor cost change (affects CREATE2 deploy gas inside
+  createVault)
