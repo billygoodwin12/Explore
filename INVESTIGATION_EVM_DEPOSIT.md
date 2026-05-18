@@ -716,3 +716,69 @@ Justification:
 | 4 — cap default | `7f329d3` | `depositTvlCapBps` default flipped to `DEPOSIT_TVL_CAP_DISABLED`. Admin opt-in path retained | (test refactor) |
 | 5 — docs | `0459fb8` + this commit | §11 production design notes, §12 historical record marker + renumber, §13 tracker design; KNOWN_ISSUES closures + new entries; README integration notes; `RedeemAmountZero` patch | +1 |
 
+---
+
+## 14. PR 4: TIME-LOCKED ADMIN OPERATIONS
+
+PR 4 places admin-controlled state changes that affect user economics
+behind a mandatory delay. Closes the trust-narrative gap where a
+compromised admin key can immediately raise fees, lower the creator
+stake cap, or tighten the per-tx TVL cap to grief users. See
+`../PR4_DESIGN_NOTES.md` for the full design rationale.
+
+### 14.1 Scope and delays
+
+Four functions are timelocked. Per-function delays, not a uniform value
+— different operations have different blast radii.
+
+| Parameter | Delay | Rationale |
+|---|---|---|
+| `setDepositFee(bps, recipient)` | 24h | Direct economic impact on every depositor; users need notice to act. |
+| `setDepositTvlCapBps(bps)` | 24h | Affects depositor UX directly (per-tx cap). |
+| `setBuilderFee(builder, maxFeeRate)` | 24h | Affects trading economics for the creator. |
+| `setCreatorStakeCap(newCap)` | 7 days | Both raise and lower can push creators into breach or change required-stake levels; creators need real notice to top up. |
+
+Deferred (separate work):
+- **`Ownable.transferOwnership`** — different operation (admin role
+  handoff, not parametric). Adding propose/execute requires wrapping
+  the inherited OZ function. Tracked in `KNOWN_ISSUES.md` §11.
+- **Builder identity changes** — separate from builder fee. Out of
+  scope. Tracked in `KNOWN_ISSUES.md` §12.
+
+### 14.2 Design: inline state, all-changes-timelocked
+
+**Inline state, not OZ `TimelockController`.** Four pending structs
+(`pendingFeeChange`, `pendingStakeCap`, `pendingTvlCap`,
+`pendingBuilderFee`) stored directly on the vault. Avoids deploying a
+separate controller per vault; lower gas; smaller audit surface.
+
+**All changes timelocked, no direction-sensitive shortcuts.** Every
+admin parameter change goes through propose + execute at the delay
+appropriate for that parameter. Considered and rejected
+"lowering = immediate" optimization: encoding direction per parameter
+adds two code paths per function, ambiguous semantics (raising stake
+cap = restrictive for creators or protective for depositors?), and
+mistakes are likely.
+
+**Fee bps + recipient bundled atomically.** `proposeDepositFeeChange(uint16
+newBps, address newRecipient)` proposes both fields together. The PR
+3-NEW invariant `bps > 0 ⟹ recipient != 0` would otherwise admit
+transient invariant violations during the proposal window.
+
+**One pending change per parameter at a time.** Proposing while pending
+exists reverts `PendingChangeExists(executableAt)`. Admin must call
+`cancelPending<X>` explicitly to abandon a stale proposal. No silent
+overwrites; no queued multi-proposal.
+
+### 14.3 Commit map
+
+| Commit | Hash | Scope | Tests |
+|---|---|---|---|
+| 1 — scaffolding | `b97438b` | 4 delay constants, 4 pending state structs, 12 events, 3 errors, 12 onlyOwner stub functions | 0 (existing 91 pass) |
+| 2 — propose logic | `7e2e541` | `propose<X>` for all four params: pending-exists check, bounds validation, `executableAt = now + delay`, emit `*Proposed` | 0 |
+| 3 — execute logic | `0a52e30` | `execute<X>` for all four: `NoPendingChange` + `TimelockNotElapsed` guards, copy pending → live, delete pending, emit legacy + `*Executed` events | 0 |
+| 4 — cancel logic | `0731051` | `cancelPending<X>` for all four: read for event payload, delete, emit `*Cancelled` | 0 |
+| 5 — remove immediate setters | `ac63901` | Remove `setDepositFee`, `setCreatorStakeCap`, `setDepositTvlCapBps`, `setBuilderFee` from public surface. Migrate 29 test callsites to helpers (happy path) and direct propose calls (revert path) | (refactor) |
+| 6 — tests | `22844f5` | 18-test dedicated timelock suite: state machine (8), parameter-specific (5), access control (3), delay constants (1), sentinel paths (1) | +18 |
+| 7 — docs | this commit | INVESTIGATION §14, KNOWN_ISSUES §11/§12, README admin runbook | 0 |
+

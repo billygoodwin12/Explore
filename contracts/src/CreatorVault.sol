@@ -127,6 +127,46 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         mechanism; this is the silent-failure safety net.
     uint256 public constant SETTLEMENT_BLOCKS_FALLBACK = 100;
 
+    // ─── Time-locked admin operations (PR 4) ────────────────────────────
+    /// @notice Per-function delay constants. Different operations have
+    ///         different blast radii, hence different delays. See
+    ///         `PR4_DESIGN_NOTES.md` for rationale.
+    uint256 public constant FEE_CHANGE_DELAY         = 24 hours;
+    uint256 public constant TVL_CAP_CHANGE_DELAY     = 24 hours;
+    uint256 public constant BUILDER_FEE_CHANGE_DELAY = 24 hours;
+    uint256 public constant STAKE_CAP_CHANGE_DELAY   = 7 days;
+
+    /// @notice Pending admin changes. `executableAt == 0` is the
+    ///         sentinel for "no pending change for this parameter".
+    ///         At most one pending change per parameter at any time;
+    ///         admin must `cancelPending<X>` an existing proposal
+    ///         before re-proposing.
+    struct PendingFeeChange {
+        uint16  newBps;
+        address newRecipient;
+        uint64  executableAt;
+    }
+    PendingFeeChange public pendingFeeChange;
+
+    struct PendingStakeCap {
+        uint256 newCap;
+        uint64  executableAt;
+    }
+    PendingStakeCap public pendingStakeCap;
+
+    struct PendingTvlCap {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingTvlCap public pendingTvlCap;
+
+    struct PendingBuilderFee {
+        address builder;
+        uint64  maxFeeRate;
+        uint64  executableAt;
+    }
+    PendingBuilderFee public pendingBuilderFee;
+
     event PendingBridgeEnqueued(uint128 amount, uint64 enqueueBlock);
     event PendingBridgeSettled(uint256 amountSettled, uint256 pendingStartAfter);
     event PendingBridgeExpired(uint256 amountExpired, uint256 pendingStartAfter);
@@ -142,6 +182,22 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event StakeBreachCured(uint256 currentStake, uint256 required, uint256 timestamp);
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
     event DepositTvlCapUpdated(uint16 oldBps, uint16 newBps);
+
+    event DepositFeeChangeProposed(uint16 newBps, address newRecipient, uint64 executableAt);
+    event DepositFeeChangeExecuted(uint16 newBps, address newRecipient);
+    event DepositFeeChangeCancelled(uint16 newBps, address newRecipient);
+
+    event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
+    event StakeCapChangeExecuted(uint256 newCap);
+    event StakeCapChangeCancelled(uint256 newCap);
+
+    event TvlCapChangeProposed(uint16 newBps, uint64 executableAt);
+    event TvlCapChangeExecuted(uint16 newBps);
+    event TvlCapChangeCancelled(uint16 newBps);
+
+    event BuilderFeeChangeProposed(address builder, uint64 maxFeeRate, uint64 executableAt);
+    event BuilderFeeChangeExecuted(address builder, uint64 maxFeeRate);
+    event BuilderFeeChangeCancelled(address builder, uint64 maxFeeRate);
 
     error UseCoreRedeem();
     error DepositBelowMinimum(uint256 assets, uint256 floor);
@@ -193,6 +249,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error NotCreator();
     error ZeroAmount();
     error ZeroAddress();
+    /// @notice `execute<X>` called before `block.timestamp` reached
+    ///         the proposal's `executableAt`.
+    error TimelockNotElapsed(uint64 executableAt, uint64 currentTime);
+    /// @notice `execute<X>` or `cancelPending<X>` called when no
+    ///         proposal exists (`executableAt == 0`).
+    error NoPendingChange();
+    /// @notice `propose<X>` called while a proposal is already in
+    ///         flight for the same parameter. Admin must cancel the
+    ///         existing proposal first.
+    error PendingChangeExists(uint64 executableAt);
 
     modifier onlyCreator() {
         if (msg.sender != CREATOR) revert NotCreator();
@@ -456,37 +522,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         return block.timestamp <= startedAt + STAKE_CURE_PERIOD;
     }
 
-    // ─── Admin: fee + cap + TVL cap ──────────────────────────────────────────
-    function setDepositFee(uint16 bps, address recipient) external onlyOwner {
-        if (bps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(bps, MAX_DEPOSIT_FEE_BPS);
-        // Reject combinations that would silently disable the fee. Either bps
-        // and recipient are both set, or both unset (clearing the fee).
-        if (bps > 0 && recipient == address(0)) revert FeeConfigInvalid(bps, recipient);
-        if (bps == 0 && recipient != address(0)) revert FeeConfigInvalid(bps, recipient);
-        depositFeeBps = bps;
-        feeRecipient = recipient;
-        emit DepositFeeUpdated(bps, recipient);
-    }
-
-    function setCreatorStakeCap(uint256 newCap) external onlyOwner {
-        if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
-            revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
-        }
-        uint256 old = creatorStakeCapUsdc;
-        creatorStakeCapUsdc = newCap;
-        emit StakeCapUpdated(old, newCap);
-    }
-
-    function setDepositTvlCapBps(uint16 newBps) external onlyOwner {
-        bool inRange =
-            newBps >= DEPOSIT_TVL_CAP_BPS_MIN && newBps <= DEPOSIT_TVL_CAP_BPS_MAX;
-        if (!inRange && newBps != DEPOSIT_TVL_CAP_DISABLED) {
-            revert TvlCapBpsOutOfBounds(newBps, DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX);
-        }
-        emit DepositTvlCapUpdated(depositTvlCapBps, newBps);
-        depositTvlCapBps = newBps;
-    }
-
     // ─── Core-side redeem ────────────────────────────────────────────
     /// @notice Burn `shares` and spotSend pro-rata Core USDC to
     ///         `coreReceiver`. Never gated by stake-cure expiry.
@@ -559,11 +594,159 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit OrderPlaced(asset_, isBuy, limitPx, sz, tif);
     }
 
-    function setBuilderFee(address builder, uint64 maxFeeRate) external onlyOwner nonReentrant {
+    // ─── Time-locked admin: propose / execute / cancel (PR 4) ───────────────
+    // All four admin parameter changes go through propose + execute, gated by
+    // per-function delays. See PR4_DESIGN_NOTES.md for rationale.
+
+    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {
+        if (pendingFeeChange.executableAt != 0) {
+            revert PendingChangeExists(pendingFeeChange.executableAt);
+        }
+        if (newBps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(newBps, MAX_DEPOSIT_FEE_BPS);
+        if (newBps > 0 && newRecipient == address(0)) revert FeeConfigInvalid(newBps, newRecipient);
+        if (newBps == 0 && newRecipient != address(0)) revert FeeConfigInvalid(newBps, newRecipient);
+
+        uint64 executableAt = uint64(block.timestamp + FEE_CHANGE_DELAY);
+        pendingFeeChange = PendingFeeChange({
+            newBps: newBps,
+            newRecipient: newRecipient,
+            executableAt: executableAt
+        });
+        emit DepositFeeChangeProposed(newBps, newRecipient, executableAt);
+    }
+    function executeDepositFeeChange() external onlyOwner {
+        PendingFeeChange memory p = pendingFeeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        depositFeeBps = p.newBps;
+        feeRecipient = p.newRecipient;
+        delete pendingFeeChange;
+
+        emit DepositFeeUpdated(p.newBps, p.newRecipient);
+        emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
+    }
+    /// @notice Permissionless cancel of a pending fee change. Defense
+    ///         against admin-key compromise queuing a hostile fee
+    ///         increase during the 24h window — any observer can abort.
+    ///         Griefing risk (random user cancels legitimate proposal)
+    ///         is bounded: admin re-proposes and waits another 24h.
+    function cancelPendingFeeChange() external {
+        PendingFeeChange memory p = pendingFeeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingFeeChange;
+        emit DepositFeeChangeCancelled(p.newBps, p.newRecipient);
+    }
+
+    function proposeStakeCapChange(uint256 newCap) external onlyOwner {
+        if (pendingStakeCap.executableAt != 0) {
+            revert PendingChangeExists(pendingStakeCap.executableAt);
+        }
+        if (newCap < CREATOR_STAKE_CAP_MIN || newCap > CREATOR_STAKE_CAP_MAX) {
+            revert CapOutOfBounds(newCap, CREATOR_STAKE_CAP_MIN, CREATOR_STAKE_CAP_MAX);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + STAKE_CAP_CHANGE_DELAY);
+        pendingStakeCap = PendingStakeCap({newCap: newCap, executableAt: executableAt});
+        emit StakeCapChangeProposed(newCap, executableAt);
+    }
+    function executeStakeCapChange() external onlyOwner {
+        PendingStakeCap memory p = pendingStakeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        uint256 old = creatorStakeCapUsdc;
+        creatorStakeCapUsdc = p.newCap;
+        delete pendingStakeCap;
+
+        emit StakeCapUpdated(old, p.newCap);
+        emit StakeCapChangeExecuted(p.newCap);
+    }
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale (defense against admin-key compromise).
+    function cancelPendingStakeCapChange() external {
+        PendingStakeCap memory p = pendingStakeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingStakeCap;
+        emit StakeCapChangeCancelled(p.newCap);
+    }
+
+    function proposeTvlCapChange(uint16 newBps) external onlyOwner {
+        if (pendingTvlCap.executableAt != 0) {
+            revert PendingChangeExists(pendingTvlCap.executableAt);
+        }
+        bool inRange = newBps >= DEPOSIT_TVL_CAP_BPS_MIN && newBps <= DEPOSIT_TVL_CAP_BPS_MAX;
+        if (!inRange && newBps != DEPOSIT_TVL_CAP_DISABLED) {
+            revert TvlCapBpsOutOfBounds(newBps, DEPOSIT_TVL_CAP_BPS_MIN, DEPOSIT_TVL_CAP_BPS_MAX);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + TVL_CAP_CHANGE_DELAY);
+        pendingTvlCap = PendingTvlCap({newBps: newBps, executableAt: executableAt});
+        emit TvlCapChangeProposed(newBps, executableAt);
+    }
+    function executeTvlCapChange() external onlyOwner {
+        PendingTvlCap memory p = pendingTvlCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        uint16 old = depositTvlCapBps;
+        depositTvlCapBps = p.newBps;
+        delete pendingTvlCap;
+
+        emit DepositTvlCapUpdated(old, p.newBps);
+        emit TvlCapChangeExecuted(p.newBps);
+    }
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale.
+    function cancelPendingTvlCapChange() external {
+        PendingTvlCap memory p = pendingTvlCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingTvlCap;
+        emit TvlCapChangeCancelled(p.newBps);
+    }
+
+    function proposeBuilderFeeChange(address builder, uint64 maxFeeRate) external onlyOwner {
+        if (pendingBuilderFee.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderFee.executableAt);
+        }
+
+        uint64 executableAt = uint64(block.timestamp + BUILDER_FEE_CHANGE_DELAY);
+        pendingBuilderFee = PendingBuilderFee({
+            builder: builder,
+            maxFeeRate: maxFeeRate,
+            executableAt: executableAt
+        });
+        emit BuilderFeeChangeProposed(builder, maxFeeRate, executableAt);
+    }
+    function executeBuilderFeeChange() external onlyOwner nonReentrant {
+        PendingBuilderFee memory p = pendingBuilderFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
         _settlePending();
-        bytes memory payload = abi.encode(maxFeeRate, builder);
+        delete pendingBuilderFee;
+
+        bytes memory payload = abi.encode(p.maxFeeRate, p.builder);
         _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
-        emit BuilderApproved(builder, maxFeeRate);
+
+        emit BuilderApproved(p.builder, p.maxFeeRate);
+        emit BuilderFeeChangeExecuted(p.builder, p.maxFeeRate);
+    }
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale.
+    function cancelPendingBuilderFeeChange() external {
+        PendingBuilderFee memory p = pendingBuilderFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderFee;
+        emit BuilderFeeChangeCancelled(p.builder, p.maxFeeRate);
     }
 
     // ─── Internals ─────────────────────────────────────────────────

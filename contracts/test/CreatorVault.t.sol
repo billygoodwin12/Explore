@@ -70,11 +70,8 @@ contract CreatorVaultTest is Test {
         _setCoreSpot(1e6);
         _setCorePerp(0);
 
-        // Disable per-tx TVL cap by default so existing breach/redeem
-        // scenarios remain readable. Dedicated tests cover the cap.
-        uint16 capDisabled = vault.DEPOSIT_TVL_CAP_DISABLED();
-        vm.prank(admin);
-        vault.setDepositTvlCapBps(capDisabled);
+        // Constructor default is DEPOSIT_TVL_CAP_DISABLED; dedicated
+        // tests cover the cap.
 
         usdc.mint(alice, 1_000_000e6);
         usdc.mint(bob, 1_000_000e6);
@@ -120,6 +117,35 @@ contract CreatorVaultTest is Test {
     function _poke() internal {
         vm.prank(creator);
         vault.placeOrder(0, true, 1, 1, false, HLConstants.TIF_IOC);
+    }
+
+    // PR 4 timelock helpers: propose + warp + execute as a single call,
+    // so existing tests that previously called the immediate setters
+    // stay readable. Revert-path tests target the propose function
+    // directly (no helper, no warp).
+
+    function _adminSetDepositFee(uint16 bps, address recip) internal {
+        vm.prank(admin); vault.proposeDepositFeeChange(bps, recip);
+        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
+        vm.prank(admin); vault.executeDepositFeeChange();
+    }
+
+    function _adminSetCreatorStakeCap(uint256 newCap) internal {
+        vm.prank(admin); vault.proposeStakeCapChange(newCap);
+        vm.warp(block.timestamp + vault.STAKE_CAP_CHANGE_DELAY());
+        vm.prank(admin); vault.executeStakeCapChange();
+    }
+
+    function _adminSetDepositTvlCapBps(uint16 newBps) internal {
+        vm.prank(admin); vault.proposeTvlCapChange(newBps);
+        vm.warp(block.timestamp + vault.TVL_CAP_CHANGE_DELAY());
+        vm.prank(admin); vault.executeTvlCapChange();
+    }
+
+    function _adminSetBuilderFee(address builder, uint64 maxFeeRate) internal {
+        vm.prank(admin); vault.proposeBuilderFeeChange(builder, maxFeeRate);
+        vm.warp(block.timestamp + vault.BUILDER_FEE_CHANGE_DELAY());
+        vm.prank(admin); vault.executeBuilderFeeChange();
     }
 
     // ─── Deploy invariants ────────────────────────────────────────
@@ -285,8 +311,7 @@ contract CreatorVaultTest is Test {
             for (uint256 w = 0; w < wants.length; w++) {
                 _resetVaultWithBootstrap();
                 if (feeBps[f] > 0) {
-                    vm.prank(admin);
-                    vault.setDepositFee(feeBps[f], treasury);
+                    _adminSetDepositFee(feeBps[f], treasury);
                 }
 
                 uint256 want = wants[w];
@@ -334,10 +359,6 @@ contract CreatorVaultTest is Test {
         _setCoreSpot(1e6);
         _setCorePerp(0);
 
-        uint16 capDisabled = vault.DEPOSIT_TVL_CAP_DISABLED();
-        vm.prank(admin);
-        vault.setDepositTvlCapBps(capDisabled);
-
         usdc.mint(creator, 10_000_000e6);
         usdc.mint(bob, 10_000_000e6);
         vm.prank(creator); usdc.approve(address(vault), type(uint256).max);
@@ -356,7 +377,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_previewDeposit_with_fee() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury);
+        _adminSetDepositFee(100, treasury);
         // Net 99e6 after 1% fee. Shares = floor(99e6 × 1e6 / (1e6+1)) = 98_999_901.
         assertEq(vault.previewDeposit(100e6), 98_999_901);
     }
@@ -371,7 +392,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_previewMint_with_fee_grosses_up() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury);
+        _adminSetDepositFee(100, treasury);
 
         vm.prank(creator);
         vault.deposit(100e6, creator);
@@ -398,7 +419,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_deposit_with_fee_skim_evm_side() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury);
+        _adminSetDepositFee(100, treasury);
         vm.prank(creator);
         vault.deposit(500e6, creator);
 
@@ -479,7 +500,7 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
-        vm.prank(admin); vault.setDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(500);
 
         _setCoreSpot(1000e6); // NAV = $1000; cap = 5% = $50
         _setCorePerp(0);
@@ -497,7 +518,7 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
-        vm.prank(admin); vault.setDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(500);
 
         _setCoreSpot(1000e6);
         _setCorePerp(0);
@@ -513,7 +534,7 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
-        vm.prank(admin); vault.setDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(500);
 
         _setCoreSpot(1e6); // 1 USDC NAV
         _setCorePerp(0);
@@ -530,7 +551,7 @@ contract CreatorVaultTest is Test {
         vault = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
         );
-        vm.prank(admin); vault.setDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(500);
 
         _setCoreSpot(1000e6);
         _setCorePerp(0);
@@ -539,27 +560,26 @@ contract CreatorVaultTest is Test {
     }
 
     function test_admin_can_tighten_tvl_cap() public {
-        vm.prank(admin);
-        vault.setDepositTvlCapBps(200);
+        _adminSetDepositTvlCapBps(200);
         assertEq(vault.depositTvlCapBps(), 200);
     }
 
     function test_admin_cannot_set_tvl_cap_below_min() public {
         vm.prank(admin);
         vm.expectRevert();
-        vault.setDepositTvlCapBps(50);
+        vault.proposeTvlCapChange(50);
     }
 
     function test_admin_cannot_set_tvl_cap_above_max() public {
         vm.prank(admin);
         vm.expectRevert();
-        vault.setDepositTvlCapBps(10_001);
+        vault.proposeTvlCapChange(10_001);
     }
 
     function test_non_admin_cannot_set_tvl_cap() public {
         vm.prank(creator);
         vm.expectRevert();
-        vault.setDepositTvlCapBps(1000);
+        vault.proposeTvlCapChange(1000);
     }
 
     // ─── Async-window behaviour ──────────────────────────────────────────
@@ -606,7 +626,7 @@ contract CreatorVaultTest is Test {
         );
         // Cap defaults to disabled in PR 3-NEW. Admin opts back in to the
         // 5% cap so this test still verifies "no divergence under cap."
-        vm.prank(admin); vault.setDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(500);
 
         _setCoreSpot(1_000_000e6);
         _setCorePerp(0);
@@ -660,7 +680,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_admin_can_set_fee() public {
-        vm.prank(admin); vault.setDepositFee(50, treasury);
+        _adminSetDepositFee(50, treasury);
         assertEq(vault.depositFeeBps(), 50);
         assertEq(vault.feeRecipient(), treasury);
     }
@@ -668,13 +688,13 @@ contract CreatorVaultTest is Test {
     function test_non_admin_cannot_set_fee() public {
         vm.prank(creator);
         vm.expectRevert();
-        vault.setDepositFee(50, treasury);
+        vault.proposeDepositFeeChange(50, treasury);
     }
 
     function test_fee_cap_enforced() public {
         vm.prank(admin);
         vm.expectRevert();
-        vault.setDepositFee(1001, treasury);
+        vault.proposeDepositFeeChange(1001, treasury);
     }
 
     function test_fee_config_rejects_bps_with_zero_recipient() public {
@@ -682,7 +702,7 @@ contract CreatorVaultTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(100), address(0))
         );
-        vault.setDepositFee(100, address(0));
+        vault.proposeDepositFeeChange(100, address(0));
     }
 
     function test_fee_config_rejects_zero_bps_with_recipient() public {
@@ -690,12 +710,12 @@ contract CreatorVaultTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(0), treasury)
         );
-        vault.setDepositFee(0, treasury);
+        vault.proposeDepositFeeChange(0, treasury);
     }
 
     function test_fee_config_allows_clearing_both_zero() public {
-        vm.prank(admin); vault.setDepositFee(100, treasury);
-        vm.prank(admin); vault.setDepositFee(0, address(0));
+        _adminSetDepositFee(100, treasury);
+        _adminSetDepositFee(0, address(0));
         assertEq(vault.depositFeeBps(), 0);
         assertEq(vault.feeRecipient(), address(0));
     }
@@ -821,23 +841,23 @@ contract CreatorVaultTest is Test {
     // ─── Stake cap admin ──────────────────────────────────────────────
 
     function test_admin_can_adjust_cap_within_bounds() public {
-        vm.prank(admin); vault.setCreatorStakeCap(500_000e6);
+        _adminSetCreatorStakeCap(500_000e6);
         assertEq(vault.creatorStakeCapUsdc(), 500_000e6);
     }
 
     function test_admin_cannot_set_cap_below_min() public {
         vm.prank(admin); vm.expectRevert();
-        vault.setCreatorStakeCap(50_000e6);
+        vault.proposeStakeCapChange(50_000e6);
     }
 
     function test_admin_cannot_set_cap_above_max() public {
         vm.prank(admin); vm.expectRevert();
-        vault.setCreatorStakeCap(50_000_000e6);
+        vault.proposeStakeCapChange(50_000_000e6);
     }
 
     function test_non_admin_cannot_set_creator_stake_cap() public {
         vm.prank(creator); vm.expectRevert();
-        vault.setCreatorStakeCap(500_000e6);
+        vault.proposeStakeCapChange(500_000e6);
     }
 
     function test_required_stake_view_below_threshold() public {
@@ -942,7 +962,7 @@ contract CreatorVaultTest is Test {
     function test_only_admin_can_set_builder_fee() public {
         vm.prank(creator);
         vm.expectRevert();
-        vault.setBuilderFee(address(0xBEE), 50);
+        vault.proposeBuilderFeeChange(address(0xBEE), 50);
     }
 
     function test_place_order_succeeds_for_creator() public {
@@ -951,8 +971,7 @@ contract CreatorVaultTest is Test {
     }
 
     function test_set_builder_fee_succeeds_for_admin() public {
-        vm.prank(admin);
-        vault.setBuilderFee(address(0xBEE), 50);
+        _adminSetBuilderFee(address(0xBEE), 50);
     }
 
     function test_move_on_core_succeeds_for_creator() public {
@@ -1137,10 +1156,7 @@ contract CreatorVaultTest is Test {
             abi.encode(int64(0), uint64(0), uint64(0), int64(0))
         );
 
-        // Disable TVL cap so we don't trip on that first.
-        uint16 capDisabled = rentVault.DEPOSIT_TVL_CAP_DISABLED();
-        vm.prank(admin);
-        rentVault.setDepositTvlCapBps(capDisabled);
+        // Constructor default is DEPOSIT_TVL_CAP_DISABLED.
 
         usdc.mint(creator, 1000e6);
         vm.prank(creator); usdc.approve(address(rentVault), type(uint256).max);
@@ -1149,6 +1165,236 @@ contract CreatorVaultTest is Test {
             abi.encodeWithSelector(ReentrancyGuard.ReentrancyGuardReentrantCall.selector)
         );
         rentVault.deposit(100e6, creator);
+    }
+
+    // ─── PR 4: time-locked admin operations ───────────────────────────
+
+    function test_delay_constants_have_expected_values() public view {
+        assertEq(vault.FEE_CHANGE_DELAY(),         24 hours);
+        assertEq(vault.TVL_CAP_CHANGE_DELAY(),     24 hours);
+        assertEq(vault.BUILDER_FEE_CHANGE_DELAY(), 24 hours);
+        assertEq(vault.STAKE_CAP_CHANGE_DELAY(),   7 days);
+    }
+
+    function test_propose_fee_emits_and_sets_pending() public {
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.DepositFeeChangeProposed(
+            100, treasury, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin);
+        vault.proposeDepositFeeChange(100, treasury);
+
+        (uint16 newBps, address newRecipient, uint64 executableAt) = vault.pendingFeeChange();
+        assertEq(newBps, 100);
+        assertEq(newRecipient, treasury);
+        assertEq(executableAt, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_propose_fee_reverts_if_pending_exists() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        (, , uint64 existing) = vault.pendingFeeChange();
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
+        );
+        vault.proposeDepositFeeChange(100, treasury);
+    }
+
+    function test_execute_fee_reverts_before_delay() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        uint64 ea = uint64(block.timestamp + 24 hours);
+
+        vm.warp(block.timestamp + 24 hours - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        vault.executeDepositFeeChange();
+    }
+
+    function test_execute_fee_succeeds_exactly_at_executable_at() public {
+        // Boundary check: `block.timestamp == executableAt` must succeed.
+        // Guard uses strict `<`, so this is the first instant execute is
+        // allowed. Catches the common off-by-one bug.
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        (, , uint64 ea) = vault.pendingFeeChange();
+
+        vm.warp(uint256(ea));
+        vm.prank(admin);
+        vault.executeDepositFeeChange();
+        assertEq(vault.depositFeeBps(), 50);
+    }
+
+    function test_execute_fee_reverts_when_no_pending() public {
+        vm.prank(admin);
+        vm.expectRevert(CreatorVault.NoPendingChange.selector);
+        vault.executeDepositFeeChange();
+    }
+
+    function test_propose_execute_fee_happy_path() public {
+        _adminSetDepositFee(75, treasury);
+        assertEq(vault.depositFeeBps(), 75);
+        assertEq(vault.feeRecipient(), treasury);
+        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
+        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
+    }
+
+    function test_cancel_fee_clears_pending_and_emits() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.DepositFeeChangeCancelled(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+
+        (, , uint64 ea) = vault.pendingFeeChange();
+        assertEq(ea, 0);
+    }
+
+    function test_cancel_fee_reverts_when_no_pending() public {
+        vm.prank(admin);
+        vm.expectRevert(CreatorVault.NoPendingChange.selector);
+        vault.cancelPendingFeeChange();
+    }
+
+    function test_re_propose_after_cancel_works() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
+
+        (uint16 newBps, , ) = vault.pendingFeeChange();
+        assertEq(newBps, 100);
+    }
+
+    function test_propose_cancel_propose_execute_lands_second_value() public {
+        // End-to-end: propose value A, cancel, propose value B, wait,
+        // execute. Final live state must reflect B and pending must be
+        // fully cleared. Guards against partial-cancel bugs where state
+        // bleeds from the abandoned proposal into the next.
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.cancelPendingFeeChange();
+
+        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
+        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
+        vm.prank(admin); vault.executeDepositFeeChange();
+
+        assertEq(vault.depositFeeBps(), 100);
+        assertEq(vault.feeRecipient(), treasury);
+        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
+        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
+    }
+
+    function test_execute_stake_cap_reverts_before_7_days() public {
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        uint64 ea = uint64(block.timestamp + 7 days);
+
+        vm.warp(block.timestamp + 7 days - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        vault.executeStakeCapChange();
+    }
+
+    function test_propose_execute_stake_cap_happy_path() public {
+        _adminSetCreatorStakeCap(500_000e6);
+        assertEq(vault.creatorStakeCapUsdc(), 500_000e6);
+    }
+
+    function test_propose_stake_cap_reverts_if_pending_exists() public {
+        vm.prank(admin); vault.proposeStakeCapChange(300_000e6);
+        (, uint64 existing) = vault.pendingStakeCap();
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
+        );
+        vault.proposeStakeCapChange(400_000e6);
+    }
+
+    function test_propose_execute_tvl_cap_happy_path() public {
+        _adminSetDepositTvlCapBps(250);
+        assertEq(vault.depositTvlCapBps(), 250);
+    }
+
+    function test_propose_tvl_cap_disabled_sentinel_allowed() public {
+        // First tighten to a real value, then propose the DISABLED
+        // sentinel to confirm the sentinel passes the bounds check.
+        _adminSetDepositTvlCapBps(500);
+        _adminSetDepositTvlCapBps(vault.DEPOSIT_TVL_CAP_DISABLED());
+        assertEq(vault.depositTvlCapBps(), vault.DEPOSIT_TVL_CAP_DISABLED());
+    }
+
+    function test_propose_execute_builder_fee_fires_action() public {
+        // executeBuilderFeeChange must emit BuilderApproved (legacy event)
+        // alongside BuilderFeeChangeExecuted (new event).
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.BuilderApproved(address(0xBEE), 50);
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.BuilderFeeChangeExecuted(address(0xBEE), 50);
+
+        vm.prank(admin); vault.executeBuilderFeeChange();
+    }
+
+    function test_non_admin_cannot_propose_any() public {
+        vm.startPrank(creator);
+        vm.expectRevert(); vault.proposeDepositFeeChange(50, treasury);
+        vm.expectRevert(); vault.proposeStakeCapChange(500_000e6);
+        vm.expectRevert(); vault.proposeTvlCapChange(500);
+        vm.expectRevert(); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.stopPrank();
+    }
+
+    function test_non_admin_cannot_execute_any() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        vm.prank(admin); vault.proposeTvlCapChange(500);
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+        vm.warp(block.timestamp + 7 days);
+
+        vm.startPrank(creator);
+        vm.expectRevert(); vault.executeDepositFeeChange();
+        vm.expectRevert(); vault.executeStakeCapChange();
+        vm.expectRevert(); vault.executeTvlCapChange();
+        vm.expectRevert(); vault.executeBuilderFeeChange();
+        vm.stopPrank();
+    }
+
+    /// @notice Cancels are permissionless across all four parameters
+    ///         (defense against admin-key compromise queuing a hostile
+    ///         change during the timelock window). Any observer can
+    ///         abort. Griefing risk (random user cancels legitimate
+    ///         proposal) is bounded -- admin re-proposes and waits.
+    function test_anyone_can_cancel_pending_changes() public {
+        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        vm.prank(admin); vault.proposeTvlCapChange(500);
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+
+        // Non-admin (`creator` here, but could be any address) cancels
+        // all four pending proposals successfully.
+        vm.startPrank(creator);
+        vault.cancelPendingFeeChange();
+        vault.cancelPendingStakeCapChange();
+        vault.cancelPendingTvlCapChange();
+        vault.cancelPendingBuilderFeeChange();
+        vm.stopPrank();
+
+        // All pending state cleared.
+        (, , uint64 feeEa) = vault.pendingFeeChange();
+        (, uint64 capEa) = vault.pendingStakeCap();
+        (, uint64 tvlEa) = vault.pendingTvlCap();
+        (, , uint64 bfEa) = vault.pendingBuilderFee();
+        assertEq(feeEa, 0);
+        assertEq(capEa, 0);
+        assertEq(tvlEa, 0);
+        assertEq(bfEa, 0);
     }
 }
 

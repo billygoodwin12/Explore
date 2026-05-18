@@ -117,6 +117,8 @@ after Core settles drains pending by X. Net: attacker paid X to briefly
 inflate the tracker; vault gained X permanently. Worst exchange rate for
 the attacker; benign for the protocol.
 
+**Risk:** none. Permissionless calling is the design, not a bug.
+
 ---
 
 ## 5. `newCoreAccountFee` is 1 USDC, not 0 — **OPEN — accepted v1 (operational)**
@@ -130,6 +132,9 @@ Core spot is zero. Admin pre-activates per the README runbook.
 
 **Residual cost.** 1 USDC per vault deployment, paid by the admin during
 pre-activation. Treated as deployment overhead.
+
+**Risk:** none for users (guard catches first-deposit case at the EVM
+boundary). Operational only.
 
 ---
 
@@ -145,6 +150,10 @@ at a small NAV would block every legitimate deposit.
 **Default change in PR 3-NEW (`7f329d3`).** Cap defaults to
 `DEPOSIT_TVL_CAP_DISABLED`. Floor is irrelevant in the common case.
 When admin re-enables the cap, the floor applies as described.
+
+**Risk:** none. Floor is permissive (loosens rather than tightens the
+cap at small NAV); only effect is admin can't set a cap effectively
+below $10 at bootstrap, which is a non-issue post-activation.
 
 ---
 
@@ -172,8 +181,12 @@ catching this rounding edge.
   alerts suppress single-block `StakeBreachStarted` / `StakeBreachCured`
   pairs.
 - (b) Adjust threshold check to allow a small tolerance (≤1 wei) below
-  the cap. Adds complexity for marginal UX improvement. **Deferred to
-  PR 4 contingent on production observation showing it bites.**
+  the cap. Adds complexity for marginal UX improvement. **Indefinitely
+  deferred; revisit only if production observation shows the rounding
+  edge bites real users.**
+
+**Risk:** very low. Self-healing; no funds at risk; UI and indexer
+debounce eliminate the user-visible noise.
 
 ---
 
@@ -203,9 +216,13 @@ Window bounded by inter-tx latency (typically <60s on active vaults).
 - (b) **Document and push to integrators** — current choice. UI
   displays "estimated NAV" with a refresh affordance; indexers
   debounce on state-mutating events rather than view polling.
-- (a) **Deferred to PR 4 contingent on production monitoring data.**
-  If integrators report the staleness materially affecting UX (e.g.,
-  share-price displays oscillating), revisit.
+- (c) **Indefinitely deferred** — revisit option (a) only if
+  integrators report the staleness materially affecting UX
+  (e.g., share-price displays oscillating).
+
+**Risk:** low. Internal share math is unaffected; only the public view
+reads stale. Magnitude bounded by recent deposit amount; window bounded
+by inter-tx latency.
 
 **See also:** README "Integration notes for UI and indexer."
 
@@ -236,6 +253,13 @@ per probe 3, but unverified for spotSend specifically).
 production monitoring shows the over-count materially affecting share
 pricing for concurrent deposits.
 
+**Risk:** low. Symmetric direction to the (now-closed) deposit-side
+window; magnitude bounded by recent redemption amount; window bounded
+by HyperCore settlement (empirically 0 blocks). Concurrent
+deposit pricing skew within this window is the only user-visible
+effect, and it's biased *against* the next depositor by a tiny amount
+— not catastrophic, not exploitable.
+
 ---
 
 ## 10. Factory contract scope gap — **OPEN — deferred (target PR 8)**
@@ -259,3 +283,68 @@ The factory will be a separate file with its own audit scope. The
 vault's constructor is intentionally factory-agnostic (no
 factory-specific roles or hooks); the factory will be a thin wrapper
 that handles name registration + vault deployment.
+
+**Risk:** none for the vault contract itself. The factory gap is a
+deployment-tooling gap, not a contract-safety gap. Vaults deployed
+without the factory are functionally identical; the factory adds
+indexer-friendly events + name-registry constraints.
+
+**Next-up priority.** Factory is on the critical path between
+"contract PRs complete" and "audit firm engaged + UI work startable."
+Start immediately after PR 4 merges.
+
+---
+
+## 11. `transferOwnership` is immediate (not timelocked) — **OPEN — deferred (target PR 4.1 or future work)**
+
+**What.** PR 4 places `setDepositFee`, `setCreatorStakeCap`,
+`setDepositTvlCapBps`, and `setBuilderFee` behind a propose/execute
+delay. `Ownable.transferOwnership` (inherited from OZ) is **not**
+timelocked; an `onlyOwner` caller can hand off the admin role
+immediately to any address.
+
+**Why deferred.** `transferOwnership` is a different kind of operation
+(admin role handoff, not parametric). Wrapping it requires either
+overriding the inherited fn with its own propose/execute pattern or
+moving to `Ownable2Step` plus a custom delay. Conflating it with PR 4's
+parametric scope blurs the audit narrative. Treated as separate work.
+
+**Risk.** Compromised admin key can immediately transfer ownership
+away (or to a controlled address). PR 4's parametric timelocks bound
+the *parametric* abuse window but not this. Mitigated operationally:
+admin key handling (multisig / hardware wallet) is the primary control.
+
+**Target.** PR 4.1 (own scope) or accept indefinitely. Revisit when
+the multi-sig / role separation story is designed (likely tied to
+the factory work in PR 8).
+
+**Risk:** medium if admin key compromise is in scope; otherwise low.
+Off-chain mitigation (multisig / hardware wallet) is the practical
+control. PR 4's parametric timelocks bound the value an attacker can
+extract by changing fees, but not the ownership transfer itself.
+
+---
+
+## 12. Builder identity changes are not timelocked — **OPEN — accepted v1**
+
+**What.** `executeBuilderFeeChange` (PR 4) fires
+CoreWriter action 13 (`approveBuilderFee`) with the
+`(builder, maxFeeRate)` tuple. The `maxFeeRate` parameter is timelocked;
+the `builder` address parameter rides along with it in the same
+proposal. So *changing which address is the approved builder* uses the
+same 24h delay as a fee change.
+
+**Why this is fine.** The proposed design treats `builder` and
+`maxFeeRate` as a single tuple. Admin proposing a change to either
+field starts the 24h timer. There's no separate "fast path" for
+builder-identity-only changes that would bypass the delay.
+
+**What's *not* timelocked.** Switching to an entirely different
+builder address requires going through `proposeBuilderFeeChange` with
+both fields. This is correct and intentional — the delay applies.
+
+**Residual.** None. This entry exists to confirm the design covers the
+case, so the auditor sees that `builder` identity isn't a back door.
+
+**Risk:** none. The propose/execute path enforces the 24h delay
+regardless of which field is being changed in the tuple.
