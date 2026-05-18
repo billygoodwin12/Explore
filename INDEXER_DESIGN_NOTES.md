@@ -103,6 +103,12 @@ done. Asynchronous, retry-tolerant.
 Both run as services inside a single deployment (initially). They
 share:
 - Same Postgres instance (different schemas: `live`, `surveillance`).
+- **Separate connection pools** — surveillance analytics queries
+  (long-running, full-table scans for nightly recomputes) must not
+  block live indexer writes. PgBouncer with two pool configurations,
+  or two PoolBoy/pg pools at the application layer. Hard separation
+  prevents a slow surveillance query from starving the real-time
+  write path.
 - Same event reader for HyperEVM (real-time index writes to its
   schema; surveillance reads on-chain trade events from
   `live.vault_events` as a trigger for fill-pulls).
@@ -111,6 +117,7 @@ share:
 
 They don't share:
 - Update cadence (real-time vs hourly).
+- Connection pools (see above).
 - Failure semantics (real-time outage breaks UI; surveillance
   outage delays score updates but doesn't break UI).
 - Scaling axis (real-time scales with deployed-vault count;
@@ -250,17 +257,30 @@ From `Factory.sol`:
 ### 3.3 Derived events (computed from primary events + fills)
 
 These aren't on-chain events; they're indexer-internal "derived"
-events written when primary inputs change:
+events written when primary inputs change. **Every chain-derived
+row carries a `confirmation_status` field** so the API can surface
+"Pending confirmation" for events within the 12-block reconciliation
+window (decision 4):
+
+```
+confirmation_status: 'pending'    -- block confirmed but <12 blocks deep
+                   | 'finalized'  -- ≥12 blocks deep, reconciled clean
+                   | 'reverted'   -- reorg removed the event
+```
+
+UI default behavior: render pending events with a spinner/marker;
+flip to finalized after reconciliation; on the rare `reverted` path,
+unwind the optimistic display rather than silently correcting.
 
 | Derived event | Trigger | Latency tolerance |
 |---|---|---|
-| `nav_snapshot(vault, block, nav, supply)` | Any state-mutating vault event | Real-time |
-| `holder_balance_change(vault, address, oldShares, newShares)` | Deposited / Redeemed / Transfer | Real-time |
-| `breach_state_transition(vault, oldState, newState)` | StakeBreachStarted / Cured | Real-time |
+| `nav_snapshot(vault, block, nav, supply, status)` | Any state-mutating vault event | Real-time |
+| `holder_balance_change(vault, address, oldShares, newShares, status)` | Deposited / Redeemed / Transfer | Real-time |
+| `breach_state_transition(vault, oldState, newState, status)` | StakeBreachStarted / Cured | Real-time |
 | `fill_indexed(vault, hlFillId, counterparty, asset, side, px, sz)` | HL API poll returns new fills | ≤1 hour |
 | `concentration_recomputed(vault, top3pct, top10pct)` | Significant new fill + nightly batch | ≤24 hours |
 | `cross_vault_pair_observed(vaultA, vaultB, volumeIncrement)` | Fill where counterparty is also a Theorise vault | ≤1 hour |
-| `diversity_score_updated(vault, oldScore, newScore)` | Nightly batch + on-demand for >1% NAV moves | ≤24 hours |
+| `diversity_score_updated(vault, oldScore, newScore, configVersion)` | Nightly batch + on-demand for >1% NAV moves | ≤24 hours |
 
 ---
 
@@ -384,10 +404,48 @@ CREATE TABLE surveillance.creator_scores (
 | `live.vault_events` | **Forever** | Cheap (~1KB/event, ~$0.10/GB/mo on managed Postgres). Enables replay/audit. ~1M events ≈ 1GB ≈ $0.10/mo. Trivial. |
 | `live.vaults` / `live.holders` / `live.username_registry` | **Forever** (current-state mirror) | Required for the UI. Forever-storage is the natural fit. |
 | `live.nav_history` | **Forever**, downsampled after 90 days | Recent: per-event resolution. After 90 days: hourly downsampled. After 1 year: daily downsampled. Storage stays bounded; user-facing charts use the downsampled views. |
-| `surveillance.vault_fills` | **18 months** | Trade-level fill data is the storage cost driver. 18mo keeps a full year of context for surveillance + 6mo of "recent history" for creator profiles. Older fills are aggregated into `counterparty_snapshots` and `cross_vault_pairs` before deletion. |
+| `surveillance.vault_fills` | **18 months** | Trade-level fill data is the storage cost driver. 18mo keeps a full year of context for surveillance + 6mo of "recent history" for creator profiles. Older fills are aggregated into `counterparty_snapshots` and `cross_vault_pairs` **before** deletion (ordering enforced — see below). |
 | `surveillance.counterparty_snapshots` | **Forever** | Aggregate snapshots are small (~1KB per vault per day). Required for trend analysis on creator score history. |
 | `surveillance.cross_vault_pairs` | **Forever** | Same — small aggregate, useful long-term for forensics. |
 | `surveillance.creator_scores` | **Forever** with history (snapshot per recompute) | Provides explainability for "why did this creator's score drop." |
+
+**Aggregate-before-delete ordering (critical).** A nightly job is
+the authoritative aggregator. It runs in two phases per night:
+
+1. **Phase A (aggregate):** For all `vault_fills` rows older than
+   18 months minus 1 day, write/update the corresponding daily
+   row in `surveillance.daily_fill_aggregates` (a long-term table
+   that mirrors fill-level data at day granularity per vault per
+   counterparty). Phase A must complete and commit before phase B.
+2. **Phase B (delete):** Delete the now-aggregated `vault_fills`
+   rows. Driven by a checkpoint table that records the last
+   successfully aggregated day — phase B only deletes rows where
+   the daily aggregate is confirmed present.
+
+If phase A fails for any reason, phase B doesn't run that night and
+deletion is deferred. No data loss possible from aggregate/delete
+race conditions.
+
+Schema for the long-term aggregate:
+
+```sql
+CREATE TABLE surveillance.daily_fill_aggregates (
+    vault            BYTEA NOT NULL,
+    fill_date        DATE NOT NULL,
+    counterparty     BYTEA NOT NULL,
+    fill_count       INT NOT NULL,
+    volume_usdc      NUMERIC NOT NULL,
+    counterparty_is_theorise_vault BOOLEAN NOT NULL,
+    PRIMARY KEY (vault, fill_date, counterparty)
+);
+CREATE INDEX ON surveillance.daily_fill_aggregates (vault, fill_date);
+CREATE INDEX ON surveillance.daily_fill_aggregates (counterparty);
+
+CREATE TABLE surveillance.aggregation_checkpoint (
+    table_name       TEXT PRIMARY KEY,        -- 'vault_fills'
+    last_aggregated_through DATE NOT NULL     -- inclusive
+);
+```
 
 **GDPR / "right to be forgotten" stance.** On-chain data is
 immutable and public; we don't have the ability or right to delete
@@ -514,23 +572,83 @@ user-visible on creator profile page.
 
 **Definition.** Aggregate signal `0..1` per vault, intended to be
 the public-facing "is this creator trading on real markets" badge.
-Components (initial formula; revisit based on production data):
+Components (initial v1 formula; weights are **config-tunable**,
+not code constants — see below):
 
 ```
 score = 1.0
-score -= 0.50 × top1_pct           if top1_pct > 0.30
-score -= 0.30 × cross_vault_pct    if cross_vault_pct > 0.20
-score -= 0.20 × min(1, drawdown / 0.50)
+score -= w_top1     × top1_pct           if top1_pct > τ_top1
+score -= w_pair     × cross_vault_pct    if cross_vault_pct > τ_pair
+score -= w_drawdown × min(1, drawdown / 0.50)
 score = clamp(score, 0, 1)
 ```
 
-The formula is intentionally simple for v1. ML-based scoring is
-deferred (out-of-scope §0). Components are stored in
-`creator_scores.components` JSONB so the score is explainable per
-vault: "score is 0.4 because top1_pct = 0.42 (counterparty
-concentration)."
+**Initial v1 weights and thresholds (config defaults):**
 
-**Score visibility decision.** See §10 — this is a surfaced decision.
+```
+w_top1     = 0.50,  τ_top1 = 0.30
+w_pair     = 0.30,  τ_pair = 0.20
+w_drawdown = 0.20
+```
+
+**Config-tunability.** Weights and thresholds live in a
+`surveillance.score_config` table keyed by `config_version`. The
+score recompute job reads the current `config_version` row at
+batch start. Adjusting weights post-launch is an ops change
+(insert new row + flip pointer), not a code deploy. Historical
+scores remain pinned to the `config_version` they were computed
+under (see §8.2 reproducibility checklist).
+
+```sql
+CREATE TABLE surveillance.score_config (
+    config_version   INT PRIMARY KEY,
+    activated_at     TIMESTAMPTZ NOT NULL,
+    w_top1           NUMERIC(5,4) NOT NULL,
+    tau_top1         NUMERIC(5,4) NOT NULL,
+    w_pair           NUMERIC(5,4) NOT NULL,
+    tau_pair         NUMERIC(5,4) NOT NULL,
+    w_drawdown       NUMERIC(5,4) NOT NULL,
+    notes            TEXT
+);
+
+ALTER TABLE surveillance.creator_scores
+    ADD COLUMN config_version INT NOT NULL DEFAULT 1;
+```
+
+**Drawdown weight flagged as weakest signal.** `w_drawdown = 0.20`
+is a placeholder; drawdown is noisy and many legitimate strategies
+have high drawdown. Candidate adjustment at 30-day review: drop
+`w_drawdown` to `0.10` and reallocate the 0.10 to a "data
+sufficiency" check (vaults with <100 trades carry score
+uncertainty markup). Tracked as a v1.1 follow-up.
+
+**Missing categories** (documented for "future work" so reviewers
+see we've thought past v1 — not in scope for the v1 score):
+
+- **Time-pattern signals.** Wash trades often have suspicious
+  timing (round-number sizes, repeating intervals, end-of-period
+  spikes). Pattern detection requires sequence modelling — natural
+  v2 addition.
+- **Liquidity-context signals.** A trade against a known
+  market-maker counterparty is qualitatively different from a
+  trade against an anonymous EOA. Counterparty classification
+  (MM vs retail vs unknown) sharpens the concentration signal but
+  requires an off-chain MM directory.
+- **Creator-vs-vault separation.** Is the creator trading
+  personally on HL outside their vault, and are those trades
+  correlated with vault trades (creator's personal account as the
+  vault's counterparty)? Most direct rug-trade detection vector;
+  requires identity-linking the platform may not have visibility
+  into.
+
+The score is the public-tier-1 detection only. Private platform-
+action heuristics are out of band — see §11 for the tier split.
+
+**API rendering.** Indexer is the source of truth for both raw
+components and the derived risk-band classification (`Low`,
+`Medium`, `High`). UI consumes the band + components; threshold
+changes for the bands are a config change in the indexer, not a UI
+deploy. See §6.1 endpoint shape.
 
 ---
 
@@ -610,13 +728,35 @@ check, pre-deposit NAV for share-price preview).
 
 ### 6.4 Authentication + rate limiting
 
-Public reads, no auth required for v1. Standard rate limiting
-(e.g. 100 req/min per IP). API keys deferred to follow-up if
-abuse patterns emerge.
+Public reads, no auth required for v1.
+
+**Edge / CDN posture:**
+- **Cloudflare in front** (free tier sufficient for v1 traffic).
+- Aggressive edge caching: **5s TTL** on listing + per-vault state
+  endpoints. Vault state changes at most once per block (~1s) so
+  5s edge cache is comfortably within the freshness SLA and
+  dramatically reduces origin load. Cache key includes the
+  endpoint path + query params.
+- DDoS protection inherited from Cloudflare; sufficient for v1.
+
+**Differential rate limits:**
+
+| Endpoint class | Limit |
+|---|---|
+| General reads (listings, vault state, NAV, holders, positions) | **100 req/min/IP** |
+| Surveillance-component reads (`/vaults/:address/counterparty-score`, any score-component endpoints) | **20 req/min/IP** |
+| Pre-tx checks (`/usernames/:name/available`) | **200 req/min/IP** (likely to be polled aggressively during onboarding flows; lift the cap) |
+
+Rationale for the surveillance-endpoint differential: pulling full
+component breakdowns for every vault is meaningful compute. Normal
+UI traffic only fetches a few vault scores at a time. A scraper
+hammering surveillance endpoints gets throttled without affecting
+normal users.
 
 CORS open for the Theorise frontend domain; permissive (`*`) for
 read endpoints to support third-party indexer-reproducibility work
-(see §8).
+(see §8 + §11). API keys deferred to v2 if specific abuse patterns
+emerge.
 
 ---
 
@@ -866,17 +1006,195 @@ it means the discovery tab has no signal beyond TVL/recency.
 
 ---
 
+## 11. Tier 1 vs tier 2 detection split
+
+The indexer's open-source commitment (§8.2) raises a real concern:
+if we open-source every detection heuristic we ever build, advanced
+fraud actors can read our code and design around it. Exchanges keep
+internal fraud models private for exactly this reason.
+
+Theorise's resolution: **split detection into two tiers** with
+explicit, durable rules about what's in each.
+
+### 11.1 Tier 1 — open, score-affecting
+
+Everything that affects the **public-facing creator score**
+(`creator_scores.diversity_score` and its components) is open
+source. The §5 metrics (top1 concentration, cross-vault pair,
+tenure-adjusted drawdown) are tier 1.
+
+Properties tier 1 must hold:
+- **Deterministic.** Same inputs → same outputs.
+- **Reproducible.** Anyone can run the indexer and compute the
+  same scores.
+- **No external state.** Depends only on public chain data + HL
+  public API + the published `score_config` row.
+- **Versioned.** Formula changes bump `config_version`; historical
+  scores remain pinned.
+
+Why tier 1 must be open: the score is what users see when
+deciding whether to deposit. If it's a black box, users can't
+verify, and "Bill says this creator is clean" is the entire trust
+model. We're explicitly rejecting that.
+
+### 11.2 Tier 2 — private, platform-action-affecting
+
+Tier 2 detection runs **inside platform infrastructure**, **does
+not affect any public score**, and **may trigger platform-side
+actions** like manual review queues, throttling discoverability
+on the Discover tab, or de-listing for cause. Examples of what
+could live in tier 2 over time:
+
+- LLM-based pattern detection on trade sequences.
+- Cross-platform behavioural fingerprinting (e.g., this address
+  also trades on X exchange with suspicious patterns).
+- Internal collusion ring identification using graph analysis.
+- IP / device fingerprinting for sybil detection.
+- Off-chain identity correlation (KYC-tier signals).
+
+Tier 2 outputs do **not** flow into `creator_scores`. They flow
+into private `platform_ops.*` tables (separate schema, restricted
+access) and into ops tooling (Retool / Linear). A creator's public
+score remains the tier 1 derivation; tier 2 informs the platform's
+own action surface (e.g., should this creator appear in featured
+listings?).
+
+### 11.3 What this preserves
+
+- **Verifiability holds.** Anyone can fork the open indexer,
+  compute the public score, and verify it matches what we serve.
+  The score is the score.
+- **Platform-side defense is real.** We can develop and improve
+  tier 2 heuristics without giving fraud actors a roadmap.
+- **No mixed-signal scores.** Users don't see "score 0.6 because
+  reasons" — they see "score 0.6 because top1=0.35 and pair=0.18,"
+  the same components anyone running the indexer can verify.
+
+### 11.4 Operational discipline
+
+- Tier 2 detection code lives in a **separate private repo**
+  (`theorise/platform-ops` or similar), not in the open indexer.
+- Tier 2 tables live in the `platform_ops.*` Postgres schema with
+  restricted role access (read-only for ops, no public API
+  exposure).
+- Any time a tier 2 signal would graduate to affecting the public
+  score, it gets ported to tier 1 first — added to §5, weights
+  proposed, config-version bumped, open-sourced. No silent
+  privatisation of the public score.
+- Audit-firm framing: tier 1 is in the audit scope; tier 2 is
+  ops tooling outside the audit scope and explicitly documented as
+  such.
+
+---
+
+## 12. Data lineage
+
+For each public-facing data point exposed by the API, this section
+documents the path from **chain event** → **indexer table** →
+**API endpoint** → **UI surface**. Audit firms ask for this kind
+of data-flow documentation; having it up front saves cycles.
+
+### 12.1 Vault NAV (current)
+
+| Stage | Component |
+|---|---|
+| **Chain source** | `Deposited` / `Redeemed` events + periodic `eth_call vault.totalAssets()` |
+| **Authority** | Contract (`vault.totalAssets()`); indexer mirrors with ≤5s lag |
+| **Indexer table** | `live.nav_history` (samples) + `live.vaults.current_nav` (latest) |
+| **API endpoint** | `GET /vaults/:address` (`.current_nav` field) + `GET /vaults/:address/nav` (history) |
+| **UI surface** | NAV chart on vault profile, "Current NAV" line in Discover tab |
+| **Cache TTL** | 5s (CDN edge) |
+| **Confirmation status** | Exposed per sample; "Pending confirmation" badge for <12-block-deep samples |
+
+### 12.2 Holder positions
+
+| Stage | Component |
+|---|---|
+| **Chain source** | `Deposited` / `Redeemed` + ERC-20 `Transfer` events |
+| **Authority** | Contract (`vault.balanceOf(address)`); indexer mirrors |
+| **Indexer table** | `live.holders` |
+| **API endpoint** | `GET /vaults/:address/holders` + `GET /users/:address/positions` |
+| **UI surface** | Holders list on vault page, "Your positions" on user dashboard |
+| **Cache TTL** | 5s |
+| **Confirmation status** | Per-row pending/finalized |
+
+### 12.3 Trade activity
+
+| Stage | Component |
+|---|---|
+| **Chain source** | `OrderPlaced` events from vault + HL fill data from API |
+| **Authority** | Chain events for on-chain side; HL API for fill price/sz/counterparty |
+| **Indexer table** | `live.vault_events` (orders) + `surveillance.vault_fills` (fills) |
+| **API endpoint** | `GET /vaults/:address/trades` (joined view) |
+| **UI surface** | Trade history tab on vault page |
+| **Cache TTL** | 30s (slower-changing) |
+| **Lineage notes** | Fill counterparty resolved via HL API; if HL API is delayed, on-chain order shows without fill detail until joined. |
+
+### 12.4 Diversity score + components
+
+| Stage | Component |
+|---|---|
+| **Chain source** | None directly — derived from on-chain trade events + HL fills |
+| **Authority** | **Indexer only** (no on-chain equivalent) |
+| **Indexer table** | `surveillance.creator_scores` (latest) + recomputation history |
+| **API endpoint** | `GET /vaults/:address/counterparty-score` |
+| **UI surface** | Diversity badge on Discover listings, "Risk band" indicator on vault profile, expandable component breakdown |
+| **Cache TTL** | 1 hour (recomputed nightly + on-demand for >1% NAV moves) |
+| **Trust narrative** | Indexer is open-source (§8.2); anyone can fork + verify the same score against public data + the published `score_config` |
+| **Tier** | Tier 1 (see §11) |
+
+### 12.5 Vault registry (discovery + lookup)
+
+| Stage | Component |
+|---|---|
+| **Chain source** | `VaultDeployed` + `UsernameClaimed` events from Factory |
+| **Authority** | Contract (`factory.usernameToVault`, `creatorToVault`); indexer mirrors |
+| **Indexer table** | `live.vaults`, `live.username_registry` |
+| **API endpoint** | `GET /vaults` (listing), `GET /vaults/:address` (detail), `GET /usernames/:name/available` (pre-tx) |
+| **UI surface** | Discover tab, profile page, signup flow |
+| **Cache TTL** | 5s for listings; **no cache** for `/usernames/:name/available` (must hit origin to avoid serving stale "available" to a username already claimed in the last second) |
+| **Critical authority note** | UI **must** re-check username availability via direct contract call before submitting `createVault` — indexer is convenience, contract is truth |
+
+### 12.6 Breach state
+
+| Stage | Component |
+|---|---|
+| **Chain source** | `StakeBreachStarted` / `StakeBreachCured` events |
+| **Authority** | Contract (`vault.isInBreach()`); indexer mirrors |
+| **Indexer table** | `live.vaults.breach_state`, `live.vaults.breach_started_at` |
+| **API endpoint** | `GET /vaults/:address` (field) |
+| **UI surface** | Breach banner on vault profile, "in breach" filter on Discover tab |
+| **Cache TTL** | 5s |
+| **UI hardening** | When showing the banner, fall back to direct on-chain read to confirm — breach state is a depositor-decision-affecting signal |
+
+### 12.7 Pending admin proposals
+
+| Stage | Component |
+|---|---|
+| **Chain source** | PR 4 timelock events (`*ChangeProposed`, `*Executed`, `*Cancelled`) + PR 5 float withdrawal events |
+| **Authority** | Contract (`pendingFeeChange`, `pendingStakeCap`, etc. + `pendingFloatWithdrawal` on factory) |
+| **Indexer table** | `live.vault_pending_changes` (per vault + per parameter) + `live.factory_pending_changes` |
+| **API endpoint** | `GET /vaults/:address` (`.pending_changes` array) + `GET /factory/state` (`.pendingFloatWithdrawal`) |
+| **UI surface** | "Admin announcements" panel on vault profile; banner if anything depositor-affecting is pending (fee change, cap change) |
+| **Cache TTL** | 5s |
+| **Trust narrative** | Public timelock visibility is the depositor's defense — they have 24h or 7d to redeem before changes take effect |
+
+---
+
 ## Quick reference
 
-| # | Decision | Recommendation |
+| # | Decision | Locked answer |
 |---|---|---|
-| 1 | DB topology | Shared Postgres, separate schemas |
-| 2 | Fill retention | 18 months; aggregate snapshots forever |
-| 3 | Score visibility | Public per-vault + components |
-| 4 | Reorg depth | 1 block real-time + 12-block reconciliation |
-| 5 | Open-source timing | Day one |
-| 6 | Launch dependency | Yes — gate mainnet on indexer operational |
-| 7 | S3 archive | In scope for v1 (low priority, reuse HIP-3) |
-| 8 | Score formula | Ship initial heuristic, iterate post-launch |
+| 1 | DB topology | Shared Postgres, separate schemas, **separate connection pools** |
+| 2 | Fill retention | 18 months raw, daily aggregates forever, **aggregate-before-delete ordering** |
+| 3 | Score visibility | Public per-vault + components; **indexer owns risk-band classification** (UI just renders) |
+| 4 | Reorg depth | 1 block real-time + 12-block reconciliation; **`confirmation_status` field exposed per event** |
+| 5 | Open-source timing | Day one, separate repo, MIT/Apache 2.0; **tier 1 (open, score-affecting) vs tier 2 (private, platform-action-affecting) split documented in §11** |
+| 6 | Launch dependency | **Locked.** Mainnet gates on indexer operational. |
+| 7 | S3 archive | In scope for v1; **real-time HL API integration launch-blocking, S3 puller within 30 days post-launch** |
+| 8 | Score formula | Ship 3-component heuristic; **weights config-tunable via `score_config` table**, revisit at 30 days; missing categories documented |
+| Sub-1 | Initial weights | `0.50 / 0.30 / 0.20` config defaults; drawdown weight flagged as weakest signal (candidate to drop to 0.10 post-data) |
+| Sub-2 | Alert thresholds | `top1_pct > 0.30` for 7d, `pair_ratio > 0.20` for 7d; **log every threshold-trigger event for tuning data** |
+| Sub-3 | API auth | Open public reads + Cloudflare CDN + 5s edge TTL + differential rate limits (100/min general, 20/min surveillance, 200/min username-check). API keys deferred to v2. |
 
-Awaiting decision-by-decision sign-off before scaffolding repo.
+All decisions locked. Ready for repo scaffolding.

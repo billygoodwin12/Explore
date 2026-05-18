@@ -481,3 +481,50 @@ four PR 4 cancels to be permissionless, matching PR 5's design.
 **Risk:** very low. Griefing surface is bounded by gas economics
 (attacker pays each cancel) and the legitimate-admin's ability to
 re-propose at will.
+
+---
+
+## 17. Off-chain surveillance indexer — launch-blocking commitment — **OPEN — accepted v1**
+
+**What.** Theorise's defense against creator wash-trading and
+cross-vault collusion is implemented in the off-chain indexer
+(`INDEXER_DESIGN_NOTES.md`), not in the contracts. The contracts
+provide the audit trail (events, on-chain trade signals); the
+indexer joins those against HyperLiquid fill data to compute
+counterparty concentration, cross-vault pair concentration, and
+the derived diversity score that gates discoverability.
+
+**Commitment.** Mainnet launch **gates on the indexer being
+operational**. Decision 6 in `INDEXER_DESIGN_NOTES.md` §10 is
+explicit: shipping contracts to mainnet without surveillance is
+shipping a financial product without the defense mechanism
+documented as essential. The audit window (3-6 weeks) is the
+natural indexer-build window (estimated 2 weeks of focused work);
+they run in parallel.
+
+**What "operational" means at launch:**
+- Real-time event indexing for `Factory` + every deployed
+  `CreatorVault`. p50 freshness ≤ 5s.
+- HL API fill-data integration with adaptive per-vault polling.
+  p50 freshness ≤ 1 hour for surveillance.
+- Initial 3-component diversity score computed per vault
+  (`INDEXER_DESIGN_NOTES.md` §5.5) with config-tunable weights.
+- Public read API exposed for the UI.
+- Open-source repo published with reproducibility checklist.
+
+**What's deferred to within 30 days post-launch (not blocking):**
+- HL S3 archive backfill puller (only needed for cold-start
+  recovery of vaults deployed >7 days before the indexer started
+  indexing them; rare in practice).
+- Tier 2 private detection layer (`INDEXER_DESIGN_NOTES.md` §11.2).
+  Tier 1 public scoring is the launch commitment.
+
+**Risk:** low for contracts (none of this is contract-side). The
+risk is product-side: a launch without surveillance creates a
+window where bad-actor creators can wash-trade undetected and
+damage platform reputation before defenses are in place.
+Mitigated by the launch gating.
+
+**Tracking.** Indexer build progress is tracked outside this
+repo. Re-verify operational status before flipping the contract
+admin from testnet config to mainnet config at launch.
