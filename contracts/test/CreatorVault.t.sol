@@ -1366,14 +1366,35 @@ contract CreatorVaultTest is Test {
         vm.stopPrank();
     }
 
-    function test_non_admin_cannot_cancel_any() public {
+    /// @notice Cancels are permissionless across all four parameters
+    ///         (defense against admin-key compromise queuing a hostile
+    ///         change during the timelock window). Any observer can
+    ///         abort. Griefing risk (random user cancels legitimate
+    ///         proposal) is bounded -- admin re-proposes and waits.
+    function test_anyone_can_cancel_pending_changes() public {
         vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        vm.prank(admin); vault.proposeTvlCapChange(500);
+        vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
+
+        // Non-admin (`creator` here, but could be any address) cancels
+        // all four pending proposals successfully.
         vm.startPrank(creator);
-        vm.expectRevert(); vault.cancelPendingFeeChange();
-        vm.expectRevert(); vault.cancelPendingStakeCapChange();
-        vm.expectRevert(); vault.cancelPendingTvlCapChange();
-        vm.expectRevert(); vault.cancelPendingBuilderFeeChange();
+        vault.cancelPendingFeeChange();
+        vault.cancelPendingStakeCapChange();
+        vault.cancelPendingTvlCapChange();
+        vault.cancelPendingBuilderFeeChange();
         vm.stopPrank();
+
+        // All pending state cleared.
+        (, , uint64 feeEa) = vault.pendingFeeChange();
+        (, uint64 capEa) = vault.pendingStakeCap();
+        (, uint64 tvlEa) = vault.pendingTvlCap();
+        (, , uint64 bfEa) = vault.pendingBuilderFee();
+        assertEq(feeEa, 0);
+        assertEq(capEa, 0);
+        assertEq(tvlEa, 0);
+        assertEq(bfEa, 0);
     }
 }
 

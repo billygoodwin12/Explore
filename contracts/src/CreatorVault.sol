@@ -628,7 +628,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit DepositFeeUpdated(p.newBps, p.newRecipient);
         emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
     }
-    function cancelPendingFeeChange() external onlyOwner {
+    /// @notice Permissionless cancel of a pending fee change. Defense
+    ///         against admin-key compromise queuing a hostile fee
+    ///         increase during the 24h window — any observer can abort.
+    ///         Griefing risk (random user cancels legitimate proposal)
+    ///         is bounded: admin re-proposes and waits another 24h.
+    function cancelPendingFeeChange() external {
         PendingFeeChange memory p = pendingFeeChange;
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingFeeChange;
@@ -661,7 +666,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit StakeCapUpdated(old, p.newCap);
         emit StakeCapChangeExecuted(p.newCap);
     }
-    function cancelPendingStakeCapChange() external onlyOwner {
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale (defense against admin-key compromise).
+    function cancelPendingStakeCapChange() external {
         PendingStakeCap memory p = pendingStakeCap;
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingStakeCap;
@@ -695,7 +702,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit DepositTvlCapUpdated(old, p.newBps);
         emit TvlCapChangeExecuted(p.newBps);
     }
-    function cancelPendingTvlCapChange() external onlyOwner {
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale.
+    function cancelPendingTvlCapChange() external {
         PendingTvlCap memory p = pendingTvlCap;
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingTvlCap;
@@ -731,7 +740,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit BuilderApproved(p.builder, p.maxFeeRate);
         emit BuilderFeeChangeExecuted(p.builder, p.maxFeeRate);
     }
-    function cancelPendingBuilderFeeChange() external onlyOwner {
+    /// @notice Permissionless cancel — see `cancelPendingFeeChange` for
+    ///         rationale.
+    function cancelPendingBuilderFeeChange() external {
         PendingBuilderFee memory p = pendingBuilderFee;
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingBuilderFee;
