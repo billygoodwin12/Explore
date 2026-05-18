@@ -20,7 +20,10 @@ contract DeployCreatorVault is Script {
         require(cdw != address(0), "CDW_ADDRESS unset for unknown chainid");
 
         vm.startBroadcast();
-        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, name_, symbol_);
+        // factory_ = address(0): direct (non-factory) deploy; the vault's
+        // `bootstrapDeposit` entry point is permanently locked and the
+        // README pre-activation runbook applies as before.
+        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), name_, symbol_);
         vm.stopBroadcast();
 
         console.log("CreatorVault deployed at:", address(vault));
