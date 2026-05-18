@@ -57,6 +57,7 @@ contract CreatorVaultTest is Test {
             creator,
             admin,
             address(cdw),
+            address(0),
             "Theorise BTC Long",
             "tVAULT"
         );
@@ -190,7 +191,7 @@ contract CreatorVaultTest is Test {
 
     function test_constructor_rejects_zero_cdw() public {
         vm.expectRevert(CreatorVault.ZeroAddress.selector);
-        new CreatorVault(IERC20(address(usdc)), creator, admin, address(0), "x", "x");
+        new CreatorVault(IERC20(address(usdc)), creator, admin, address(0), address(0), "x", "x");
     }
 
     // ─── ERC-4626 surface ──────────────────────────────────────────
@@ -351,6 +352,7 @@ contract CreatorVaultTest is Test {
             creator,
             admin,
             address(cdw),
+            address(0),
             "Theorise BTC Long",
             "tVAULT"
         );
@@ -462,7 +464,7 @@ contract CreatorVaultTest is Test {
         // depth (per-vault basis).
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _setCoreSpot(0);
         _setCorePerp(0);
@@ -472,7 +474,7 @@ contract CreatorVaultTest is Test {
     function test_deposit_reverts_when_vault_not_activated() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _setCoreSpot(0); // fresh vault, admin has NOT pre-activated
         _setCorePerp(0);
@@ -486,7 +488,7 @@ contract CreatorVaultTest is Test {
     function test_max_deposit_zero_when_not_activated() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _setCoreSpot(0);
         _setCorePerp(0);
@@ -498,7 +500,7 @@ contract CreatorVaultTest is Test {
         // Cap is disabled by default in PR 3-NEW. Admin opts in to 5%.
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -516,7 +518,7 @@ contract CreatorVaultTest is Test {
     function test_tvl_cap_allows_at_or_below_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -532,7 +534,7 @@ contract CreatorVaultTest is Test {
         // ≥ MIN_DEPOSIT_USDC are accepted regardless.
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -549,7 +551,7 @@ contract CreatorVaultTest is Test {
     function test_max_deposit_reflects_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -622,7 +624,7 @@ contract CreatorVaultTest is Test {
     function test_sandwich_window_eliminated_by_tracker_under_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         // Cap defaults to disabled in PR 3-NEW. Admin opts back in to the
         // 5% cap so this test still verifies "no divergence under cap."
@@ -1140,7 +1142,7 @@ contract CreatorVaultTest is Test {
         // must revert with ReentrancyGuardReentrantCall.
         ReentrantCdw maliciousCdw = new ReentrantCdw(address(usdc));
         CreatorVault rentVault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(maliciousCdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(maliciousCdw), address(0), "x", "y"
         );
         maliciousCdw.setVault(rentVault);
 
@@ -1396,6 +1398,151 @@ contract CreatorVaultTest is Test {
         assertEq(tvlEa, 0);
         assertEq(bfEa, 0);
     }
+
+    // ─── PR 5 commit 3a: bootstrapDeposit (vault side) ────────────────
+
+    function test_bootstrap_reverts_on_direct_deploy_vault() public {
+        assertEq(vault.FACTORY(), address(0));
+        vm.expectRevert(CreatorVault.NotFactory.selector);
+        vault.bootstrapDeposit(creator, 1000e6);
+    }
+
+    function test_bootstrap_reverts_when_msg_sender_not_factory() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        vm.expectRevert(CreatorVault.NotFactory.selector);
+        vault.bootstrapDeposit(creator, 1000e6);
+        vm.expectRevert(CreatorVault.NotFactory.selector);
+        v.bootstrapDeposit(creator, 1000e6);
+    }
+
+    function test_bootstrap_happy_path_mints_against_pre_bootstrap_nav() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        _setCoreSpotFor(address(v), 0);
+        _setCorePerpFor(address(v), 0);
+
+        uint256 stake = 1000e6;
+        vm.prank(factoryAddr);
+        uint256 shares = v.bootstrapDeposit(creator, stake);
+
+        assertEq(shares, stake * 1e6, "first depositor shares = amount x decimalsOffset");
+        assertEq(v.balanceOf(creator), shares);
+        assertEq(v.pendingBridgedUsdc(), stake, "pending equals net stake (gross-fee absorbed by factory)");
+        assertEq(v.totalAssets(), stake, "totalAssets reflects post-bootstrap NAV via pending");
+    }
+
+    function test_bootstrap_is_one_shot_via_flag_not_supply() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        _setCoreSpotFor(address(v), 0);
+        _setCorePerpFor(address(v), 0);
+
+        vm.prank(factoryAddr); v.bootstrapDeposit(creator, 1000e6);
+
+        vm.prank(factoryAddr);
+        vm.expectRevert(CreatorVault.AlreadyBootstrapped.selector);
+        v.bootstrapDeposit(creator, 500e6);
+    }
+
+    function test_bootstrap_zero_creator_reverts() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        vm.prank(factoryAddr);
+        vm.expectRevert(CreatorVault.ZeroAddress.selector);
+        v.bootstrapDeposit(address(0), 1000e6);
+    }
+
+    function test_bootstrap_zero_amount_reverts() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        vm.prank(factoryAddr);
+        vm.expectRevert(CreatorVault.ZeroAmount.selector);
+        v.bootstrapDeposit(creator, 0);
+    }
+
+    function test_bootstrap_bypasses_VaultNotActivated_for_followup_deposits() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        _setCoreSpotFor(address(v), 0);
+        _setCorePerpFor(address(v), 0);
+
+        vm.prank(factoryAddr); v.bootstrapDeposit(creator, 1000e6);
+
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(address(v), type(uint256).max);
+        vm.prank(bob);
+        v.deposit(100e6, bob);
+        assertGt(v.balanceOf(bob), 0, "follow-up deposit succeeded despite coreSpot=0");
+    }
+
+    function test_direct_deploy_vault_still_enforces_VaultNotActivated() public {
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+        );
+        _setCoreSpotFor(address(v), 0);
+        _setCorePerpFor(address(v), 0);
+
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(address(v), type(uint256).max);
+        vm.prank(bob);
+        vm.expectRevert(CreatorVault.VaultNotActivated.selector);
+        v.deposit(100e6, bob);
+    }
+
+    /// @dev Smoke test: bootstrap emits no spurious StakeBreachStarted
+    ///      event. NOT a real exercise of the dilution-ordering property
+    ///      from KNOWN_ISSUES §2 — on a fresh vault the creator owns
+    ///      100% of supply post-mint and `_requiredCreatorStake()` is
+    ///      `min(5% of TVL, creatorStakeCap)`, which the creator
+    ///      trivially exceeds. The dilution-ordering case is covered by
+    ///      `test_no_transient_breach_event_during_deposit_settlement`
+    ///      (PR 3-NEW); bootstrap can't reproduce it because there's no
+    ///      follower to dilute against.
+    function test_bootstrap_emits_no_spurious_breach_events() public {
+        address factoryAddr = address(0xFAC);
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+        );
+        _setCoreSpotFor(address(v), 0);
+        _setCorePerpFor(address(v), 0);
+
+        vm.recordLogs();
+        vm.prank(factoryAddr); v.bootstrapDeposit(creator, 1000e6);
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 breachTopic = keccak256("StakeBreachStarted(uint256,uint256,uint256)");
+        for (uint256 i = 0; i < entries.length; i++) {
+            assertTrue(entries[i].topics[0] != breachTopic, "StakeBreachStarted must not fire on bootstrap");
+        }
+    }
+
+    function _setCoreSpotFor(address vaultAddr, uint256 sixDec) internal {
+        vm.mockCall(
+            HLConstants.SPOT_BALANCE_PRECOMPILE,
+            abi.encode(vaultAddr, HLConstants.USDC_SPOT_INDEX),
+            abi.encode(uint64(sixDec * 100), uint64(0), uint64(0))
+        );
+    }
+
+    function _setCorePerpFor(address vaultAddr, uint256 sixDec) internal {
+        vm.mockCall(
+            HLConstants.ACCOUNT_MARGIN_SUMMARY_PRECOMPILE,
+            abi.encode(uint32(0), vaultAddr),
+            abi.encode(int64(uint64(sixDec)), uint64(0), uint64(0), int64(0))
+        );
+    }
 }
 
 /// @dev Test harness exposing the in-flight tracker internals for direct
@@ -1409,9 +1556,10 @@ contract CreatorVaultHarness is CreatorVault {
         address creator_,
         address admin_,
         address coreDepositWallet_,
+        address factory_,
         string memory name_,
         string memory symbol_
-    ) CreatorVault(usdc, creator_, admin_, coreDepositWallet_, name_, symbol_) {}
+    ) CreatorVault(usdc, creator_, admin_, coreDepositWallet_, factory_, name_, symbol_) {}
 
     function exposed_settlePending() external {
         _settlePending();
@@ -1464,7 +1612,7 @@ contract CreatorVaultTrackerTest is Test {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVaultHarness(
-            IERC20(address(usdc)), creator, admin, address(cdw), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
         );
         vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
         _setCoreSpot(0);

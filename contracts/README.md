@@ -103,6 +103,95 @@ network. See `INVESTIGATION_EVM_DEPOSIT.md` §12.1 for the consolidated
 bridge verification narrative (three mainnet probes, cross-block
 settlement empirically 0 blocks).
 
+## Factory deployment runbook (PR 5)
+
+For production multi-vault deployment, use `Factory.sol` rather than
+`DeployCreatorVault.s.sol` directly. `DeployCreatorVault` remains
+useful for dev / test deploys where you want a single vault with the
+old pre-activation runbook; production uses the factory's atomic
+flow.
+
+### One-time per network
+
+1. **Generate the reserved-name hash list.** From `contracts/`:
+   ```sh
+   forge script script/GenerateReservedNames.s.sol
+   ```
+   Copy the printed `bytes32[] memory reserved = new bytes32[](50);
+   reserved[i] = bytes32(...);` block into your factory deploy
+   script. The script enforces lowercase-ASCII at generation time
+   so the on-chain hash set can't drift into case-attack territory.
+   Re-run after editing the canonical name list inside the script.
+2. **Deploy the factory** with `(USDC, CoreDepositWallet,
+   protocolAdmin, reservedHashes)`. Factory address is now the
+   canonical entry point for all subsequent vault deployments on
+   that network.
+3. **Fund the float.** Admin tops up the factory's `floatBalance`
+   to absorb activation fees. Recommended cadence: batches of
+   100 USDC (≈50 vaults of headroom). From an admin EOA:
+   ```sh
+   cast send $FACTORY "treasuryFundFloat(uint256)" 100000000 \
+     --private-key $ADMIN_PK --rpc-url <hyperevm>
+   ```
+   Verify via `cast call $FACTORY "floatBalance()(uint256)"`.
+4. **Verify by deploying a test vault.** From any EOA with ≥$1000
+   USDC + gas:
+   ```sh
+   cast send $FACTORY "createVault(string,uint256,string,string)" \
+     "testuser" 1000000000 "Theorise testuser" "TUSR" \
+     --private-key $CREATOR_PK --rpc-url <hyperevm>
+   ```
+   Read the deployed vault address from the `VaultDeployed` event.
+
+### Per-vault deployment (production)
+
+Creator self-deploys. UI walks the creator through:
+
+1. Choose a username (UI calls `factory.isUsernameAvailable(name)`
+   pre-submission for instant feedback).
+2. Approve USDC: `usdc.approve(factory, initialStake)` for the
+   chosen stake amount (≥ `MIN_INITIAL_STAKE_USDC` = $1000).
+3. Submit: `factory.createVault(name, initialStake, vaultName,
+   vaultSymbol)`. Single tx; either succeeds completely (vault
+   deployed, creator gets shares, registry written) or reverts
+   atomically.
+4. After confirm: read the vault address from the `VaultDeployed`
+   event. UI can also derive it pre-confirm via CREATE2:
+   ```
+   bytes32 salt = factory.vaultSalt(creator, lowercase(name));
+   address = keccak256(0xff || factory || salt ||
+                       keccak256(initCode))
+   ```
+   where `initCode` is the standard CREATE2 derivation off-chain.
+
+### Float monitoring + alerts
+
+Off-chain monitoring must watch `floatBalance()` and alert admin when
+it drops below an operational threshold. If the float exhausts,
+`createVault` reverts `FloatExhausted(have, need)` — no funds at risk
+but new deploys break until top-up. See `KNOWN_ISSUES.md` §14.
+
+### Float withdrawal (admin)
+
+Admin can drain unused float via the 7-day timelock:
+
+```sh
+cast send $FACTORY "proposeFloatWithdrawal(address,uint256)" \
+  $TREASURY 50000000 --private-key $ADMIN_PK ...
+# wait 7 days
+cast send $FACTORY "executeFloatWithdrawal()" \
+  --private-key $ADMIN_PK ...
+```
+
+Anyone can cancel a pending withdrawal during the window (defense
+against admin-key compromise):
+
+```sh
+cast send $FACTORY "cancelPendingFloatWithdrawal()" ...
+```
+
+See `KNOWN_ISSUES.md` §16 for the permission rationale.
+
 ## Per-tx TVL cap (admin-controlled risk lever)
 
 The per-tx TVL cap was the PR 2-NEW interim mitigation for the

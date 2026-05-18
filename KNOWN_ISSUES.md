@@ -262,36 +262,44 @@ effect, and it's biased *against* the next depositor by a tiny amount
 
 ---
 
-## 10. Factory contract scope gap — **OPEN — deferred (target PR 8)**
+## 10. Factory contract scope gap — **CLOSED in PR 5 commits `d80d69b` → `0539ee3`**
 
-**What.** Production deployment requires a factory contract for
-single-call vault creation, username uniqueness enforcement
-(case-insensitive, locked at deploy), reserved-name list,
-`VaultDeployed` event emission for the indexer, and atomic creator
-initial-stake deposit at deploy time. **No factory exists yet.**
+**What (original).** Production deployment required a factory contract
+for single-call vault creation, username uniqueness enforcement,
+reserved-name list, indexer events, and atomic creator stake deposit.
 
-**Current state.** `CreatorVault.sol`'s constructor accepts creator,
-admin, and `coreDepositWallet` directly. `DeployCreatorVault.s.sol`
-deploys one vault per script run with the deployer as creator/admin
-by default. Sufficient for testing and audit; insufficient for
-production multi-vault deployment.
+**Closure.** PR 5 ships `contracts/src/Factory.sol`. Eleven design
+decisions locked in `FACTORY_DESIGN_NOTES.md`. Audit-narrative summary
+in `INVESTIGATION_EVM_DEPOSIT.md` §16. Highlights:
+- `createVault(username, initialStake, name, symbol)` atomic single-tx
+  flow: validate → CREATE2-deploy → bridge activation fee + stake →
+  `bootstrapDeposit` → register → emit events.
+- Username scheme: case-insensitive, 3–30 chars `[a-z0-9_]`, no
+  consec/leading/trailing `_`, ~50 hardcoded reserved names.
+- Salt = `keccak256(factory_addr, creator, lowercase_username)`.
+- Permissionless creation with `MIN_INITIAL_STAKE_USDC = $1000` spam
+  guard.
+- Protocol-funded float absorbs the 1 USDC `newCoreAccountFee` per
+  vault; topped up via `treasuryFundFloat` (immediate, admin-only);
+  withdrawn via 7-day timelocked propose/execute with permissionless
+  cancel.
+- On-chain `address[]` vault list with paginated getter (limit ≤ 100);
+  `isCanonicalVault` for client-side authenticity checks.
+- Immutable factory + immutable `protocolAdmin`; redeploy + parallel
+  operation if a bug requires v2. See §13 below.
 
-**Target.** PR 8 (separate scope), to land prior to audit engagement.
+**Vault-side change.** `CreatorVault` gained `address public immutable
+FACTORY` (set to `address(0)` for direct deploys) and a single
+`bootstrapDeposit(address creator, uint256 amount)` factory-only entry
+point that bypasses `VaultNotActivated`. Necessary because within the
+same tx as the factory's activation bridge, the spot precompile reads
+0 (case (b) confirmed empirically — INVESTIGATION §15).
 
-**Auditor note.** PR 3-NEW's audit scope is the vault contract itself.
-The factory will be a separate file with its own audit scope. The
-vault's constructor is intentionally factory-agnostic (no
-factory-specific roles or hooks); the factory will be a thin wrapper
-that handles name registration + vault deployment.
-
-**Risk:** none for the vault contract itself. The factory gap is a
-deployment-tooling gap, not a contract-safety gap. Vaults deployed
-without the factory are functionally identical; the factory adds
-indexer-friendly events + name-registry constraints.
-
-**Next-up priority.** Factory is on the critical path between
-"contract PRs complete" and "audit firm engaged + UI work startable."
-Start immediately after PR 4 merges.
+**Verification.** 49 factory tests + 9 vault bootstrap tests in
+`Factory.t.sol` / `CreatorVault.t.sol`. Suite total 197/197. Coverage
+includes happy path, all 6 revert paths, CREATE2 determinism,
+pagination boundaries, float timelock state machine, bootstrap bypass
+isolation (does not skip MIN_DEPOSIT_USDC / TVL cap).
 
 ---
 
@@ -348,3 +356,175 @@ case, so the auditor sees that `builder` identity isn't a back door.
 
 **Risk:** none. The propose/execute path enforces the 24h delay
 regardless of which field is being changed in the tuple.
+
+---
+
+## 13. Factory is immutable — migration via parallel deploy — **OPEN — accepted v1**
+
+**What.** `contracts/src/Factory.sol` has no upgrade mechanism. If a
+bug is found post-launch, remediation requires deploying a new factory
+contract; existing vaults remain valid against the old factory.
+
+**Why immutable.** Decision 4 in `FACTORY_DESIGN_NOTES.md`.
+Upgradeable factories (UUPS or beacon proxy) would:
+- Add an admin upgrade key whose compromise = factory logic swap = all
+  future vault deployments compromised (existing bytecode-immutable
+  vaults unaffected, but trust narrative weakens).
+- Need their own propose/execute timelock to be safe, mirroring PR 4's
+  pattern, ~200 LOC of additional surface.
+- Couple factory + vault versioning, complicating audit scope.
+
+**Migration path if v2 needed.**
+1. Deploy `FactoryV2` with the desired changes.
+2. Optionally seed V2's username registry from V1 events (off-chain
+   indexer reconstruction → on-chain constructor arg) so existing
+   handles can't be re-claimed under V2.
+3. Indexer subscribes to `VaultDeployed` events from both factories.
+4. UI surfaces both factories' vaults; identical user-facing behavior.
+5. Existing vaults continue calling V1's address; the address never
+   changes for them. New deploys route through V2.
+
+**Risk:** medium-low. A bug in the factory affects all *new*
+deployments until V2 ships; deployed vaults are unaffected. AUM
+exposure depends on production cadence. Revisit upgradeability if any
+single vault holds >$10M (then beacon-proxy on `CreatorVault.sol`
+itself with multi-day timelock becomes the right answer).
+
+**Auditor note.** Audit scope is the factory contract as deployed.
+Future V2 will be a separate audit engagement.
+
+---
+
+## 14. Activation fee absorption — protocol cost — **OPEN — accepted v1 (operational)**
+
+**What.** Each `createVault` call consumes 1 USDC from the factory's
+`floatBalance` as Circle's `newCoreAccountFee` (a one-time charge per
+fresh HyperCore account). The fee is unrecoverable by design — Circle
+absorbs it as activation overhead.
+
+**Operational cost.** ~$1 per vault, paid by the protocol treasury.
+At 1,000 vaults in year 1 that's $1,000 of cumulative cost;
+rounding-error against any other launch line-item. Decision 2 in
+`FACTORY_DESIGN_NOTES.md` rationalises this: cleaner UX (creator
+deposits exactly what they meant, no "minus fee" disclosure) is worth
+the protocol-side cost.
+
+**Monitoring.** Off-chain alerting must watch `floatBalance()` and
+notify admin when the float drops below an operational threshold (e.g.
+50 vaults of headroom = 50 USDC). If float exhausts, `createVault`
+reverts `FloatExhausted(have, need)` — no user funds at risk, but UX
+breaks for new deploys until admin tops up via `treasuryFundFloat`.
+
+**Top-up cadence.** Recommend batches of 100 USDC (≈50 vaults of
+headroom). Admin op is immediate (not timelocked) — `treasuryFundFloat`
+adds assets and is never grief.
+
+**Risk:** low. Operational; no user funds at risk. Mitigation is
+monitoring + alerting.
+
+---
+
+## 15. Username squatting — accepted v1 (out of scope for v1) — **OPEN — accepted v1**
+
+**What.** Anyone with $1,000 (the `MIN_INITIAL_STAKE_USDC` spam
+guard) can claim a desirable username by deploying a low-activity
+vault. An attacker with $100K could claim 100 usernames they don't
+intend to use legitimately.
+
+**Why accepted v1.** Decision 8 in `FACTORY_DESIGN_NOTES.md`. Solving
+username squatting requires either (a) admin-gated approval (kills GTM
+flexibility), (b) per-creator vault caps (forces architectural
+choices), or (c) dispute resolution (off-chain process). All defer to
+v2+ when production observation tells us whether squatting is real or
+theoretical.
+
+**Mitigations not yet built (potential v2 paths):**
+- Per-creator vault cap (already singular `creatorToVault` enforces
+  this on-chain; off-chain abuse via sybil EOAs is the remaining
+  vector).
+- Decay-on-inactivity: vaults that don't accept deposits or trade for
+  N days release the username back to the pool. Adds complexity.
+- Dispute resolution via admin escalation. Requires off-chain process
+  + on-chain admin override of `creatorToVault` (which would need its
+  own timelock).
+
+**Risk:** medium reputational, low contract-safety. Squatted usernames
+don't impair the protocol; they impair UX for the displaced creator.
+Treat as a product-team problem with possible contract assists in v2.
+
+---
+
+## 16. Cancel permission model — uniform permissionless — **OPEN — accepted v1**
+
+**What.** All cancels across PR 4 (`cancelPendingFeeChange`,
+`cancelPendingStakeCapChange`, `cancelPendingTvlCapChange`,
+`cancelPendingBuilderFeeChange`) and PR 5
+(`cancelPendingFloatWithdrawal`) are **permissionless** — anyone can
+abort a pending proposal during its timelock window.
+
+**Why permissionless.** Defense against admin-key compromise queuing
+hostile changes (10% deposit fee, $5M stake cap that forces creators
+into breach, hostile float drain). Any monitoring observer can cancel
+the proposal before it executes.
+
+**Griefing surface.** Random user cancels legitimate admin proposal
+→ admin re-proposes and waits the delay again. Bounded; no permanent
+damage. Griefer pays gas to cancel; admin pays gas to re-propose.
+Asymmetry favors the protocol (griefer pays each round; admin pays
+once).
+
+**PR 4 history.** Commit `0731051` originally shipped cancels as
+`onlyOwner` (admin-only) — a pattern oversight from before cancel
+permissions were explicitly discussed. Commit `6a5cf8f` retrofits all
+four PR 4 cancels to be permissionless, matching PR 5's design.
+
+**Risk:** very low. Griefing surface is bounded by gas economics
+(attacker pays each cancel) and the legitimate-admin's ability to
+re-propose at will.
+
+---
+
+## 17. Off-chain surveillance indexer — launch-blocking commitment — **OPEN — accepted v1**
+
+**What.** Theorise's defense against creator wash-trading and
+cross-vault collusion is implemented in the off-chain indexer
+(`INDEXER_DESIGN_NOTES.md`), not in the contracts. The contracts
+provide the audit trail (events, on-chain trade signals); the
+indexer joins those against HyperLiquid fill data to compute
+counterparty concentration, cross-vault pair concentration, and
+the derived diversity score that gates discoverability.
+
+**Commitment.** Mainnet launch **gates on the indexer being
+operational**. Decision 6 in `INDEXER_DESIGN_NOTES.md` §10 is
+explicit: shipping contracts to mainnet without surveillance is
+shipping a financial product without the defense mechanism
+documented as essential. The audit window (3-6 weeks) is the
+natural indexer-build window (estimated 2 weeks of focused work);
+they run in parallel.
+
+**What "operational" means at launch:**
+- Real-time event indexing for `Factory` + every deployed
+  `CreatorVault`. p50 freshness ≤ 5s.
+- HL API fill-data integration with adaptive per-vault polling.
+  p50 freshness ≤ 1 hour for surveillance.
+- Initial 3-component diversity score computed per vault
+  (`INDEXER_DESIGN_NOTES.md` §5.5) with config-tunable weights.
+- Public read API exposed for the UI.
+- Open-source repo published with reproducibility checklist.
+
+**What's deferred to within 30 days post-launch (not blocking):**
+- HL S3 archive backfill puller (only needed for cold-start
+  recovery of vaults deployed >7 days before the indexer started
+  indexing them; rare in practice).
+- Tier 2 private detection layer (`INDEXER_DESIGN_NOTES.md` §11.2).
+  Tier 1 public scoring is the launch commitment.
+
+**Risk:** low for contracts (none of this is contract-side). The
+risk is product-side: a launch without surveillance creates a
+window where bad-actor creators can wash-trade undetected and
+damage platform reputation before defenses are in place.
+Mitigated by the launch gating.
+
+**Tracking.** Indexer build progress is tracked outside this
+repo. Re-verify operational status before flipping the contract
+admin from testnet config to mainnet config at launch.

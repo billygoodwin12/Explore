@@ -48,6 +48,14 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
     address public immutable CREATOR;
     address public immutable CORE_DEPOSIT_WALLET;
+    /// @notice The factory that deployed this vault, or `address(0)`
+    ///         for direct (non-factory) deployments. Only the factory
+    ///         may call `bootstrapDeposit`, which exists to atomically
+    ///         seed and activate a vault inside the factory's
+    ///         `createVault` flow. For direct deploys the bootstrap
+    ///         entry point is permanently locked and the README
+    ///         pre-activation runbook applies as before.
+    address public immutable FACTORY;
 
     // ─── Stake-invariant parameters ─────────────────────────────
     uint16  public constant MIN_CREATOR_BPS         = 500;
@@ -119,6 +127,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         settlements. Wired in commit 3; defined here so storage
     ///         layout is locked.
     uint256 internal inFlightFromPerp;
+
+    /// @notice One-shot guard for the factory's `bootstrapDeposit`.
+    ///         Set to true on first (and only) bootstrap call. Read by
+    ///         `bootstrapDeposit` to reject re-fires (defends against
+    ///         re-bootstrapping after full redemption) and by
+    ///         `_doDeposit` to skip the `VaultNotActivated` guard
+    ///         once the factory has activated the vault, since within
+    ///         the same tx as bootstrap the precompile read still
+    ///         returns 0 (cross-block lag — see INVESTIGATION §15.2).
+    bool internal _bootstrapped;
 
     /// @notice Time-based fallback for settlement. Sized at 100 blocks
     ///         (~100s) against empirically-measured cross-block latency
@@ -249,6 +267,12 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error NotCreator();
     error ZeroAmount();
     error ZeroAddress();
+    /// @notice `bootstrapDeposit` caller is not the immutable factory
+    ///         (or factory was set to `address(0)` at construction —
+    ///         direct-deploy vaults can never bootstrap).
+    error NotFactory();
+    /// @notice `bootstrapDeposit` already ran. One-shot by design.
+    error AlreadyBootstrapped();
     /// @notice `execute<X>` called before `block.timestamp` reached
     ///         the proposal's `executableAt`.
     error TimelockNotElapsed(uint64 executableAt, uint64 currentTime);
@@ -270,6 +294,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         address creator_,
         address admin_,
         address coreDepositWallet_,
+        address factory_,
         string memory name_,
         string memory symbol_
     ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
@@ -277,6 +302,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         if (coreDepositWallet_ == address(0)) revert ZeroAddress();
         CREATOR = creator_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
+        FACTORY = factory_;
         creatorStakeCapUsdc = 250_000e6;
     }
 
@@ -391,6 +417,49 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         _doDeposit(assets, receiver);
     }
 
+    /// @notice Factory-only atomic seed + activation. Called by the
+    ///         factory's `createVault` inside the same tx as the
+    ///         activation-fee bridge (which the factory absorbs from
+    ///         its protocol-funded float) and the creator-stake bridge.
+    ///         Mints `creator`'s shares against pre-bootstrap NAV
+    ///         (= 0 for a fresh vault → virtual-shares offset gives
+    ///         `amount × 1e6` shares), then enqueues `amount` as
+    ///         pending so the tracker drains it cleanly when Core
+    ///         credit lands cross-block.
+    /// @dev    One-shot via `_bootstrapped`. The factory passes the
+    ///         **net** stake amount (not gross including the 1 USDC
+    ///         activation fee) — the fee is consumed by CDW and never
+    ///         credits to Core; enqueueing the gross would leave a
+    ///         1 USDC residual in the tracker that only drained via
+    ///         the time-based fallback. See INVESTIGATION §15 for the
+    ///         design rationale and the case-(b) probe result that
+    ///         gates this entry point's existence.
+    /// @param creator The account to receive the freshly-minted shares.
+    /// @param amount  Net stake (= initialStake), 6-dec USDC.
+    /// @return shares Number of shares minted to `creator`.
+    function bootstrapDeposit(address creator, uint256 amount)
+        external
+        nonReentrant
+        returns (uint256 shares)
+    {
+        if (FACTORY == address(0) || msg.sender != FACTORY) revert NotFactory();
+        if (_bootstrapped) revert AlreadyBootstrapped();
+        if (creator == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+
+        _bootstrapped = true;
+        _settlePending();
+
+        shares = _sharesForNet(amount);
+        if (shares == 0) revert SharesRoundToZero();
+
+        _enqueuePending(amount);
+        _mint(creator, shares);
+        _updateStakeBreachState();
+
+        emit Deposited(msg.sender, creator, amount, 0, shares);
+    }
+
     /// @dev Shared deposit logic. Internal to allow `mint` to reuse it
     ///      without double-tripping the `nonReentrant` guard (OZ's guard
     ///      blocks same-contract reentry, so the public `mint` and `deposit`
@@ -415,10 +484,17 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
         // Vault must be pre-activated. CDW charges a 1 USDC newCoreAccountFee
         // on the first inbound to a fresh Core account; if we let user deposits
-        // pay it, the first depositor silently dilutes everyone. Admin must
-        // send ≥2 USDC directly to the vault's Core spot before opening
-        // deposits — see README "Deployment runbook" + INVESTIGATION §11.4.
-        if (_coreSpotUSDC() == 0) revert VaultNotActivated();
+        // pay it, the first depositor silently dilutes everyone.
+        // - Direct-deploy vaults: admin pre-funds ≥2 USDC to the vault's Core
+        //   spot before opening deposits (README "Deployment runbook" +
+        //   INVESTIGATION §11.4).
+        // - Factory-deployed vaults: the factory absorbs the fee from its
+        //   protocol-funded float during `createVault` and calls
+        //   `bootstrapDeposit`. After bootstrap, `_coreSpotUSDC()` still
+        //   reads 0 within the same tx (cross-block lag, INVESTIGATION §15.2),
+        //   so the guard skips the precompile check once `_bootstrapped` is
+        //   set. The fee is already accounted for; activation has succeeded.
+        if (!_bootstrapped && _coreSpotUSDC() == 0) revert VaultNotActivated();
 
         // Per-tx TVL cap (sandwich-window interim mitigation). Floor of
         // MIN_DEPOSIT_USDC so bootstrap can proceed even when 5% of NAV
