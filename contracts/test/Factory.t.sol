@@ -827,4 +827,134 @@ contract FactoryTest is Test {
         (address to, uint256 amount, uint64 ea) = factory.pendingFloatWithdrawal();
         assertEq(to, address(0)); assertEq(amount, 0); assertEq(ea, 0);
     }
+
+    // ─── PR 5 commit 6: coverage sweep ────────────────────────────────
+
+    function test_execute_float_withdrawal_reverts_for_non_admin() public {
+        // Access-control gap caught in commit 6 audit: execute was
+        // tested for happy path + timing reverts but not for caller
+        // access. Required: only admin can call execute, even after
+        // delay elapses.
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 5e6);
+        vm.warp(block.timestamp + 7 days);
+
+        vm.prank(alice);
+        vm.expectRevert(Factory.NotAdmin.selector);
+        factory.executeFloatWithdrawal();
+    }
+
+    function test_createVault_succeeds_at_exactly_min_initial_stake() public {
+        // Boundary: stake == MIN_INITIAL_STAKE_USDC ($1000) must
+        // succeed; stake one wei below must revert. Bracket the spam
+        // guard threshold.
+        _fundFloat(1e6);
+        _seedCreator(alice, 1000e6);
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        vm.prank(alice);
+        address vault = factory.createVault("alice", 1000e6, "v", "V");
+        assertEq(vault, predicted, "exact-minimum stake succeeds");
+        assertEq(CreatorVault(vault).balanceOf(alice), 1000e6 * 1e6);
+    }
+
+    function test_createVault_reverts_one_wei_below_min_initial_stake() public {
+        _fundFloat(1e6); _seedCreator(alice, 999_999_999);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.InitialStakeBelowMinimum.selector,
+                uint256(999_999_999),
+                uint256(1000e6)
+            )
+        );
+        factory.createVault("alice", 999_999_999, "v", "V");
+    }
+
+    function test_vaultSalt_is_deterministic_across_calls() public view {
+        // Purity check: vaultSalt is a pure hash of (factory, creator,
+        // nameHash). Repeated calls with the same args must return
+        // identical results -- protects against any future refactor
+        // accidentally introducing nondeterminism.
+        bytes32 a = factory.vaultSalt(alice, "alice");
+        bytes32 b = factory.vaultSalt(alice, "alice");
+        bytes32 c = factory.vaultSalt(alice, "alice");
+        assertEq(a, b);
+        assertEq(b, c);
+    }
+
+    function test_vaultSalt_uppercase_differs_from_lowercase() public view {
+        // Documents: vaultSalt does NOT lowercase its input. Different
+        // case = different hash = different salt. This is fine because
+        // createVault validation (commit 2) rejects uppercase at the
+        // validator stage, so an uppercase username never reaches the
+        // salt computation in practice. But the property is worth
+        // asserting so a future refactor that loosens validation
+        // doesn't silently introduce a salt-collision attack via
+        // case-folding.
+        bytes32 lower = factory.vaultSalt(alice, "alice");
+        bytes32 upper = factory.vaultSalt(alice, "Alice");
+        assertTrue(lower != upper, "uppercase produces distinct salt");
+    }
+
+    function test_bootstrap_bypass_does_not_skip_min_deposit_floor() public {
+        // _bootstrapped flag bypasses VaultNotActivated only. Other
+        // deposit invariants (MIN_DEPOSIT_USDC, TVL cap) must still
+        // apply to follower deposits. Test: deploy via factory, then
+        // a follower attempting to deposit below MIN_DEPOSIT_USDC
+        // must revert DepositBelowMinimum, not silently succeed.
+        _fundFloat(1e6);
+        address vault = _deployVaultFor(alice, "alice");
+        CreatorVault v = CreatorVault(vault);
+
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(vault, type(uint256).max);
+
+        // MIN_DEPOSIT_USDC = 10e6. 9.99 USDC must revert.
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.DepositBelowMinimum.selector,
+                uint256(9_999_999),
+                uint256(10e6)
+            )
+        );
+        v.deposit(9_999_999, bob);
+    }
+
+    function test_bootstrap_bypass_does_not_skip_tvl_cap() public {
+        // After bootstrap, follower deposits still respect the per-tx
+        // TVL cap when the admin re-enables it. Bootstrap doesn't
+        // grant a TVL-cap immunity.
+        _fundFloat(1e6);
+        address vault = _deployVaultFor(alice, "alice");
+        CreatorVault v = CreatorVault(vault);
+
+        // Re-enable cap via the timelock (PR 4 propose/execute path).
+        // Vault's admin is the factory's PROTOCOL_ADMIN.
+        vm.prank(admin); v.proposeTvlCapChange(100); // 1%
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); v.executeTvlCapChange();
+        assertEq(v.depositTvlCapBps(), 100);
+
+        // Vault NAV = 1000e6 (bootstrap stake, pending-tracked).
+        // 1% of NAV = 10e6 = MIN_DEPOSIT_USDC floor.
+        // Bob attempting 100e6 (10% of NAV) must revert
+        // DepositExceedsTvlCap. Note: per-tx cap reads totalAssets()
+        // after _settlePending so pending bootstrap stake is included.
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(vault, type(uint256).max);
+        vm.prank(bob);
+        vm.expectRevert(); // DepositExceedsTvlCap
+        v.deposit(100e6, bob);
+    }
 }
