@@ -2,7 +2,11 @@
 pragma solidity 0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+import {CreatorVault} from "./CreatorVault.sol";
+import {HLConstants, ICoreDepositWallet} from "./HLConstants.sol";
 
 /// @notice Factory for deploying CreatorVault instances. Enforces
 ///         username uniqueness (case-insensitive, locked at deploy),
@@ -11,6 +15,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///         a protocol-funded float. See FACTORY_DESIGN_NOTES.md for
 ///         the design rationale and PR 5 commit map.
 contract Factory is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
     // ─── Immutables ────────────────────────────────────────────────
     IERC20  public immutable USDC;
     address public immutable CORE_DEPOSIT_WALLET;
@@ -77,6 +83,7 @@ contract Factory is ReentrancyGuard {
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
     error ZeroAddress();
+    error ZeroAmount();
     /// @notice Stub-only; bodies wired in commits 2-5.
     error NotImplemented();
 
@@ -125,19 +132,159 @@ contract Factory is ReentrancyGuard {
         }
     }
 
-    // ─── createVault (PR 5 commit 3) ───────────────────────────────
+    // ─── createVault (PR 5 commit 3b) ──────────────────────────────
+    /// @notice Self-deploy a vault for `msg.sender` (the creator).
+    ///         Permissionless per decision 8; spam-bounded by
+    ///         MIN_INITIAL_STAKE_USDC. Atomic single-tx flow:
+    ///
+    ///         1. Validate username (length, charset, underscore
+    ///            rules, not reserved, not taken).
+    ///         2. Reject if `msg.sender` already owns a vault.
+    ///         3. Reject if `initialStake < MIN_INITIAL_STAKE_USDC`.
+    ///         4. Reject if factory float < `NEW_CORE_ACCOUNT_FEE_USDC`.
+    ///         5. Pull `initialStake` from creator EVM-side.
+    ///         6. Deploy vault via CREATE2 with salt =
+    ///            keccak256(factory_addr, creator, nameHash).
+    ///         7. Bridge `NEW_CORE_ACCOUNT_FEE_USDC + initialStake`
+    ///            to the vault's Core address via CDW.depositFor in
+    ///            a single call: CDW absorbs the 1 USDC fee, the
+    ///            remaining `initialStake` credits to vault Core spot
+    ///            (cross-block per INVESTIGATION sec 15.2).
+    ///         8. Decrement `floatBalance` by the absorbed fee.
+    ///         9. Call `vault.bootstrapDeposit(creator, initialStake)`
+    ///            — mints shares to creator against pre-bootstrap NAV
+    ///            (= 0 → virtual-shares offset), enqueues pending so
+    ///            the tracker drains cleanly cross-block.
+    ///         10. Write registries; emit `VaultDeployed` + `UsernameClaimed`.
+    ///
+    /// @param  username     Lowercase ASCII handle. Validated by
+    ///                      `_validateUsernameOrRevert`.
+    /// @param  initialStake Net stake (6-dec USDC), >= MIN_INITIAL_STAKE_USDC.
+    /// @param  vaultName    ERC-20 token name (e.g. "Theorise alice BTC Long").
+    /// @param  vaultSymbol  ERC-20 token symbol (e.g. "alice-BTC-L").
+    /// @return vault        Deterministic CREATE2 address of the new vault.
     function createVault(
-        string calldata /*username*/,
-        uint256 /*initialStake*/,
-        string calldata /*vaultName*/,
-        string calldata /*vaultSymbol*/
-    ) external nonReentrant returns (address /*vault*/) {
-        revert NotImplemented();
+        string calldata username,
+        uint256 initialStake,
+        string calldata vaultName,
+        string calldata vaultSymbol
+    ) external nonReentrant returns (address vault) {
+        bytes32 nameHash = _validateUsernameOrRevert(username);
+        _checkCreatorAndStake(initialStake);
+
+        USDC.safeTransferFrom(msg.sender, address(this), initialStake);
+
+        vault = _deployVault(msg.sender, nameHash, vaultName, vaultSymbol);
+
+        _bridgeActivationPlusStake(vault, initialStake);
+
+        uint256 sharesMinted = CreatorVault(vault).bootstrapDeposit(msg.sender, initialStake);
+
+        _registerVault(vault, msg.sender, username, nameHash);
+
+        emit VaultDeployed(
+            vault,
+            msg.sender,
+            username,
+            initialStake,
+            sharesMinted,
+            _vaults.length - 1,
+            block.timestamp
+        );
+        emit UsernameClaimed(username, vault);
     }
 
-    // ─── Float management (PR 5 commit 5) ──────────────────────────
-    function treasuryFundFloat(uint256 /*amount*/) external onlyAdmin nonReentrant {
-        revert NotImplemented();
+    function _checkCreatorAndStake(uint256 initialStake) internal view {
+        address existing = creatorToVault[msg.sender];
+        if (existing != address(0)) revert CreatorAlreadyHasVault(existing);
+        if (initialStake < MIN_INITIAL_STAKE_USDC) {
+            revert InitialStakeBelowMinimum(initialStake, MIN_INITIAL_STAKE_USDC);
+        }
+        if (floatBalance < NEW_CORE_ACCOUNT_FEE_USDC) {
+            revert FloatExhausted(floatBalance, NEW_CORE_ACCOUNT_FEE_USDC);
+        }
+    }
+
+    function _deployVault(
+        address creator,
+        bytes32 nameHash,
+        string calldata vaultName,
+        string calldata vaultSymbol
+    ) internal returns (address vault) {
+        // Salt includes the factory address so v1/v2 factory redeploys
+        // can't collide on the same (creator, username) pair.
+        bytes32 salt = keccak256(abi.encodePacked(address(this), creator, nameHash));
+        vault = address(new CreatorVault{salt: salt}(
+            USDC,
+            creator,
+            PROTOCOL_ADMIN,
+            CORE_DEPOSIT_WALLET,
+            address(this),
+            vaultName,
+            vaultSymbol
+        ));
+    }
+
+    /// @dev Single combined bridge of (activation fee + stake) -> vault Core.
+    ///      CDW absorbs the 1 USDC fee against the fresh account; the net
+    ///      `initialStake` credits cross-block (INVESTIGATION sec 15.2).
+    function _bridgeActivationPlusStake(address vault, uint256 initialStake) internal {
+        uint256 bridgeAmount = NEW_CORE_ACCOUNT_FEE_USDC + initialStake;
+        USDC.forceApprove(CORE_DEPOSIT_WALLET, bridgeAmount);
+        ICoreDepositWallet(CORE_DEPOSIT_WALLET).depositFor(
+            vault,
+            bridgeAmount,
+            HLConstants.CDW_DESTINATION_SPOT
+        );
+        floatBalance -= NEW_CORE_ACCOUNT_FEE_USDC;
+    }
+
+    function _registerVault(
+        address vault,
+        address creator,
+        string calldata username,
+        bytes32 nameHash
+    ) internal {
+        usernameDisplay[vault] = username;
+        _usernameToVaultByHash[nameHash] = vault;
+        creatorToVault[creator] = vault;
+        isCanonicalVault[vault] = true;
+        _vaults.push(vault);
+    }
+
+    /// @notice CREATE2 salt for a `(creator, username)` pair. Exposed
+    ///         so off-chain clients (indexer, UI) can derive the
+    ///         vault's deterministic address before deployment via
+    ///         the standard CREATE2 formula:
+    ///
+    ///           address = last20(keccak256(0xff, factory, salt,
+    ///                                      keccak256(initCode)))
+    ///
+    ///         The full address derivation needs the init-code hash,
+    ///         which depends on the per-call `vaultName` / `vaultSymbol`
+    ///         constructor args; clients compute that off-chain from
+    ///         the CreatorVault artifact + canonical name/symbol
+    ///         conventions. The salt is the protocol-specific piece
+    ///         and lives here for unambiguity.
+    function vaultSalt(address creator, string calldata username)
+        external view returns (bytes32)
+    {
+        bytes32 nameHash = keccak256(bytes(username));
+        return keccak256(abi.encodePacked(address(this), creator, nameHash));
+    }
+
+    // ─── Float management ──────────────────────────────────────────
+    /// @notice Admin tops up the protocol float used to absorb the
+    ///         1 USDC newCoreAccountFee per vault. Immediate (not
+    ///         timelocked) — adding assets is never grief.
+    /// @dev    Pulled forward into commit 3b because createVault needs
+    ///         a non-empty float to function; the timelocked withdrawal
+    ///         half stays stubbed until commit 5.
+    function treasuryFundFloat(uint256 amount) external onlyAdmin nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        USDC.safeTransferFrom(msg.sender, address(this), amount);
+        floatBalance += amount;
+        emit FloatFunded(msg.sender, amount, floatBalance);
     }
 
     function proposeFloatWithdrawal(address /*to*/, uint256 /*amount*/) external onlyAdmin {
