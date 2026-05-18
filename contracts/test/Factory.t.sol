@@ -642,4 +642,189 @@ contract FactoryTest is Test {
         _deployVaultFor(bob, "bob_trader");
         assertEq(factory.vaultCount(), 2);
     }
+
+    // ─── PR 5 commit 5: float withdrawal timelock ─────────────────────
+
+    function test_propose_float_withdrawal_succeeds_for_admin() public {
+        _fundFloat(10e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.FloatWithdrawalProposed(
+            charlie, 5e6, uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin);
+        factory.proposeFloatWithdrawal(charlie, 5e6);
+
+        (address to, uint256 amount, uint64 executableAt) = factory.pendingFloatWithdrawal();
+        assertEq(to, charlie);
+        assertEq(amount, 5e6);
+        assertEq(executableAt, uint64(block.timestamp + 7 days));
+    }
+
+    function test_propose_float_withdrawal_reverts_for_non_admin() public {
+        _fundFloat(10e6);
+        vm.prank(alice);
+        vm.expectRevert(Factory.NotAdmin.selector);
+        factory.proposeFloatWithdrawal(charlie, 1e6);
+    }
+
+    function test_propose_float_withdrawal_reverts_if_pending_exists() public {
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 1e6);
+        (, , uint64 existing) = factory.pendingFloatWithdrawal();
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(Factory.PendingChangeExists.selector, existing)
+        );
+        factory.proposeFloatWithdrawal(charlie, 2e6);
+    }
+
+    function test_propose_float_withdrawal_reverts_if_amount_exceeds_balance() public {
+        _fundFloat(10e6);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.WithdrawalExceedsFloat.selector, uint256(11e6), uint256(10e6)
+            )
+        );
+        factory.proposeFloatWithdrawal(charlie, 11e6);
+    }
+
+    function test_propose_float_withdrawal_reverts_if_amount_zero() public {
+        _fundFloat(10e6);
+        vm.prank(admin);
+        vm.expectRevert(Factory.ZeroAmount.selector);
+        factory.proposeFloatWithdrawal(charlie, 0);
+    }
+
+    function test_propose_float_withdrawal_reverts_if_to_zero_address() public {
+        _fundFloat(10e6);
+        vm.prank(admin);
+        vm.expectRevert(Factory.ZeroAddress.selector);
+        factory.proposeFloatWithdrawal(address(0), 1e6);
+    }
+
+    function test_execute_float_withdrawal_reverts_before_timelock_elapsed() public {
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 5e6);
+        uint64 ea = uint64(block.timestamp + 7 days);
+
+        vm.warp(block.timestamp + 7 days - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        factory.executeFloatWithdrawal();
+    }
+
+    function test_execute_float_withdrawal_succeeds_exactly_at_executable_at() public {
+        // Boundary: block.timestamp == executableAt must succeed.
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 5e6);
+        (, , uint64 ea) = factory.pendingFloatWithdrawal();
+
+        vm.warp(uint256(ea));
+        vm.prank(admin);
+        factory.executeFloatWithdrawal();
+        assertEq(usdc.balanceOf(charlie), 5e6);
+    }
+
+    function test_execute_float_withdrawal_reverts_if_balance_dropped() public {
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 8e6);
+
+        // During the 7-day window, createVault consumes 1 USDC of float.
+        // After: floatBalance = 9e6, but withdrawal queued for 8e6 -- still fits.
+        // Then a second createVault drops float to 8e6; another to 7e6 -- now < 8e6.
+        _deployVaultFor(alice, "alice");
+        _deployVaultFor(bob, "bob");
+        _deployVaultFor(address(0xD1), "carol");
+        assertEq(factory.floatBalance(), 7e6, "float consumed by three vault deploys");
+
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.WithdrawalExceedsFloat.selector, uint256(8e6), uint256(7e6)
+            )
+        );
+        factory.executeFloatWithdrawal();
+    }
+
+    function test_execute_float_withdrawal_transfers_usdc_and_decrements_balance() public {
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 6e6);
+        vm.warp(block.timestamp + 7 days);
+
+        uint256 charlieBefore = usdc.balanceOf(charlie);
+        uint256 factoryBefore = usdc.balanceOf(address(factory));
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.FloatWithdrawalExecuted(charlie, 6e6);
+        vm.prank(admin); factory.executeFloatWithdrawal();
+
+        assertEq(usdc.balanceOf(charlie), charlieBefore + 6e6);
+        assertEq(usdc.balanceOf(address(factory)), factoryBefore - 6e6);
+        assertEq(factory.floatBalance(), 4e6, "floatBalance decremented by withdrawal");
+
+        (, , uint64 ea) = factory.pendingFloatWithdrawal();
+        assertEq(ea, 0, "pending cleared after execute");
+    }
+
+    function test_execute_float_withdrawal_reverts_no_pending() public {
+        vm.prank(admin);
+        vm.expectRevert(Factory.NoPendingChange.selector);
+        factory.executeFloatWithdrawal();
+    }
+
+    function test_cancel_float_withdrawal_clears_pending_and_emits() public {
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 5e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.FloatWithdrawalCancelled(charlie, 5e6);
+        vm.prank(admin); factory.cancelPendingFloatWithdrawal();
+
+        (, , uint64 ea) = factory.pendingFloatWithdrawal();
+        assertEq(ea, 0);
+    }
+
+    function test_cancel_float_withdrawal_reverts_no_pending() public {
+        vm.expectRevert(Factory.NoPendingChange.selector);
+        factory.cancelPendingFloatWithdrawal();
+    }
+
+    function test_cancel_float_withdrawal_is_permissionless() public {
+        // Defense against admin-key compromise: if attacker queues
+        // a hostile withdrawal, any observer can abort during the
+        // 7-day window. Test that a non-admin can cancel.
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 5e6);
+
+        vm.prank(alice); // any random user
+        factory.cancelPendingFloatWithdrawal();
+
+        (, , uint64 ea) = factory.pendingFloatWithdrawal();
+        assertEq(ea, 0, "alice (non-admin) successfully cancelled");
+    }
+
+    function test_propose_cancel_propose_execute_lands_second_withdrawal() public {
+        // End-to-end: propose value A, cancel, propose value B, wait,
+        // execute. Final transfer matches B; no bleed from A.
+        _fundFloat(10e6);
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 3e6);
+        vm.prank(admin); factory.cancelPendingFloatWithdrawal();
+
+        vm.prank(admin); factory.proposeFloatWithdrawal(charlie, 7e6);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeFloatWithdrawal();
+
+        assertEq(usdc.balanceOf(charlie), 7e6, "transferred second proposal amount");
+        assertEq(factory.floatBalance(), 3e6);
+        (address to, uint256 amount, uint64 ea) = factory.pendingFloatWithdrawal();
+        assertEq(to, address(0)); assertEq(amount, 0); assertEq(ea, 0);
+    }
 }

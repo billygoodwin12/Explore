@@ -102,6 +102,12 @@ contract Factory is ReentrancyGuard {
 
     error InitialStakeBelowMinimum(uint256 stake, uint256 minimum);
     error FloatExhausted(uint256 have, uint256 need);
+    /// @notice `proposeFloatWithdrawal` or `executeFloatWithdrawal`
+    ///         rejects a withdrawal that exceeds the current
+    ///         protocol `floatBalance`. Checked at both propose and
+    ///         execute so admin can't queue a phantom withdrawal and
+    ///         can't drain more than has been topped up.
+    error WithdrawalExceedsFloat(uint256 requested, uint256 available);
     /// @notice `getVaults` called with `limit > MAX_PAGINATION_LIMIT`.
     ///         Offsets beyond `vaultCount` and `limit == 0` return an
     ///         empty array rather than reverting — simpler client UX.
@@ -294,16 +300,69 @@ contract Factory is ReentrancyGuard {
         emit FloatFunded(msg.sender, amount, floatBalance);
     }
 
-    function proposeFloatWithdrawal(address /*to*/, uint256 /*amount*/) external onlyAdmin {
-        revert NotImplemented();
+    /// @notice Admin proposes withdrawing `amount` USDC from the
+    ///         protocol float to `to` (EVM-side; USDC arrives at `to`'s
+    ///         EVM address). 7-day timelock matches PR 4's stake-cap
+    ///         delay -- both are protocol-asset operations with
+    ///         depositor-visible blast radius.
+    /// @dev    Amount validated against current `floatBalance` (the
+    ///         state variable, not `IERC20.balanceOf(factory)`). Donor
+    ///         transfers to the factory address don't count toward the
+    ///         spendable float; if recovery of stray USDC is ever
+    ///         needed, it's a separate (also timelocked) operation
+    ///         outside PR 5 scope.
+    function proposeFloatWithdrawal(address to, uint256 amount) external onlyAdmin {
+        if (pendingFloatWithdrawal.executableAt != 0) {
+            revert PendingChangeExists(pendingFloatWithdrawal.executableAt);
+        }
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        uint256 available = floatBalance;
+        if (amount > available) revert WithdrawalExceedsFloat(amount, available);
+
+        uint64 executableAt = uint64(block.timestamp + FLOAT_WITHDRAWAL_DELAY);
+        pendingFloatWithdrawal = PendingFloatWithdrawal({
+            to: to,
+            amount: amount,
+            executableAt: executableAt
+        });
+        emit FloatWithdrawalProposed(to, amount, executableAt);
     }
 
+    /// @notice Admin executes the pending withdrawal after the delay
+    ///         elapses. Re-validates amount against current
+    ///         `floatBalance` because intervening `createVault` calls
+    ///         may have decremented it during the window.
     function executeFloatWithdrawal() external onlyAdmin nonReentrant {
-        revert NotImplemented();
+        PendingFloatWithdrawal memory p = pendingFloatWithdrawal;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+
+        uint256 available = floatBalance;
+        if (p.amount > available) revert WithdrawalExceedsFloat(p.amount, available);
+
+        floatBalance = available - p.amount;
+        delete pendingFloatWithdrawal;
+
+        USDC.safeTransfer(p.to, p.amount);
+        emit FloatWithdrawalExecuted(p.to, p.amount);
     }
 
-    function cancelPendingFloatWithdrawal() external onlyAdmin {
-        revert NotImplemented();
+    /// @notice Permissionless cancel of a pending withdrawal. Anyone
+    ///         may cancel, intentionally: if an attacker compromises
+    ///         the admin key and queues a hostile withdrawal during
+    ///         the 7-day window, any monitoring observer can abort
+    ///         it. Cost of griefing (legitimate admin proposes,
+    ///         random user cancels) is bounded -- admin re-proposes
+    ///         and waits another 7 days. Asymmetric vs PR 4's
+    ///         admin-only cancels; see KNOWN_ISSUES.
+    function cancelPendingFloatWithdrawal() external {
+        PendingFloatWithdrawal memory p = pendingFloatWithdrawal;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingFloatWithdrawal;
+        emit FloatWithdrawalCancelled(p.to, p.amount);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────
