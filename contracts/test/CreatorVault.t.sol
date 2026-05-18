@@ -1481,7 +1481,16 @@ contract CreatorVaultTest is Test {
         v.deposit(100e6, bob);
     }
 
-    function test_bootstrap_does_not_trigger_transient_breach() public {
+    /// @dev Smoke test: bootstrap emits no spurious StakeBreachStarted
+    ///      event. NOT a real exercise of the dilution-ordering property
+    ///      from KNOWN_ISSUES §2 — on a fresh vault the creator owns
+    ///      100% of supply post-mint and `_requiredCreatorStake()` is
+    ///      `min(5% of TVL, creatorStakeCap)`, which the creator
+    ///      trivially exceeds. The dilution-ordering case is covered by
+    ///      `test_no_transient_breach_event_during_deposit_settlement`
+    ///      (PR 3-NEW); bootstrap can't reproduce it because there's no
+    ///      follower to dilute against.
+    function test_bootstrap_emits_no_spurious_breach_events() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"

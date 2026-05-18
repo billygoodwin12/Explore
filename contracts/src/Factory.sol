@@ -28,6 +28,11 @@ contract Factory is ReentrancyGuard {
     uint256 public constant MAX_USERNAME_LENGTH      = 30;
     uint256 public constant NEW_CORE_ACCOUNT_FEE_USDC = 1e6;   // 1 USDC absorbed per vault
     uint256 public constant FLOAT_WITHDRAWAL_DELAY    = 7 days;
+    /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
+    ///         calls comfortably under HyperEVM's block gas limit
+    ///         regardless of how large `_vaults` grows. Clients
+    ///         needing the full list paginate.
+    uint256 public constant MAX_PAGINATION_LIMIT      = 100;
 
     // ─── Username registry ─────────────────────────────────────────
     /// @notice Hashed-lowercase key for collision-free string-set membership.
@@ -97,7 +102,9 @@ contract Factory is ReentrancyGuard {
 
     error InitialStakeBelowMinimum(uint256 stake, uint256 minimum);
     error FloatExhausted(uint256 have, uint256 need);
-    error PaginationOutOfRange(uint256 offset, uint256 length);
+    /// @notice `getVaults` called with `limit > MAX_PAGINATION_LIMIT`.
+    ///         Offsets beyond `vaultCount` and `limit == 0` return an
+    ///         empty array rather than reverting — simpler client UX.
     error PaginationLimitTooLarge(uint256 limit, uint256 max);
 
     /// @notice Mirrors PR 4's timelock error surface. Float withdrawal
@@ -394,10 +401,28 @@ contract Factory is ReentrancyGuard {
         return _usernameToVaultByHash[hash] == address(0);
     }
 
-    function getVaults(uint256 /*offset*/, uint256 /*limit*/)
-        external view returns (address[] memory)
+    /// @notice Paginated read of the canonical vault list. Returns an
+    ///         empty array for `limit == 0` or `offset >= vaultCount`
+    ///         (no revert — simpler for clients walking pages).
+    ///         Reverts `PaginationLimitTooLarge` if `limit` exceeds
+    ///         `MAX_PAGINATION_LIMIT`.
+    function getVaults(uint256 offset, uint256 limit)
+        external view returns (address[] memory page)
     {
-        revert NotImplemented();
+        if (limit > MAX_PAGINATION_LIMIT) {
+            revert PaginationLimitTooLarge(limit, MAX_PAGINATION_LIMIT);
+        }
+        uint256 total = _vaults.length;
+        if (limit == 0 || offset >= total) return new address[](0);
+
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 size = end - offset;
+
+        page = new address[](size);
+        for (uint256 i = 0; i < size; i++) {
+            page[i] = _vaults[offset + i];
+        }
     }
 
     function vaultCount() external view returns (uint256) {

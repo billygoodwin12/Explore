@@ -508,4 +508,138 @@ contract FactoryTest is Test {
         ));
         assertEq(factory.vaultSalt(alice, "alice"), expected);
     }
+
+    // ─── PR 5 commit 4: getVaults pagination + view surface ──────────
+
+    /// @dev Helper: deploys a vault for `creator` with username `name`,
+    ///      pre-mocking the predicted CREATE2 address's precompiles.
+    function _deployVaultFor(address creator, string memory name) internal returns (address vault) {
+        _seedCreator(creator, 1000e6);
+
+        bytes32 nameHash = keccak256(bytes(name));
+        bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        vm.prank(creator);
+        // Cannot vary args at call site here; name is the only var that
+        // changes per vault, and _seedCreator uses MIN_INITIAL_STAKE_USDC.
+        return _createVaultDynamic(creator, name, 1000e6);
+    }
+
+    function _createVaultDynamic(address creator, string memory name, uint256 stake)
+        internal returns (address)
+    {
+        // The Factory.createVault signature takes calldata strings; this
+        // helper uses an inline cast via abi.encodeWithSignature so the
+        // dynamic memory string is accepted.
+        (bool ok, bytes memory ret) = address(factory).call(
+            abi.encodeWithSignature(
+                "createVault(string,uint256,string,string)",
+                name, stake, "v", "V"
+            )
+        );
+        require(ok, "createVault helper call reverted");
+        return abi.decode(ret, (address));
+    }
+
+    function test_getVaults_empty_when_no_vaults() public view {
+        address[] memory page = factory.getVaults(0, 10);
+        assertEq(page.length, 0);
+    }
+
+    function test_getVaults_limit_zero_returns_empty() public {
+        _fundFloat(1e6);
+        _deployVaultFor(alice, "alice");
+        address[] memory page = factory.getVaults(0, 0);
+        assertEq(page.length, 0);
+    }
+
+    function test_getVaults_limit_above_max_reverts() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.PaginationLimitTooLarge.selector,
+                uint256(101),
+                uint256(100)
+            )
+        );
+        factory.getVaults(0, 101);
+    }
+
+    function test_getVaults_offset_beyond_count_returns_empty() public {
+        _fundFloat(1e6);
+        _deployVaultFor(alice, "alice");
+        address[] memory page = factory.getVaults(5, 10);
+        assertEq(page.length, 0);
+    }
+
+    function test_getVaults_multiple_pages() public {
+        _fundFloat(5e6);
+        // Deploy 5 vaults under 5 different addresses + usernames.
+        address[5] memory creators = [
+            address(0xA001), address(0xA002), address(0xA003), address(0xA004), address(0xA005)
+        ];
+        string[5] memory names = ["alice1", "alice2", "alice3", "alice4", "alice5"];
+        address[5] memory vaults;
+        for (uint256 i = 0; i < 5; i++) {
+            vaults[i] = _deployVaultFor(creators[i], names[i]);
+        }
+        assertEq(factory.vaultCount(), 5);
+
+        address[] memory p1 = factory.getVaults(0, 2);
+        assertEq(p1.length, 2);
+        assertEq(p1[0], vaults[0]); assertEq(p1[1], vaults[1]);
+
+        address[] memory p2 = factory.getVaults(2, 2);
+        assertEq(p2.length, 2);
+        assertEq(p2[0], vaults[2]); assertEq(p2[1], vaults[3]);
+
+        // get(4, 2) requests 2 but only 1 remains -- clamp to remaining.
+        address[] memory p3 = factory.getVaults(4, 2);
+        assertEq(p3.length, 1);
+        assertEq(p3[0], vaults[4]);
+
+        // get(5, 2) is beyond the end -- empty.
+        address[] memory p4 = factory.getVaults(5, 2);
+        assertEq(p4.length, 0);
+    }
+
+    function test_getVaults_limit_exceeds_remaining_clamps() public {
+        _fundFloat(3e6);
+        address[3] memory vaults;
+        vaults[0] = _deployVaultFor(address(0xB001), "bob1");
+        vaults[1] = _deployVaultFor(address(0xB002), "bob2");
+        vaults[2] = _deployVaultFor(address(0xB003), "bob3");
+
+        // Request a page larger than the remainder -- should return
+        // vaults[1..3] (2 elements), not revert.
+        address[] memory page = factory.getVaults(1, 100);
+        assertEq(page.length, 2);
+        assertEq(page[0], vaults[1]);
+        assertEq(page[1], vaults[2]);
+    }
+
+    function test_isCanonicalVault_true_for_deployed_false_for_unknown() public {
+        _fundFloat(1e6);
+        address vault = _deployVaultFor(alice, "alice");
+        assertTrue(factory.isCanonicalVault(vault));
+        assertFalse(factory.isCanonicalVault(address(0)));
+        assertFalse(factory.isCanonicalVault(address(0xDEAD)));
+        assertFalse(factory.isCanonicalVault(address(factory)));
+    }
+
+    function test_vaultCount_returns_array_length() public {
+        assertEq(factory.vaultCount(), 0);
+        _fundFloat(2e6);
+        _deployVaultFor(alice, "alice");
+        assertEq(factory.vaultCount(), 1);
+        _deployVaultFor(bob, "bob_trader");
+        assertEq(factory.vaultCount(), 2);
+    }
 }
