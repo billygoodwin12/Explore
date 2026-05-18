@@ -103,21 +103,31 @@ contract MainnetAtomicProbe {
 }
 
 /// @title  RunMainnetAtomicProbe — gate for PR 5 commit 3 atomic flow
-/// @notice Deploys MainnetAtomicProbe, funds it with 2 USDC EVM-side,
-///         fires the single-tx bridge+read, prints the cast commands
-///         to read the intra-tx storage slot.
+/// @notice Deploys MainnetAtomicProbe and funds it with 2 USDC EVM-side.
+///         Does NOT call `probe()` — that's done in a separate
+///         `cast send` after the script completes, because foundry's
+///         local simulation EVM doesn't implement the HyperLiquid
+///         spot-balance precompile at 0x...0801, which would cause
+///         a local-sim revert and abort the broadcast.
 ///
 /// Setup (DO NOT use a wallet you care about):
 ///   cast wallet new                       # generate fresh deployer
 ///   # fund the new EOA with ~$5 HYPE (gas) + 2 USDC mainnet
 ///   export PROBE_PRIVATE_KEY=0x...
 ///
-/// Run:
+/// Step 1 — deploy + fund the probe:
 ///   forge script script/MainnetAtomicProbe.s.sol:RunMainnetAtomicProbe \
 ///     --rpc-url https://rpc.hyperliquid.xyz/evm \
 ///     --broadcast --slow -vvv
 ///
-/// Then:
+/// Step 2 — fire the single-tx bridge+read (precompile lives on real
+///          mainnet, so `cast send` works fine):
+///   export PROBE=0x<address-printed-by-the-script>
+///   cast send $PROBE "probe(uint256)" 2000000 \
+///     --private-key $PROBE_PRIVATE_KEY \
+///     --rpc-url https://rpc.hyperliquid.xyz/evm
+///
+/// Step 3 — read the result:
 ///   cast call $PROBE "lastIntraReadValue()(uint256)" \
 ///     --rpc-url https://rpc.hyperliquid.xyz/evm
 ///   cast call $PROBE "readCoreSpotNow()(uint256)" \
@@ -158,15 +168,21 @@ contract RunMainnetAtomicProbe is Script {
         console.log("Probe deployed at:", address(probe));
 
         IERC20(MAINNET_USDC).transfer(address(probe), PROBE_AMOUNT);
-
-        probe.probe(PROBE_AMOUNT);
-        console.log("probe.probe() submitted at block:", block.number);
+        console.log("Funded probe with 2 USDC at block:", block.number);
 
         vm.stopBroadcast();
 
         console.log("");
         console.log("=== NEXT STEPS ===");
+        console.log("Probe is deployed and funded. Fire the single-tx bridge+read via cast:");
+        console.log("");
         console.log(string.concat("  export PROBE=", vm.toString(address(probe))));
+        console.log("");
+        console.log("  cast send $PROBE \"probe(uint256)\" 2000000 \\");
+        console.log("    --private-key $PROBE_PRIVATE_KEY \\");
+        console.log("    --rpc-url https://rpc.hyperliquid.xyz/evm");
+        console.log("");
+        console.log("Then read the result:");
         console.log("");
         console.log("  cast call $PROBE \"lastIntraReadValue()(uint256)\" \\");
         console.log("    --rpc-url https://rpc.hyperliquid.xyz/evm");
