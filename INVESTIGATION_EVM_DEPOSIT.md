@@ -782,3 +782,93 @@ overwrites; no queued multi-proposal.
 | 6 — tests | `22844f5` | 18-test dedicated timelock suite: state machine (8), parameter-specific (5), access control (3), delay constants (1), sentinel paths (1) | +18 |
 | 7 — docs | this commit | INVESTIGATION §14, KNOWN_ISSUES §11/§12, README admin runbook | 0 |
 
+---
+
+## 15. PR 5 ATOMIC-FLOW PROBE — same-tx Core credit visibility
+
+PR 5's factory `createVault` wants to perform vault deployment,
+activation-fee bridge, creator-stake bridge, and share mint in a
+single transaction. The question: does the precompile read of
+`_coreSpotUSDC()` reflect a `CoreDepositWallet.depositFor` call made
+earlier in the same tx? If yes, the vault's existing
+`VaultNotActivated()` guard passes inside the same tx and the atomic
+flow works as designed. If no, the vault needs a factory-only
+`bootstrapDeposit` entry point that skips the activation guard.
+
+### 15.1 Probe design
+
+`contracts/script/MainnetAtomicProbe.s.sol` — `MainnetAtomicProbe`
+contract deployed to mainnet via fresh throwaway EOA. Two-step:
+
+1. forge script deploys the probe and funds it with 2 USDC.
+2. `cast send` calls `probe.probe(2000000)`. The probe contract
+   `forceApprove`s USDC to CDW, calls `CDW.depositFor(self, 2e6,
+   SPOT)`, then immediately reads `_coreSpotUSDC()` via the spot
+   precompile and stores the result to `lastIntraReadValue`.
+
+Sent 2 USDC so the result was disambiguated from the
+`newCoreAccountFee`: 1 USDC absorbed as fee, 1 USDC net credit.
+Outcome:
+
+- `lastIntraReadValue == 1e6` ⇒ case (a), intra-tx visible.
+- `lastIntraReadValue == 0` while `readCoreSpotNow == 1e6` ⇒ case (b),
+  cross-block only.
+
+The probe-call tx had to run via `cast send` rather than inside the
+forge script body, because foundry's local-simulation EVM doesn't
+implement the HyperLiquid spot precompile at `0x...0801` and would
+revert the entire script run.
+
+### 15.2 Result — case (b) confirmed
+
+| Field | Value |
+|---|---|
+| Probe contract | `0x048ebf86a798dBEDCe509D5103E9fc37f5f042dE` |
+| Deploy block | 35,390,815 |
+| Probe-call tx | `0x206b8b492cfceb3889a3a004e8ceec27c5359ffbda1e654eab653976f0f26ad7` |
+| Probe-call block | 35,390,879 |
+| Probe-call status | `1 (success)` |
+| Probe-call gas | 101,768 |
+| `lastIntraReadValue` (post-tx eth_call) | `0` |
+| `readCoreSpotNow` (post-tx eth_call) | `1000000` (= 1 USDC, 6-dec) |
+| `recoverCore` tx | `0x354abba4cff30a7de21b2a4364e232779c8a6a05f6cfdad8ad7b3a3af1cf2e84` |
+| Net unrecoverable cost | 1 USDC (newCoreAccountFee) |
+
+Three events visible in the probe-call receipt: `Approval` (USDC →
+CDW), `Transfer` (probe → CDW, 2e6), `Transfer` (probe →
+`0x2000…0000`, 2e6 — the synthetic event the bridge emits for
+HyperCore). So the bridge fired and the synthetic event was emitted
+within-tx, but HyperCore had not processed the event into the
+precompile's view at the moment of the immediately-following
+precompile read.
+
+### 15.3 Implication for PR 5 commit 3
+
+Decisions 1–11 in `FACTORY_DESIGN_NOTES.md` are unchanged. Only the
+wiring inside commit 3 shifts:
+
+- **`CreatorVault.sol`** gains `address public immutable FACTORY` set
+  in the constructor (`address(0)` for non-factory deploys), a
+  `bool internal _bootstrapped` single-shot flag, and a
+  `bootstrapDeposit(address creator, uint256 amount)` external
+  function callable only by `FACTORY`. The function bypasses
+  `VaultNotActivated`, enqueues the pending bridge for the amount
+  already bridged by the factory, and mints shares to `creator`. The
+  existing `_doDeposit`'s activation guard skips the precompile check
+  if `_bootstrapped == true`.
+- **`Factory.sol`'s `createVault`** pulls the creator's stake from
+  `msg.sender`, deploys the vault via CREATE2, fires one combined
+  bridge of `NEW_CORE_ACCOUNT_FEE_USDC + initialStake` (1 USDC float
+  + N USDC stake) to the vault's Core address, then calls
+  `vault.bootstrapDeposit(creator, initialStake)`. The 1 USDC is
+  consumed as activation fee; N USDC credits to vault Core spot
+  cross-block. Atomic from the creator's POV.
+- **Non-factory deploys** (e.g., `DeployCreatorVault.s.sol`) pass
+  `FACTORY = address(0)`; `bootstrapDeposit` is permanently locked
+  and the existing pre-activation runbook applies as before.
+
+No changes to the audit-scope discipline: factory remains a thin
+wrapper; the vault stays factory-agnostic except for the single
+`bootstrapDeposit` entry point gated by an immutable address check.
+
+
