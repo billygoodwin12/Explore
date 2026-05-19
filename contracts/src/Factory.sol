@@ -28,6 +28,12 @@ contract Factory is ReentrancyGuard {
     uint256 public constant MAX_USERNAME_LENGTH      = 30;
     uint256 public constant NEW_CORE_ACCOUNT_FEE_USDC = 1e6;   // 1 USDC absorbed per vault
     uint256 public constant FLOAT_WITHDRAWAL_DELAY    = 7 days;
+    /// @notice Delay constants for PR 6c admin operations.
+    ///         Treasury (7d) carries the highest blast radius — it's the
+    ///         destination for every protocol revenue stream. Deployment
+    ///         fee (24h) is a pricing knob, same tier as PR 4 fee/TVL.
+    uint256 public constant TREASURY_CHANGE_DELAY      = 7 days;
+    uint256 public constant DEPLOYMENT_FEE_CHANGE_DELAY = 24 hours;
     /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
     ///         calls comfortably under HyperEVM's block gas limit
     ///         regardless of how large `_vaults` grows. Clients
@@ -68,6 +74,30 @@ contract Factory is ReentrancyGuard {
     ///         PR 4's propose/execute pattern.
     PendingFloatWithdrawal public pendingFloatWithdrawal;
 
+    // ─── Protocol revenue routing (PR 6c) ──────────────────────────
+    /// @notice Single destination for every protocol revenue stream:
+    ///         deployment fees (this PR), deposit fees skimmed by vaults
+    ///         (looked up via `ICreatorFactory.protocolTreasury`),
+    ///         builder code fees (already configured separately).
+    ///         Mutable via 7-day timelock — see `proposeTreasuryChange`.
+    address public protocolTreasury;
+
+    /// @notice Per-vault deployment fee, charged in `createVault`.
+    ///         Default 20 USDC at construction; mutable via 24h timelock.
+    uint256 public deploymentFeeUsdc;
+
+    struct PendingTreasuryChange {
+        address newTreasury;
+        uint64  executableAt;
+    }
+    PendingTreasuryChange public pendingTreasuryChange;
+
+    struct PendingDeploymentFee {
+        uint256 newFeeUsdc;
+        uint64  executableAt;
+    }
+    PendingDeploymentFee public pendingDeploymentFee;
+
     // ─── Events ────────────────────────────────────────────────────
     event VaultDeployed(
         address indexed vault,
@@ -84,6 +114,18 @@ contract Factory is ReentrancyGuard {
     event FloatWithdrawalProposed(address to, uint256 amount, uint64 executableAt);
     event FloatWithdrawalExecuted(address to, uint256 amount);
     event FloatWithdrawalCancelled(address to, uint256 amount);
+
+    event TreasuryChangeProposed(address newTreasury, uint64 executableAt);
+    event TreasuryChangeExecuted(address oldTreasury, address newTreasury);
+    event TreasuryChangeCancelled(address newTreasury);
+
+    event DeploymentFeeChangeProposed(uint256 newFeeUsdc, uint64 executableAt);
+    event DeploymentFeeChangeExecuted(uint256 newFeeUsdc);
+    event DeploymentFeeChangeCancelled(uint256 newFeeUsdc);
+
+    /// @notice Emitted on every `createVault` when the configured
+    ///         deployment fee was > 0 and transferred to the treasury.
+    event DeploymentFeePaid(address indexed payer, uint256 amount, address indexed treasury);
 
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
@@ -130,15 +172,20 @@ contract Factory is ReentrancyGuard {
         IERC20 usdc_,
         address coreDepositWallet_,
         address protocolAdmin_,
+        address protocolTreasury_,
+        uint256 initialDeploymentFeeUsdc_,
         bytes32[] memory reservedNameHashes_
     ) {
         if (address(usdc_) == address(0))    revert ZeroAddress();
         if (coreDepositWallet_ == address(0)) revert ZeroAddress();
         if (protocolAdmin_ == address(0))     revert ZeroAddress();
+        if (protocolTreasury_ == address(0))  revert ZeroAddress();
 
         USDC = usdc_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         PROTOCOL_ADMIN = protocolAdmin_;
+        protocolTreasury = protocolTreasury_;
+        deploymentFeeUsdc = initialDeploymentFeeUsdc_;
 
         for (uint256 i = 0; i < reservedNameHashes_.length; i++) {
             _isReservedByHash[reservedNameHashes_[i]] = true;
@@ -185,7 +232,17 @@ contract Factory is ReentrancyGuard {
         bytes32 nameHash = _validateUsernameOrRevert(username);
         _checkCreatorAndStake(initialStake);
 
-        USDC.safeTransferFrom(msg.sender, address(this), initialStake);
+        // PR 6c: pull (deploymentFee + initialStake) atomically. The
+        // deployment fee is forwarded to `protocolTreasury` before any
+        // other state mutation; failure on the treasury transfer
+        // unwinds the whole tx (atomic guarantee preserved).
+        uint256 fee = deploymentFeeUsdc;
+        USDC.safeTransferFrom(msg.sender, address(this), fee + initialStake);
+        if (fee > 0) {
+            address treasury = protocolTreasury;
+            USDC.safeTransfer(treasury, fee);
+            emit DeploymentFeePaid(msg.sender, fee, treasury);
+        }
 
         vault = _deployVault(msg.sender, nameHash, vaultName, vaultSymbol);
 
@@ -366,6 +423,81 @@ contract Factory is ReentrancyGuard {
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingFloatWithdrawal;
         emit FloatWithdrawalCancelled(p.to, p.amount);
+    }
+
+    // ─── Treasury change (PR 6c, 7-day timelock) ───────────────────
+    /// @notice Admin proposes a new protocol treasury address.
+    ///         Highest-blast-radius admin op on the factory — every
+    ///         protocol revenue stream routes here, so 7-day delay
+    ///         matches the stake-cap tier from PR 4.
+    function proposeTreasuryChange(address newTreasury) external onlyAdmin {
+        if (pendingTreasuryChange.executableAt != 0) {
+            revert PendingChangeExists(pendingTreasuryChange.executableAt);
+        }
+        if (newTreasury == address(0)) revert ZeroAddress();
+        uint64 executableAt = uint64(block.timestamp + TREASURY_CHANGE_DELAY);
+        pendingTreasuryChange = PendingTreasuryChange({
+            newTreasury: newTreasury,
+            executableAt: executableAt
+        });
+        emit TreasuryChangeProposed(newTreasury, executableAt);
+    }
+
+    function executeTreasuryChange() external onlyAdmin {
+        PendingTreasuryChange memory p = pendingTreasuryChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        address old = protocolTreasury;
+        protocolTreasury = p.newTreasury;
+        delete pendingTreasuryChange;
+        emit TreasuryChangeExecuted(old, p.newTreasury);
+    }
+
+    /// @notice Permissionless cancel of a pending treasury change.
+    ///         Defense against admin-key compromise queuing a hostile
+    ///         treasury swap during the 7-day window. Matches PR 5
+    ///         float-withdrawal cancel semantics.
+    function cancelPendingTreasuryChange() external {
+        PendingTreasuryChange memory p = pendingTreasuryChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingTreasuryChange;
+        emit TreasuryChangeCancelled(p.newTreasury);
+    }
+
+    // ─── Deployment fee change (PR 6c, 24h timelock) ───────────────
+    /// @notice Admin proposes a new per-vault deployment fee. 24h
+    ///         delay matches PR 4's fee-tier cadence; lower stakes
+    ///         than the treasury (no asset extraction, just pricing).
+    function proposeDeploymentFee(uint256 newFeeUsdc) external onlyAdmin {
+        if (pendingDeploymentFee.executableAt != 0) {
+            revert PendingChangeExists(pendingDeploymentFee.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPLOYMENT_FEE_CHANGE_DELAY);
+        pendingDeploymentFee = PendingDeploymentFee({
+            newFeeUsdc: newFeeUsdc,
+            executableAt: executableAt
+        });
+        emit DeploymentFeeChangeProposed(newFeeUsdc, executableAt);
+    }
+
+    function executeDeploymentFee() external onlyAdmin {
+        PendingDeploymentFee memory p = pendingDeploymentFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        deploymentFeeUsdc = p.newFeeUsdc;
+        delete pendingDeploymentFee;
+        emit DeploymentFeeChangeExecuted(p.newFeeUsdc);
+    }
+
+    function cancelPendingDeploymentFee() external {
+        PendingDeploymentFee memory p = pendingDeploymentFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDeploymentFee;
+        emit DeploymentFeeChangeCancelled(p.newFeeUsdc);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────

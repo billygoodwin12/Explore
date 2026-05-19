@@ -62,8 +62,13 @@ contract FactoryHarness is Factory {
         IERC20 usdc_,
         address coreDepositWallet_,
         address protocolAdmin_,
+        address protocolTreasury_,
+        uint256 initialDeploymentFeeUsdc_,
         bytes32[] memory reservedNameHashes_
-    ) Factory(usdc_, coreDepositWallet_, protocolAdmin_, reservedNameHashes_) {}
+    ) Factory(
+        usdc_, coreDepositWallet_, protocolAdmin_,
+        protocolTreasury_, initialDeploymentFeeUsdc_, reservedNameHashes_
+    ) {}
 
     function exposed_validateUsernameOrRevert(string calldata u) external view returns (bytes32) {
         return _validateUsernameOrRevert(u);
@@ -79,10 +84,12 @@ contract FactoryTest is Test {
     MockUSDC usdc;
     MockCoreDepositWallet cdw;
 
-    address admin   = address(0xA1);
-    address alice   = address(0xA2);
-    address bob     = address(0xB0);
-    address charlie = address(0xC1);
+    address admin    = address(0xA1);
+    address alice    = address(0xA2);
+    address bob      = address(0xB0);
+    address charlie  = address(0xC1);
+    address treasury = address(0xFEE);
+    uint256 constant INITIAL_DEPLOYMENT_FEE = 20e6; // $20
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -91,7 +98,10 @@ contract FactoryTest is Test {
         reserved[0] = keccak256(bytes("admin"));
         reserved[1] = keccak256(bytes("theorise"));
         reserved[2] = keccak256(bytes("support"));
-        factory = new FactoryHarness(IERC20(address(usdc)), address(cdw), admin, reserved);
+        factory = new FactoryHarness(
+            IERC20(address(usdc)), address(cdw), admin,
+            treasury, INITIAL_DEPLOYMENT_FEE, reserved
+        );
 
         // Mock the CoreWriter precompile so vault's bootstrapDeposit
         // path -> _updateStakeBreachState -> any indirect CoreWriter
@@ -319,9 +329,15 @@ contract FactoryTest is Test {
 
     // ─── PR 5 commit 3b: createVault end-to-end ───────────────────────
 
+    /// @dev `amount` is the intended STAKE. PR 6c: factory pulls
+    ///      `deploymentFeeUsdc + stake` from the creator, so the seed
+    ///      must cover both. Helper reads current factory state so
+    ///      tests that change the deployment fee mid-suite still
+    ///      seed correctly.
     function _seedCreator(address creator, uint256 amount) internal {
-        usdc.mint(creator, amount);
-        vm.prank(creator); usdc.approve(address(factory), amount);
+        uint256 total = amount + factory.deploymentFeeUsdc();
+        usdc.mint(creator, total);
+        vm.prank(creator); usdc.approve(address(factory), total);
     }
 
     function test_createVault_happy_path_atomic() public {
@@ -363,10 +379,13 @@ contract FactoryTest is Test {
 
         // CDW received gross (fee + stake).
         assertEq(usdc.balanceOf(address(cdw)), 1e6 + stake);
-        // Factory holds no leftover USDC.
+        // Factory holds no leftover USDC (deploymentFee forwarded to treasury;
+        // stake + activation fee bridged to CDW).
         assertEq(usdc.balanceOf(address(factory)), 0);
-        // Creator's EVM USDC fully transferred to factory then bridged out.
+        // Creator's EVM USDC fully transferred to factory.
         assertEq(usdc.balanceOf(alice), 0);
+        // PR 6c: treasury received the deployment fee.
+        assertEq(usdc.balanceOf(treasury), INITIAL_DEPLOYMENT_FEE);
     }
 
     function test_createVault_reverts_username_reserved() public {
@@ -956,5 +975,208 @@ contract FactoryTest is Test {
         vm.prank(bob);
         vm.expectRevert(); // DepositExceedsTvlCap
         v.deposit(100e6, bob);
+    }
+
+    // ─── PR 6c: deployment fee + treasury management ──────────────────
+
+    function test_createVault_charges_deployment_fee() public {
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake + deploymentFee
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, INITIAL_DEPLOYMENT_FEE);
+    }
+
+    function test_createVault_insufficient_approval_reverts() public {
+        _fundFloat(1e6);
+        usdc.mint(alice, 1000e6);
+        // Approve only the stake; not enough to cover stake + deploymentFee.
+        vm.prank(alice); usdc.approve(address(factory), 1000e6);
+        vm.prank(alice);
+        vm.expectRevert(); // SafeERC20 / allowance revert
+        factory.createVault("alice", 1000e6, "v", "V");
+    }
+
+    function test_createVault_zero_deployment_fee() public {
+        // Admin proposes deploymentFee = 0 and executes after 24h.
+        vm.prank(admin); factory.proposeDeploymentFee(0);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDeploymentFee();
+        assertEq(factory.deploymentFeeUsdc(), 0);
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake (deploymentFee now 0)
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+
+        // Treasury unchanged; no fee event expected.
+        assertEq(usdc.balanceOf(treasury), treasuryBefore);
+    }
+
+    function test_admin_propose_deployment_fee_change() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DeploymentFeeChangeProposed(
+            25e6, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeDeploymentFee(25e6);
+
+        (uint256 newFee, uint64 ea) = factory.pendingDeploymentFee();
+        assertEq(newFee, 25e6);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_deployment_fee_executes_after_timelock() public {
+        vm.prank(admin); factory.proposeDeploymentFee(25e6);
+        (, uint64 ea) = factory.pendingDeploymentFee();
+
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeDeploymentFee();
+        assertEq(factory.deploymentFeeUsdc(), 25e6);
+        // Pending cleared.
+        (uint256 newFee, uint64 eaAfter) = factory.pendingDeploymentFee();
+        assertEq(newFee, 0); assertEq(eaAfter, 0);
+    }
+
+    function test_deployment_fee_change_propagates_to_subsequent_deploys() public {
+        vm.prank(admin); factory.proposeDeploymentFee(50e6);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDeploymentFee();
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake + new 50e6 fee
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 50e6);
+    }
+
+    function test_cancel_pending_deployment_fee_permissionless() public {
+        vm.prank(admin); factory.proposeDeploymentFee(50e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DeploymentFeeChangeCancelled(50e6);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDeploymentFee();
+
+        (uint256 newFee, uint64 ea) = factory.pendingDeploymentFee();
+        assertEq(newFee, 0); assertEq(ea, 0);
+    }
+
+    function test_treasury_change_propose_execute_with_7d_timelock() public {
+        address newTreasury = address(0xBEEF);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.TreasuryChangeProposed(
+            newTreasury, uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+
+        // Cannot execute before 7 days.
+        vm.warp(block.timestamp + 7 days - 1);
+        vm.prank(admin);
+        vm.expectRevert();
+        factory.executeTreasuryChange();
+
+        // Execute at exactly 7 days.
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin); factory.executeTreasuryChange();
+        assertEq(factory.protocolTreasury(), newTreasury);
+    }
+
+    function test_treasury_change_blocks_at_24h() public {
+        // Treasury is 7-day timelock (TREASURY_CHANGE_DELAY), NOT 24h
+        // like the fee tiers. This test asserts execute at 24h reverts.
+        vm.prank(admin); factory.proposeTreasuryChange(address(0xBEEF));
+
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin);
+        vm.expectRevert();
+        factory.executeTreasuryChange();
+    }
+
+    function test_treasury_receives_deployment_fee_after_change() public {
+        // Propose + execute treasury change; subsequent createVault
+        // routes deployment fee to the new treasury.
+        address newTreasury = address(0xBEEF);
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeTreasuryChange();
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake);
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 oldTreasuryBefore = usdc.balanceOf(treasury);
+        uint256 newTreasuryBefore = usdc.balanceOf(newTreasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+
+        assertEq(usdc.balanceOf(treasury), oldTreasuryBefore, "old treasury unchanged");
+        assertEq(
+            usdc.balanceOf(newTreasury) - newTreasuryBefore,
+            INITIAL_DEPLOYMENT_FEE,
+            "new treasury received the deployment fee"
+        );
+    }
+
+    function test_cancel_pending_treasury_change_permissionless() public {
+        address newTreasury = address(0xBEEF);
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.TreasuryChangeCancelled(newTreasury);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingTreasuryChange();
+
+        (address t, uint64 ea) = factory.pendingTreasuryChange();
+        assertEq(t, address(0)); assertEq(ea, 0);
     }
 }

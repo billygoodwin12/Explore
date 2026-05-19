@@ -12,6 +12,15 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 
+/// @notice Minimal interface to the factory's protocol treasury lookup.
+///         Factory-deployed vaults route deposit fees to whichever
+///         address the factory currently has set as
+///         `protocolTreasury`. PR 6c introduces this single-treasury
+///         design; pre-6c the recipient was stored per-vault.
+interface ICreatorFactory {
+    function protocolTreasury() external view returns (address);
+}
+
 /// @title  CreatorVault — Theorise PR 2-NEW (inline-bridge EVM-deposit)
 /// @notice Creator-led vault. Followers deposit USDC on HyperEVM via the
 ///         standard ERC-4626 surface; `deposit()` / `mint()` pull USDC,
@@ -67,13 +76,18 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
     // ─── Deposit fee ──────────────────────────────────────────
     uint16  public depositFeeBps;
-    address public feeRecipient;
     /// @notice Hard cap on `depositFeeBps`, set at deploy by the
     ///         factory (factory's `currentDepositFeeCapBps` at the
     ///         time this vault was deployed). Creator can set the
     ///         bps anywhere in `[0, MAX_DEPOSIT_FEE_BPS]`. For
     ///         direct-deploy (non-factory) vaults, the deploy script
     ///         passes the canonical 100 bps cap.
+    /// @dev    Fee recipient is NOT stored per-vault as of PR 6c.
+    ///         `_doDeposit` reads `IFactory(FACTORY).protocolTreasury()`
+    ///         at deposit time, so admin treasury changes propagate to
+    ///         every existing vault automatically. Direct-deploy vaults
+    ///         (FACTORY == address(0)) silently bypass fee extraction
+    ///         since there's no factory to look up.
     uint16  public immutable MAX_DEPOSIT_FEE_BPS;
 
     // ─── Deposit floor ────────────────────────────────────────
@@ -165,17 +179,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         At most one pending change per parameter at any time;
     ///         admin must `cancelPending<X>` an existing proposal
     ///         before re-proposing.
-    /// @notice Pending change for the fee RECIPIENT (treasury address)
-    ///         only. The bps rate is creator-controlled via
-    ///         `setDepositFee` and does NOT flow through this timelock
-    ///         (PR 6a split — rate is the creator's economic lever;
-    ///         recipient is admin/treasury management).
-    struct PendingFeeRecipientChange {
-        address newRecipient;
-        uint64  executableAt;
-    }
-    PendingFeeRecipientChange public pendingFeeRecipientChange;
-
     struct PendingStakeCap {
         uint256 newCap;
         uint64  executableAt;
@@ -213,10 +216,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     /// @notice Emitted on creator-controlled rate changes via
     ///         `setDepositFee`. Immediate, no timelock.
     event DepositFeeChanged(uint16 oldBps, uint16 newBps);
-
-    event FeeRecipientChangeProposed(address newRecipient, uint64 executableAt);
-    event FeeRecipientChangeExecuted(address oldRecipient, address newRecipient);
-    event FeeRecipientChangeCancelled(address newRecipient);
 
     event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
     event StakeCapChangeExecuted(uint256 newCap);
@@ -397,7 +396,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
             Math.Rounding.Ceil
         );
         uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
+        address recip = _feeRecipient();
         if (bps > 0 && recip != address(0)) {
             return Math.mulDiv(net, 10_000, 10_000 - bps, Math.Rounding.Ceil);
         }
@@ -526,7 +525,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         shares = _sharesForNet(net);
         if (shares == 0) revert SharesRoundToZero();
 
-        if (fee > 0) token.safeTransfer(feeRecipient, fee);
+        if (fee > 0) token.safeTransfer(_feeRecipient(), fee);
         _bridgeToCore(token, net);
         _enqueuePending(net);
 
@@ -701,42 +700,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         emit DepositFeeChanged(oldBps, newBps);
     }
 
-    /// @notice Admin-controlled recipient change with 24h timelock.
-    ///         The fee RATE is creator-set above; this path manages
-    ///         only the treasury address that receives skimmed fees.
-    function proposeFeeRecipientChange(address newRecipient) external onlyOwner {
-        if (pendingFeeRecipientChange.executableAt != 0) {
-            revert PendingChangeExists(pendingFeeRecipientChange.executableAt);
-        }
-        uint64 executableAt = uint64(block.timestamp + FEE_CHANGE_DELAY);
-        pendingFeeRecipientChange = PendingFeeRecipientChange({
-            newRecipient: newRecipient,
-            executableAt: executableAt
-        });
-        emit FeeRecipientChangeProposed(newRecipient, executableAt);
-    }
-    function executeFeeRecipientChange() external onlyOwner {
-        PendingFeeRecipientChange memory p = pendingFeeRecipientChange;
-        if (p.executableAt == 0) revert NoPendingChange();
-        if (block.timestamp < p.executableAt) {
-            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
-        }
-
-        address oldRecipient = feeRecipient;
-        feeRecipient = p.newRecipient;
-        delete pendingFeeRecipientChange;
-
-        emit FeeRecipientChangeExecuted(oldRecipient, p.newRecipient);
-    }
-    /// @notice Permissionless cancel of a pending recipient change.
-    ///         Defense against admin-key compromise during the 24h
-    ///         window; mirrors PR 5 cancel pattern.
-    function cancelPendingFeeRecipientChange() external {
-        PendingFeeRecipientChange memory p = pendingFeeRecipientChange;
-        if (p.executableAt == 0) revert NoPendingChange();
-        delete pendingFeeRecipientChange;
-        emit FeeRecipientChangeCancelled(p.newRecipient);
-    }
+    // Fee recipient is sourced from the factory (PR 6c). Per-vault
+    // recipient state + timelock removed; see ICreatorFactory above
+    // and `_feeRecipient()` in the Internals section.
 
     function proposeStakeCapChange(uint256 newCap) external onlyOwner {
         if (pendingStakeCap.executableAt != 0) {
@@ -842,9 +808,19 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     }
 
     // ─── Internals ─────────────────────────────────────────────────
+    /// @notice Resolves the factory's protocol treasury. Returns
+    ///         `address(0)` for direct-deploy vaults (FACTORY ==
+    ///         address(0)), which disables fee extraction even when
+    ///         creator has set a non-zero `depositFeeBps`. The
+    ///         `_splitFee` defensive check (recip != 0) handles this.
+    function _feeRecipient() internal view returns (address) {
+        if (FACTORY == address(0)) return address(0);
+        return ICreatorFactory(FACTORY).protocolTreasury();
+    }
+
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
         uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
+        address recip = _feeRecipient();
         fee = (bps > 0 && recip != address(0)) ? Math.mulDiv(assets, bps, 10_000) : 0;
         net = assets - fee;
     }

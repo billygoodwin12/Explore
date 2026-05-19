@@ -35,9 +35,20 @@ contract MockCoreDepositWallet {
     }
 }
 
+/// @dev Minimal stand-in for the Theorise Factory's view surface that
+///      CreatorVault reads at deposit time. PR 6c makes the vault look
+///      up its fee recipient via `ICreatorFactory(FACTORY).protocolTreasury()`;
+///      the default test vault is wired to this mock so fee-flow tests
+///      work without spinning up the full Factory contract.
+contract MockFactory {
+    address public protocolTreasury;
+    function setTreasury(address t) external { protocolTreasury = t; }
+}
+
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
     MockCoreDepositWallet cdw;
+    MockFactory mockFactory;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -52,12 +63,19 @@ contract CreatorVaultTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
+        // MockFactory wired so the vault's `_feeRecipient()` returns
+        // `treasury` -- fee-flow tests work without a real Factory.
+        // The single test that explicitly asserts FACTORY=address(0)
+        // (`test_bootstrap_reverts_on_direct_deploy_vault`) deploys
+        // its own vault.
+        mockFactory = new MockFactory();
+        mockFactory.setTreasury(treasury);
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
             address(cdw),
-            address(0),
+            address(mockFactory),
             100,
             "Theorise BTC Long",
             "tVAULT"
@@ -126,20 +144,18 @@ contract CreatorVaultTest is Test {
     // stay readable. Revert-path tests target the propose function
     // directly (no helper, no warp).
 
-    /// @dev Helper for tests that need both bps + recipient set. In
-    ///      PR 6a these split: creator sets bps immediately, admin
-    ///      sets recipient via 24h timelock. Helper handles both
-    ///      paths atomically so existing call shape is preserved.
-    ///      Name retained as `_adminSetDepositFee` because tests
-    ///      reading the name still treat it as "fee fully configured."
+    /// @dev Creator sets deposit fee rate. Recipient is no longer
+    ///      per-vault state (PR 6c: vault reads factory's treasury at
+    ///      deposit time). The `recip` arg is retained as a no-op for
+    ///      call-shape compatibility with pre-6c tests; the helper
+    ///      asserts the caller passed the expected `treasury` so a
+    ///      drift between test expectation and factory wiring fails
+    ///      loudly.
     function _adminSetDepositFee(uint16 bps, address recip) internal {
-        // Recipient change via admin timelock if different.
-        if (vault.feeRecipient() != recip) {
-            vm.prank(admin); vault.proposeFeeRecipientChange(recip);
-            vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
-            vm.prank(admin); vault.executeFeeRecipientChange();
-        }
-        // Creator sets the rate immediately (no timelock).
+        require(
+            recip == mockFactory.protocolTreasury(),
+            "test calls _adminSetDepositFee with a recipient that doesn't match mockFactory.protocolTreasury -- update test or factory wiring"
+        );
         if (vault.depositFeeBps() != bps) {
             vm.prank(creator); vault.setDepositFee(bps);
         }
@@ -364,12 +380,14 @@ contract CreatorVaultTest is Test {
     function _resetVaultWithBootstrap() internal {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
+        mockFactory = new MockFactory();
+        mockFactory.setTreasury(treasury);
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
             address(cdw),
-            address(0),
+            address(mockFactory),
             100,
             "Theorise BTC Long",
             "tVAULT"
@@ -695,8 +713,10 @@ contract CreatorVaultTest is Test {
     // ─── Deposit fee admin ────────────────────────────────────────────
 
     function test_fee_defaults_to_zero() public view {
+        // PR 6c: vault no longer stores feeRecipient; factory's
+        // protocolTreasury is read at deposit time. depositFeeBps
+        // still defaults to 0 on construction.
         assertEq(vault.depositFeeBps(), 0);
-        assertEq(vault.feeRecipient(), address(0));
     }
 
     // ─── PR 6a: creator-controlled deposit fee with hard cap ─────────
@@ -1257,123 +1277,6 @@ contract CreatorVaultTest is Test {
         assertEq(vault.STAKE_CAP_CHANGE_DELAY(),   7 days);
     }
 
-    // PR 6a: deposit fee rate is creator-controlled (tests in the
-    // "PR 6a" block above); ONLY the recipient flows through the
-    // timelock here. Tests below exercise the state machine for the
-    // `proposeFeeRecipientChange` family, mirroring PR 4's coverage
-    // pattern for the other timelocked operations.
-
-    function test_propose_fee_recipient_emits_and_sets_pending() public {
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit CreatorVault.FeeRecipientChangeProposed(
-            treasury, uint64(block.timestamp + 24 hours)
-        );
-        vm.prank(admin);
-        vault.proposeFeeRecipientChange(treasury);
-
-        (address newRecipient, uint64 executableAt) = vault.pendingFeeRecipientChange();
-        assertEq(newRecipient, treasury);
-        assertEq(executableAt, uint64(block.timestamp + 24 hours));
-    }
-
-    function test_propose_fee_recipient_reverts_if_pending_exists() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        (, uint64 existing) = vault.pendingFeeRecipientChange();
-
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
-        );
-        vault.proposeFeeRecipientChange(address(0xBEEF));
-    }
-
-    function test_execute_fee_recipient_reverts_before_delay() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        uint64 ea = uint64(block.timestamp + 24 hours);
-
-        vm.warp(block.timestamp + 24 hours - 1);
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
-            )
-        );
-        vault.executeFeeRecipientChange();
-    }
-
-    function test_execute_fee_recipient_succeeds_exactly_at_executable_at() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        (, uint64 ea) = vault.pendingFeeRecipientChange();
-
-        vm.warp(uint256(ea));
-        vm.prank(admin);
-        vault.executeFeeRecipientChange();
-        assertEq(vault.feeRecipient(), treasury);
-    }
-
-    function test_execute_fee_recipient_reverts_when_no_pending() public {
-        vm.prank(admin);
-        vm.expectRevert(CreatorVault.NoPendingChange.selector);
-        vault.executeFeeRecipientChange();
-    }
-
-    function test_propose_execute_fee_recipient_happy_path() public {
-        _adminSetDepositFee(75, treasury); // exercises the helper path
-        assertEq(vault.depositFeeBps(), 75);
-        assertEq(vault.feeRecipient(), treasury);
-        (address r, uint64 ea) = vault.pendingFeeRecipientChange();
-        assertEq(r, address(0)); assertEq(ea, 0);
-    }
-
-    function test_cancel_fee_recipient_clears_pending_and_emits() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit CreatorVault.FeeRecipientChangeCancelled(treasury);
-        vm.prank(admin); vault.cancelPendingFeeRecipientChange();
-
-        (, uint64 ea) = vault.pendingFeeRecipientChange();
-        assertEq(ea, 0);
-    }
-
-    function test_cancel_fee_recipient_reverts_when_no_pending() public {
-        vm.prank(admin);
-        vm.expectRevert(CreatorVault.NoPendingChange.selector);
-        vault.cancelPendingFeeRecipientChange();
-    }
-
-    function test_cancel_fee_recipient_permissionless() public {
-        // Cancel mirrors PR 5 permissionless pattern. Any address can abort.
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        vm.prank(alice); vault.cancelPendingFeeRecipientChange();
-        (, uint64 ea) = vault.pendingFeeRecipientChange();
-        assertEq(ea, 0, "alice (non-admin) successfully cancelled");
-    }
-
-    function test_re_propose_fee_recipient_after_cancel_works() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        vm.prank(admin); vault.cancelPendingFeeRecipientChange();
-        vm.prank(admin); vault.proposeFeeRecipientChange(address(0xCAFE));
-
-        (address r, ) = vault.pendingFeeRecipientChange();
-        assertEq(r, address(0xCAFE));
-    }
-
-    function test_propose_cancel_propose_execute_fee_recipient_lands_second_value() public {
-        // End-to-end: propose A, cancel, propose B, wait, execute.
-        // Live state matches B; pending cleared.
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
-        vm.prank(admin); vault.cancelPendingFeeRecipientChange();
-
-        address treasuryV2 = address(0xCAFE);
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasuryV2);
-        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
-        vm.prank(admin); vault.executeFeeRecipientChange();
-
-        assertEq(vault.feeRecipient(), treasuryV2);
-        (address r, uint64 ea) = vault.pendingFeeRecipientChange();
-        assertEq(r, address(0)); assertEq(ea, 0);
-    }
 
     function test_execute_stake_cap_reverts_before_7_days() public {
         vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
@@ -1433,13 +1336,11 @@ contract CreatorVaultTest is Test {
 
     function test_non_admin_cannot_propose_any() public {
         // Note: deposit-fee RATE is creator-controlled in PR 6a (covered
-        // by test_non_creator_cannot_set_deposit_fee). The four admin
-        // propose paths below all reject non-admin: recipient (PR 6a),
-        // stake cap, TVL cap, builder fee (all PR 4).
-        // Use bob (not creator -- creator can set fee rate, so prank as
-        // alice/bob ensures non-creator-non-admin path).
+        // by test_non_creator_cannot_set_deposit_fee). The three admin
+        // propose paths below all reject non-admin: stake cap, TVL cap,
+        // builder fee. (Fee recipient timelock was removed in PR 6c --
+        // recipient is now factory-side state.)
         vm.startPrank(bob);
-        vm.expectRevert(); vault.proposeFeeRecipientChange(treasury);
         vm.expectRevert(); vault.proposeStakeCapChange(500_000e6);
         vm.expectRevert(); vault.proposeTvlCapChange(500);
         vm.expectRevert(); vault.proposeBuilderFeeChange(address(0xBEE), 50);
@@ -1447,14 +1348,12 @@ contract CreatorVaultTest is Test {
     }
 
     function test_non_admin_cannot_execute_any() public {
-        vm.prank(admin); vault.proposeFeeRecipientChange(treasury);
         vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
         vm.prank(admin); vault.proposeTvlCapChange(500);
         vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
         vm.warp(block.timestamp + 7 days);
 
         vm.startPrank(bob);
-        vm.expectRevert(); vault.executeFeeRecipientChange();
         vm.expectRevert(); vault.executeStakeCapChange();
         vm.expectRevert(); vault.executeTvlCapChange();
         vm.expectRevert(); vault.executeBuilderFeeChange();
@@ -1462,11 +1361,10 @@ contract CreatorVaultTest is Test {
     }
 
     function test_non_admin_cannot_cancel_any() public {
-        // PR 6a: cancelPendingFeeRecipientChange is permissionless --
-        // covered separately by test_cancel_fee_recipient_permissionless.
-        // The other three cancels remain admin-only on this branch
-        // (PR 4 cancel retrofit lives on its own branch and will flow
-        // in via rebase post-merge).
+        // Fee recipient cancel was permissionless in PR 6a then removed
+        // entirely in PR 6c. The three cancels below remain admin-only
+        // on this branch (PR 4 cancel retrofit lives on its own branch
+        // and will flow in via rebase post-merge).
         vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
         vm.startPrank(bob);
         vm.expectRevert(); vault.cancelPendingStakeCapChange();
@@ -1478,9 +1376,15 @@ contract CreatorVaultTest is Test {
     // ─── PR 5 commit 3a: bootstrapDeposit (vault side) ────────────────
 
     function test_bootstrap_reverts_on_direct_deploy_vault() public {
-        assertEq(vault.FACTORY(), address(0));
+        // PR 6c default test vault uses a MockFactory so fee flow works;
+        // for this specific test we need a vault with FACTORY=address(0).
+        CreatorVault directDeployVault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw),
+            address(0), 100, "x", "y"
+        );
+        assertEq(directDeployVault.FACTORY(), address(0));
         vm.expectRevert(CreatorVault.NotFactory.selector);
-        vault.bootstrapDeposit(creator, 1000e6);
+        directDeployVault.bootstrapDeposit(creator, 1000e6);
     }
 
     function test_bootstrap_reverts_when_msg_sender_not_factory() public {
@@ -1548,7 +1452,12 @@ contract CreatorVaultTest is Test {
     }
 
     function test_bootstrap_bypasses_VaultNotActivated_for_followup_deposits() public {
-        address factoryAddr = address(0xFAC);
+        // PR 6c: vault reads factory.protocolTreasury() at deposit time
+        // (in _splitFee). Use a real MockFactory so the lookup succeeds
+        // -- a plain EOA factoryAddr would revert on the staticcall.
+        MockFactory localFactory = new MockFactory();
+        localFactory.setTreasury(treasury);
+        address factoryAddr = address(localFactory);
         CreatorVault v = new CreatorVault(
             IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, "x", "y"
         );
