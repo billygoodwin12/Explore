@@ -349,7 +349,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -411,7 +411,7 @@ contract FactoryTest is Test {
         bytes32 salt1 = factory.vaultSalt(alice, "trader");
         bytes32 initHash1 = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted1 = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt1, initHash1
@@ -435,7 +435,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -477,7 +477,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -539,7 +539,7 @@ contract FactoryTest is Test {
         bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -873,7 +873,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -987,7 +987,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1024,7 +1024,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1075,7 +1075,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1147,7 +1147,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1178,5 +1178,181 @@ contract FactoryTest is Test {
 
         (address t, uint64 ea) = factory.pendingTreasuryChange();
         assertEq(t, address(0)); assertEq(ea, 0);
+    }
+
+    // ─── PR 6b: factory-level deposit fee default + cap ──────────────
+
+    /// @dev Builds a vault via factory.createVault for the given creator
+    ///      with username "alice"-style. Returns the deployed address.
+    ///      Uses the current factory state (defaultDepositFeeBps,
+    ///      currentDepositFeeCapBps) for the CREATE2 init-code hash.
+    function _deployVaultWithCurrentDefaults(
+        address creator,
+        string memory name
+    ) internal returns (address vault) {
+        _seedCreator(creator, 1000e6);
+
+        bytes32 nameHash = keccak256(bytes(name));
+        bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
+        uint16 cap = factory.currentDepositFeeCapBps();
+        uint16 def = factory.defaultDepositFeeBps();
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), cap, def, "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        vm.prank(creator);
+        return _createVaultDynamic(creator, name, 1000e6);
+    }
+
+    function test_factory_default_deposit_fee_applied_to_new_vault() public {
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).depositFeeBps(), 25, "vault inherits factory default at deploy");
+    }
+
+    function test_factory_default_deposit_fee_cap_applied_to_new_vault() public {
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).MAX_DEPOSIT_FEE_BPS(), 100, "vault inherits factory cap at deploy");
+    }
+
+    function test_admin_propose_new_default_deposit_fee() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultProposed(
+            30, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeDepositFeeDefault(30);
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeDefault();
+        assertEq(newBps, 30);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_admin_cannot_propose_default_above_cap() public {
+        // Cap is 100; propose default = 101 must revert.
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.DepositFeeDefaultAboveCap.selector, uint16(101), uint16(100)
+            )
+        );
+        factory.proposeDepositFeeDefault(101);
+    }
+
+    function test_default_executed_after_timelock() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultExecuted(50);
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+    }
+
+    function test_default_execute_before_timelock_reverts() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        uint64 ea = uint64(block.timestamp + 24 hours);
+
+        vm.warp(block.timestamp + 24 hours - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        factory.executeDepositFeeDefault();
+    }
+
+    function test_default_execute_succeeds_exactly_at_executable_at() public {
+        // Boundary: block.timestamp == executableAt must succeed.
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        (, uint64 ea) = factory.pendingDepositFeeDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+    }
+
+    function test_default_change_does_not_affect_existing_vaults() public {
+        _fundFloat(2e6);
+
+        // Deploy vault A at default = 25.
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).depositFeeBps(), 25);
+
+        // Admin changes default to 50.
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+
+        // Vault A's bps unchanged.
+        assertEq(CreatorVault(vaultA).depositFeeBps(), 25, "existing vault unaffected");
+
+        // Deploy vault B; inherits new default.
+        address vaultB = _deployVaultWithCurrentDefaults(bob, "bob");
+        assertEq(CreatorVault(vaultB).depositFeeBps(), 50, "new vault inherits 50");
+    }
+
+    function test_cap_change_does_not_affect_existing_vaults() public {
+        _fundFloat(1e6);
+
+        // Deploy vault A at cap = 100.
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).MAX_DEPOSIT_FEE_BPS(), 100);
+
+        // Admin changes cap to 200.
+        vm.prank(admin); factory.proposeDepositFeeCap(200);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDepositFeeCap();
+        assertEq(factory.currentDepositFeeCapBps(), 200);
+
+        // Vault A's MAX_DEPOSIT_FEE_BPS is immutable; unchanged.
+        assertEq(CreatorVault(vaultA).MAX_DEPOSIT_FEE_BPS(), 100, "existing vault immutable cap unaffected");
+    }
+
+    function test_cap_change_below_default_reverts() public {
+        // Default is 25; propose cap = 10 < default must revert.
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.DepositFeeCapBelowDefault.selector, uint16(10), uint16(25)
+            )
+        );
+        factory.proposeDepositFeeCap(10);
+    }
+
+    function test_cap_zero_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(Factory.DepositFeeCapZero.selector);
+        factory.proposeDepositFeeCap(0);
+    }
+
+    function test_cancel_default_permissionless() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultCancelled(50);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDepositFeeDefault();
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeDefault();
+        assertEq(newBps, 0); assertEq(ea, 0);
+    }
+
+    function test_cancel_cap_permissionless() public {
+        vm.prank(admin); factory.proposeDepositFeeCap(200);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeCapCancelled(200);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDepositFeeCap();
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeCap();
+        assertEq(newBps, 0); assertEq(ea, 0);
     }
 }

@@ -25,7 +25,10 @@ contract DeployCreatorVault is Script {
         // README pre-activation runbook applies as before.
         // maxDepositFeeBps = 100 (= 1%): canonical cap matching the
         // factory's PR 6a default.
-        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), 100, name_, symbol_);
+        // initialDepositFeeBps = 0: direct-deploy vaults start at zero
+        // fee; creator can raise via `setDepositFee` (PR 6a). Factory-
+        // deployed vaults instead inherit `factory.defaultDepositFeeBps`.
+        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), 100, 0, name_, symbol_);
         vm.stopBroadcast();
 
         console.log("CreatorVault deployed at:", address(vault));

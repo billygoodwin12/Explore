@@ -34,6 +34,11 @@ contract Factory is ReentrancyGuard {
     ///         fee (24h) is a pricing knob, same tier as PR 4 fee/TVL.
     uint256 public constant TREASURY_CHANGE_DELAY      = 7 days;
     uint256 public constant DEPLOYMENT_FEE_CHANGE_DELAY = 24 hours;
+    /// @notice PR 6b: deposit-fee default and cap both timelocked at 24h.
+    ///         Same tier as DEPLOYMENT_FEE_CHANGE_DELAY -- pricing knobs,
+    ///         not asset-extraction operations.
+    uint256 public constant DEPOSIT_FEE_DEFAULT_DELAY   = 24 hours;
+    uint256 public constant DEPOSIT_FEE_CAP_DELAY       = 24 hours;
     /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
     ///         calls comfortably under HyperEVM's block gas limit
     ///         regardless of how large `_vaults` grows. Clients
@@ -98,6 +103,32 @@ contract Factory is ReentrancyGuard {
     }
     PendingDeploymentFee public pendingDeploymentFee;
 
+    // ─── Vault deposit-fee defaults (PR 6b) ────────────────────────
+    /// @notice Initial deposit-fee bps stamped onto every new vault at
+    ///         createVault time. Vaults snapshot this value into their
+    ///         own `depositFeeBps` at construction; subsequent factory
+    ///         changes only affect FUTURE deploys (existing vaults
+    ///         unaffected, since `depositFeeBps` is per-vault mutable
+    ///         only by the creator via `setDepositFee`).
+    uint16 public defaultDepositFeeBps = 25;
+
+    /// @notice Cap on `depositFeeBps` at vault deployment, stamped into
+    ///         the vault's immutable `MAX_DEPOSIT_FEE_BPS`. Existing
+    ///         vaults' caps are frozen at their deploy-time value.
+    uint16 public currentDepositFeeCapBps = 100;
+
+    struct PendingDepositFeeDefault {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingDepositFeeDefault public pendingDepositFeeDefault;
+
+    struct PendingDepositFeeCap {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingDepositFeeCap public pendingDepositFeeCap;
+
     // ─── Events ────────────────────────────────────────────────────
     event VaultDeployed(
         address indexed vault,
@@ -127,6 +158,14 @@ contract Factory is ReentrancyGuard {
     ///         deployment fee was > 0 and transferred to the treasury.
     event DeploymentFeePaid(address indexed payer, uint256 amount, address indexed treasury);
 
+    event DepositFeeDefaultProposed(uint16 newBps, uint64 executableAt);
+    event DepositFeeDefaultExecuted(uint16 newBps);
+    event DepositFeeDefaultCancelled(uint16 newBps);
+
+    event DepositFeeCapProposed(uint16 newBps, uint64 executableAt);
+    event DepositFeeCapExecuted(uint16 newBps);
+    event DepositFeeCapCancelled(uint16 newBps);
+
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
     error ZeroAddress();
@@ -154,6 +193,15 @@ contract Factory is ReentrancyGuard {
     ///         Offsets beyond `vaultCount` and `limit == 0` return an
     ///         empty array rather than reverting — simpler client UX.
     error PaginationLimitTooLarge(uint256 limit, uint256 max);
+    /// @notice PR 6b: `proposeDepositFeeDefault` rejects a default
+    ///         that exceeds the current cap; `proposeDepositFeeCap`
+    ///         rejects a cap below the current default. Either path
+    ///         keeps the invariant `default <= cap` enforced at the
+    ///         factory level (vault constructor enforces it again
+    ///         as defense-in-depth).
+    error DepositFeeDefaultAboveCap(uint16 newDefault, uint16 cap);
+    error DepositFeeCapBelowDefault(uint16 newCap, uint16 currentDefault);
+    error DepositFeeCapZero();
 
     /// @notice Mirrors PR 4's timelock error surface. Float withdrawal
     ///         reuses the same propose/execute/cancel state machine.
@@ -284,15 +332,19 @@ contract Factory is ReentrancyGuard {
         // Salt includes the factory address so v1/v2 factory redeploys
         // can't collide on the same (creator, username) pair.
         bytes32 salt = keccak256(abi.encodePacked(address(this), creator, nameHash));
-        // maxDepositFeeBps: hardcoded 100 (= 1%) in PR 6a; replaced by
-        // factory state `currentDepositFeeCapBps` in PR 6b.
+        // PR 6b: factory state drives both vault fee params. The vault
+        // constructor checks `initial <= max` defensively; the factory's
+        // propose-side checks (default <= cap on both paths) keep the
+        // invariant. New vaults inherit current values; existing vaults
+        // unaffected by subsequent factory changes.
         vault = address(new CreatorVault{salt: salt}(
             USDC,
             creator,
             PROTOCOL_ADMIN,
             CORE_DEPOSIT_WALLET,
             address(this),
-            100,
+            currentDepositFeeCapBps,
+            defaultDepositFeeBps,
             vaultName,
             vaultSymbol
         ));
@@ -498,6 +550,84 @@ contract Factory is ReentrancyGuard {
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingDeploymentFee;
         emit DeploymentFeeChangeCancelled(p.newFeeUsdc);
+    }
+
+    // ─── Deposit fee default + cap (PR 6b, 24h timelock each) ─────
+    /// @notice Admin proposes a new default deposit-fee bps that new
+    ///         vaults will inherit. Invariant: `newBps <= currentDepositFeeCapBps`
+    ///         keeps `default <= cap`. Existing vaults unaffected --
+    ///         they snapshotted their default at deploy time.
+    function proposeDepositFeeDefault(uint16 newBps) external onlyAdmin {
+        if (pendingDepositFeeDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingDepositFeeDefault.executableAt);
+        }
+        if (newBps > currentDepositFeeCapBps) {
+            revert DepositFeeDefaultAboveCap(newBps, currentDepositFeeCapBps);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPOSIT_FEE_DEFAULT_DELAY);
+        pendingDepositFeeDefault = PendingDepositFeeDefault({
+            newBps: newBps,
+            executableAt: executableAt
+        });
+        emit DepositFeeDefaultProposed(newBps, executableAt);
+    }
+
+    function executeDepositFeeDefault() external {
+        PendingDepositFeeDefault memory p = pendingDepositFeeDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultDepositFeeBps = p.newBps;
+        delete pendingDepositFeeDefault;
+        emit DepositFeeDefaultExecuted(p.newBps);
+    }
+
+    function cancelPendingDepositFeeDefault() external {
+        PendingDepositFeeDefault memory p = pendingDepositFeeDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDepositFeeDefault;
+        emit DepositFeeDefaultCancelled(p.newBps);
+    }
+
+    /// @notice Admin proposes a new deposit-fee cap. Invariants:
+    ///         `newBps > 0` (cap == 0 would freeze every creator's
+    ///         pricing at 0) and `newBps >= defaultDepositFeeBps`
+    ///         (cap below default would create an inconsistent factory
+    ///         state where new vaults deploy with bps > cap, which the
+    ///         vault constructor would reject anyway).
+    function proposeDepositFeeCap(uint16 newBps) external onlyAdmin {
+        if (pendingDepositFeeCap.executableAt != 0) {
+            revert PendingChangeExists(pendingDepositFeeCap.executableAt);
+        }
+        if (newBps == 0) revert DepositFeeCapZero();
+        if (newBps < defaultDepositFeeBps) {
+            revert DepositFeeCapBelowDefault(newBps, defaultDepositFeeBps);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPOSIT_FEE_CAP_DELAY);
+        pendingDepositFeeCap = PendingDepositFeeCap({
+            newBps: newBps,
+            executableAt: executableAt
+        });
+        emit DepositFeeCapProposed(newBps, executableAt);
+    }
+
+    function executeDepositFeeCap() external {
+        PendingDepositFeeCap memory p = pendingDepositFeeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        currentDepositFeeCapBps = p.newBps;
+        delete pendingDepositFeeCap;
+        emit DepositFeeCapExecuted(p.newBps);
+    }
+
+    function cancelPendingDepositFeeCap() external {
+        PendingDepositFeeCap memory p = pendingDepositFeeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDepositFeeCap;
+        emit DepositFeeCapCancelled(p.newBps);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────

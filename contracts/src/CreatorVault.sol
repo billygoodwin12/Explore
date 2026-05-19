@@ -306,15 +306,25 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         address coreDepositWallet_,
         address factory_,
         uint16 maxDepositFeeBps_,
+        uint16 initialDepositFeeBps_,
         string memory name_,
         string memory symbol_
     ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
         if (creator_ == address(0)) revert ZeroAddress();
         if (coreDepositWallet_ == address(0)) revert ZeroAddress();
+        // PR 6b safety: defense-in-depth against an inconsistent factory
+        // state (e.g., admin lowered factory cap below the current
+        // default). The factory is also expected to enforce the
+        // invariant when proposing changes, but the vault rejects on
+        // its boundary too.
+        if (initialDepositFeeBps_ > maxDepositFeeBps_) {
+            revert DepositFeeExceedsCap(initialDepositFeeBps_, maxDepositFeeBps_);
+        }
         CREATOR = creator_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         FACTORY = factory_;
         MAX_DEPOSIT_FEE_BPS = maxDepositFeeBps_;
+        depositFeeBps = initialDepositFeeBps_;
         creatorStakeCapUsdc = 250_000e6;
     }
 
