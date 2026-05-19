@@ -333,7 +333,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -392,7 +392,7 @@ contract FactoryTest is Test {
         bytes32 salt1 = factory.vaultSalt(alice, "trader");
         bytes32 initHash1 = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted1 = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt1, initHash1
@@ -416,7 +416,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -458,7 +458,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -520,7 +520,7 @@ contract FactoryTest is Test {
         bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -854,7 +854,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash

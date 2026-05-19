@@ -23,7 +23,9 @@ contract DeployCreatorVault is Script {
         // factory_ = address(0): direct (non-factory) deploy; the vault's
         // `bootstrapDeposit` entry point is permanently locked and the
         // README pre-activation runbook applies as before.
-        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), name_, symbol_);
+        // maxDepositFeeBps = 100 (= 1%): canonical cap matching the
+        // factory's PR 6a default.
+        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), 100, name_, symbol_);
         vm.stopBroadcast();
 
         console.log("CreatorVault deployed at:", address(vault));

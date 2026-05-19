@@ -227,12 +227,15 @@ contract Factory is ReentrancyGuard {
         // Salt includes the factory address so v1/v2 factory redeploys
         // can't collide on the same (creator, username) pair.
         bytes32 salt = keccak256(abi.encodePacked(address(this), creator, nameHash));
+        // maxDepositFeeBps: hardcoded 100 (= 1%) in PR 6a; replaced by
+        // factory state `currentDepositFeeCapBps` in PR 6b.
         vault = address(new CreatorVault{salt: salt}(
             USDC,
             creator,
             PROTOCOL_ADMIN,
             CORE_DEPOSIT_WALLET,
             address(this),
+            100,
             vaultName,
             vaultSymbol
         ));

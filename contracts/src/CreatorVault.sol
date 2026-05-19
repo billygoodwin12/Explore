@@ -68,7 +68,13 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     // ─── Deposit fee ──────────────────────────────────────────
     uint16  public depositFeeBps;
     address public feeRecipient;
-    uint16  public constant MAX_DEPOSIT_FEE_BPS = 1000;
+    /// @notice Hard cap on `depositFeeBps`, set at deploy by the
+    ///         factory (factory's `currentDepositFeeCapBps` at the
+    ///         time this vault was deployed). Creator can set the
+    ///         bps anywhere in `[0, MAX_DEPOSIT_FEE_BPS]`. For
+    ///         direct-deploy (non-factory) vaults, the deploy script
+    ///         passes the canonical 100 bps cap.
+    uint16  public immutable MAX_DEPOSIT_FEE_BPS;
 
     // ─── Deposit floor ────────────────────────────────────────
     /// @notice Minimum gross USDC per deposit. Prevents dust-spam +
@@ -159,12 +165,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         At most one pending change per parameter at any time;
     ///         admin must `cancelPending<X>` an existing proposal
     ///         before re-proposing.
-    struct PendingFeeChange {
-        uint16  newBps;
+    /// @notice Pending change for the fee RECIPIENT (treasury address)
+    ///         only. The bps rate is creator-controlled via
+    ///         `setDepositFee` and does NOT flow through this timelock
+    ///         (PR 6a split — rate is the creator's economic lever;
+    ///         recipient is admin/treasury management).
+    struct PendingFeeRecipientChange {
         address newRecipient;
         uint64  executableAt;
     }
-    PendingFeeChange public pendingFeeChange;
+    PendingFeeRecipientChange public pendingFeeRecipientChange;
 
     struct PendingStakeCap {
         uint256 newCap;
@@ -189,7 +199,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event PendingBridgeSettled(uint256 amountSettled, uint256 pendingStartAfter);
     event PendingBridgeExpired(uint256 amountExpired, uint256 pendingStartAfter);
 
-    event DepositFeeUpdated(uint16 bps, address recipient);
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed owner, address indexed coreReceiver, uint256 shares, uint256 amount);
     event MovedOnCore(uint256 amount, bool toPerp);
@@ -201,9 +210,13 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
     event DepositTvlCapUpdated(uint16 oldBps, uint16 newBps);
 
-    event DepositFeeChangeProposed(uint16 newBps, address newRecipient, uint64 executableAt);
-    event DepositFeeChangeExecuted(uint16 newBps, address newRecipient);
-    event DepositFeeChangeCancelled(uint16 newBps, address newRecipient);
+    /// @notice Emitted on creator-controlled rate changes via
+    ///         `setDepositFee`. Immediate, no timelock.
+    event DepositFeeChanged(uint16 oldBps, uint16 newBps);
+
+    event FeeRecipientChangeProposed(address newRecipient, uint64 executableAt);
+    event FeeRecipientChangeExecuted(address oldRecipient, address newRecipient);
+    event FeeRecipientChangeCancelled(address newRecipient);
 
     event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
     event StakeCapChangeExecuted(uint256 newCap);
@@ -258,11 +271,9 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
     error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
     error TvlCapBpsOutOfBounds(uint16 newBps, uint16 minBps, uint16 maxBps);
-    error DepositFeeTooHigh(uint16 bps, uint16 cap);
-    /// @notice `setDepositFee` rejects nonzero bps with a zero recipient
-    ///         (would silently disable the fee in `_splitFee` — surface it
-    ///         explicitly so admin misconfigurations are caught at the call).
-    error FeeConfigInvalid(uint16 bps, address recipient);
+    /// @notice Creator's `setDepositFee` rejects bps above the
+    ///         immutable `MAX_DEPOSIT_FEE_BPS` cap.
+    error DepositFeeExceedsCap(uint16 requested, uint16 cap);
     error PrecompileFailed(address precompile);
     error NotCreator();
     error ZeroAmount();
@@ -295,6 +306,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         address admin_,
         address coreDepositWallet_,
         address factory_,
+        uint16 maxDepositFeeBps_,
         string memory name_,
         string memory symbol_
     ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
@@ -303,6 +315,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         CREATOR = creator_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         FACTORY = factory_;
+        MAX_DEPOSIT_FEE_BPS = maxDepositFeeBps_;
         creatorStakeCapUsdc = 250_000e6;
     }
 
@@ -674,41 +687,55 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     // All four admin parameter changes go through propose + execute, gated by
     // per-function delays. See PR4_DESIGN_NOTES.md for rationale.
 
-    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {
-        if (pendingFeeChange.executableAt != 0) {
-            revert PendingChangeExists(pendingFeeChange.executableAt);
+    /// @notice Creator-controlled rate setting (PR 6a). Immediate, no
+    ///         timelock. Capped by `MAX_DEPOSIT_FEE_BPS` set at deploy.
+    ///         Existing depositors are unaffected — fee is charged at
+    ///         deposit time using the rate active at that moment.
+    function setDepositFee(uint16 newBps) external nonReentrant {
+        if (msg.sender != CREATOR) revert NotCreator();
+        if (newBps > MAX_DEPOSIT_FEE_BPS) {
+            revert DepositFeeExceedsCap(newBps, MAX_DEPOSIT_FEE_BPS);
         }
-        if (newBps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(newBps, MAX_DEPOSIT_FEE_BPS);
-        if (newBps > 0 && newRecipient == address(0)) revert FeeConfigInvalid(newBps, newRecipient);
-        if (newBps == 0 && newRecipient != address(0)) revert FeeConfigInvalid(newBps, newRecipient);
+        uint16 oldBps = depositFeeBps;
+        depositFeeBps = newBps;
+        emit DepositFeeChanged(oldBps, newBps);
+    }
 
+    /// @notice Admin-controlled recipient change with 24h timelock.
+    ///         The fee RATE is creator-set above; this path manages
+    ///         only the treasury address that receives skimmed fees.
+    function proposeFeeRecipientChange(address newRecipient) external onlyOwner {
+        if (pendingFeeRecipientChange.executableAt != 0) {
+            revert PendingChangeExists(pendingFeeRecipientChange.executableAt);
+        }
         uint64 executableAt = uint64(block.timestamp + FEE_CHANGE_DELAY);
-        pendingFeeChange = PendingFeeChange({
-            newBps: newBps,
+        pendingFeeRecipientChange = PendingFeeRecipientChange({
             newRecipient: newRecipient,
             executableAt: executableAt
         });
-        emit DepositFeeChangeProposed(newBps, newRecipient, executableAt);
+        emit FeeRecipientChangeProposed(newRecipient, executableAt);
     }
-    function executeDepositFeeChange() external onlyOwner {
-        PendingFeeChange memory p = pendingFeeChange;
+    function executeFeeRecipientChange() external onlyOwner {
+        PendingFeeRecipientChange memory p = pendingFeeRecipientChange;
         if (p.executableAt == 0) revert NoPendingChange();
         if (block.timestamp < p.executableAt) {
             revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
         }
 
-        depositFeeBps = p.newBps;
+        address oldRecipient = feeRecipient;
         feeRecipient = p.newRecipient;
-        delete pendingFeeChange;
+        delete pendingFeeRecipientChange;
 
-        emit DepositFeeUpdated(p.newBps, p.newRecipient);
-        emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
+        emit FeeRecipientChangeExecuted(oldRecipient, p.newRecipient);
     }
-    function cancelPendingFeeChange() external onlyOwner {
-        PendingFeeChange memory p = pendingFeeChange;
+    /// @notice Permissionless cancel of a pending recipient change.
+    ///         Defense against admin-key compromise during the 24h
+    ///         window; mirrors PR 5 cancel pattern.
+    function cancelPendingFeeRecipientChange() external {
+        PendingFeeRecipientChange memory p = pendingFeeRecipientChange;
         if (p.executableAt == 0) revert NoPendingChange();
-        delete pendingFeeChange;
-        emit DepositFeeChangeCancelled(p.newBps, p.newRecipient);
+        delete pendingFeeRecipientChange;
+        emit FeeRecipientChangeCancelled(p.newRecipient);
     }
 
     function proposeStakeCapChange(uint256 newCap) external onlyOwner {
