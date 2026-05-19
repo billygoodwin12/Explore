@@ -39,6 +39,11 @@ contract Factory is ReentrancyGuard {
     ///         not asset-extraction operations.
     uint256 public constant DEPOSIT_FEE_DEFAULT_DELAY   = 24 hours;
     uint256 public constant DEPOSIT_FEE_CAP_DELAY       = 24 hours;
+    /// @notice PR 6d: builder defaults. Address change is 7d (treasury
+    ///         tier -- builder identity affects every new vault's trade
+    ///         routing). Fee rate change is 24h (fee tier).
+    uint256 public constant BUILDER_ADDRESS_DEFAULT_DELAY  = 7 days;
+    uint256 public constant BUILDER_FEE_RATE_DEFAULT_DELAY = 24 hours;
     /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
     ///         calls comfortably under HyperEVM's block gas limit
     ///         regardless of how large `_vaults` grows. Clients
@@ -129,6 +134,29 @@ contract Factory is ReentrancyGuard {
     }
     PendingDepositFeeCap public pendingDepositFeeCap;
 
+    // ─── Builder defaults (PR 6d) ──────────────────────────────────
+    /// @notice Builder address stamped onto every new vault at deploy.
+    ///         Vault constructor fires CoreWriter ACTION_APPROVE_BUILDER_FEE
+    ///         iff this is non-zero. Per-vault overrides via PR 4's
+    ///         proposeBuilderFeeChange path remain available.
+    address public defaultBuilderAddress;
+
+    /// @notice Builder fee rate (HL-native units, per PR 4 convention).
+    ///         Stamped into new vaults alongside `defaultBuilderAddress`.
+    uint64 public defaultBuilderFeeRate;
+
+    struct PendingBuilderAddressDefault {
+        address newAddress;
+        uint64  executableAt;
+    }
+    PendingBuilderAddressDefault public pendingBuilderAddressDefault;
+
+    struct PendingBuilderFeeRateDefault {
+        uint64 newRate;
+        uint64 executableAt;
+    }
+    PendingBuilderFeeRateDefault public pendingBuilderFeeRateDefault;
+
     // ─── Events ────────────────────────────────────────────────────
     event VaultDeployed(
         address indexed vault,
@@ -165,6 +193,14 @@ contract Factory is ReentrancyGuard {
     event DepositFeeCapProposed(uint16 newBps, uint64 executableAt);
     event DepositFeeCapExecuted(uint16 newBps);
     event DepositFeeCapCancelled(uint16 newBps);
+
+    event BuilderAddressDefaultProposed(address newAddress, uint64 executableAt);
+    event BuilderAddressDefaultExecuted(address newAddress);
+    event BuilderAddressDefaultCancelled(address newAddress);
+
+    event BuilderFeeRateDefaultProposed(uint64 newRate, uint64 executableAt);
+    event BuilderFeeRateDefaultExecuted(uint64 newRate);
+    event BuilderFeeRateDefaultCancelled(uint64 newRate);
 
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
@@ -345,6 +381,8 @@ contract Factory is ReentrancyGuard {
             address(this),
             currentDepositFeeCapBps,
             defaultDepositFeeBps,
+            defaultBuilderAddress,
+            defaultBuilderFeeRate,
             vaultName,
             vaultSymbol
         ));
@@ -628,6 +666,68 @@ contract Factory is ReentrancyGuard {
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingDepositFeeCap;
         emit DepositFeeCapCancelled(p.newBps);
+    }
+
+    // ─── Builder address default (PR 6d, 7-day timelock) ──────────
+    function proposeBuilderAddressDefault(address newAddress) external onlyAdmin {
+        if (pendingBuilderAddressDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderAddressDefault.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + BUILDER_ADDRESS_DEFAULT_DELAY);
+        pendingBuilderAddressDefault = PendingBuilderAddressDefault({
+            newAddress: newAddress,
+            executableAt: executableAt
+        });
+        emit BuilderAddressDefaultProposed(newAddress, executableAt);
+    }
+
+    function executeBuilderAddressDefault() external {
+        PendingBuilderAddressDefault memory p = pendingBuilderAddressDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultBuilderAddress = p.newAddress;
+        delete pendingBuilderAddressDefault;
+        emit BuilderAddressDefaultExecuted(p.newAddress);
+    }
+
+    function cancelPendingBuilderAddressDefault() external {
+        PendingBuilderAddressDefault memory p = pendingBuilderAddressDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderAddressDefault;
+        emit BuilderAddressDefaultCancelled(p.newAddress);
+    }
+
+    // ─── Builder fee rate default (PR 6d, 24h timelock) ───────────
+    function proposeBuilderFeeRateDefault(uint64 newRate) external onlyAdmin {
+        if (pendingBuilderFeeRateDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderFeeRateDefault.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + BUILDER_FEE_RATE_DEFAULT_DELAY);
+        pendingBuilderFeeRateDefault = PendingBuilderFeeRateDefault({
+            newRate: newRate,
+            executableAt: executableAt
+        });
+        emit BuilderFeeRateDefaultProposed(newRate, executableAt);
+    }
+
+    function executeBuilderFeeRateDefault() external {
+        PendingBuilderFeeRateDefault memory p = pendingBuilderFeeRateDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultBuilderFeeRate = p.newRate;
+        delete pendingBuilderFeeRateDefault;
+        emit BuilderFeeRateDefaultExecuted(p.newRate);
+    }
+
+    function cancelPendingBuilderFeeRateDefault() external {
+        PendingBuilderFeeRateDefault memory p = pendingBuilderFeeRateDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderFeeRateDefault;
+        emit BuilderFeeRateDefaultCancelled(p.newRate);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────

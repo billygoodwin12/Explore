@@ -349,7 +349,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -411,7 +411,7 @@ contract FactoryTest is Test {
         bytes32 salt1 = factory.vaultSalt(alice, "trader");
         bytes32 initHash1 = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted1 = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt1, initHash1
@@ -435,7 +435,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -477,7 +477,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -539,7 +539,7 @@ contract FactoryTest is Test {
         bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -873,7 +873,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -987,7 +987,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1024,7 +1024,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1075,7 +1075,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1147,7 +1147,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1196,9 +1196,14 @@ contract FactoryTest is Test {
         bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
         uint16 cap = factory.currentDepositFeeCapBps();
         uint16 def = factory.defaultDepositFeeBps();
+        address builderAddr = factory.defaultBuilderAddress();
+        uint64 builderRate  = factory.defaultBuilderFeeRate();
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), cap, def, "v", "V")
+            abi.encode(
+                IERC20(address(usdc)), creator, admin, address(cdw), address(factory),
+                cap, def, builderAddr, builderRate, "v", "V"
+            )
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -1354,5 +1359,171 @@ contract FactoryTest is Test {
 
         (uint16 newBps, uint64 ea) = factory.pendingDepositFeeCap();
         assertEq(newBps, 0); assertEq(ea, 0);
+    }
+
+    // ─── PR 6d: factory builder address + fee rate defaults ──────────
+
+    /// @dev Configures factory builder defaults via the timelocks (max
+    ///      delay = 7 days for the address). Vault deploys after this
+    ///      pick up the configured values.
+    function _setFactoryBuilderDefaults(address addr, uint64 rate) internal {
+        if (factory.defaultBuilderAddress() != addr) {
+            vm.prank(admin); factory.proposeBuilderAddressDefault(addr);
+            vm.warp(block.timestamp + 7 days);
+            vm.prank(admin); factory.executeBuilderAddressDefault();
+        }
+        if (factory.defaultBuilderFeeRate() != rate) {
+            vm.prank(admin); factory.proposeBuilderFeeRateDefault(rate);
+            vm.warp(block.timestamp + 24 hours);
+            vm.prank(admin); factory.executeBuilderFeeRateDefault();
+        }
+    }
+
+    function test_new_vault_inherits_factory_builder_address() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).INITIAL_BUILDER(), address(0xBEE));
+    }
+
+    function test_new_vault_inherits_factory_builder_rate() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 75);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).INITIAL_BUILDER_FEE_RATE(), 75);
+    }
+
+    function test_admin_proposes_builder_address_change_7d() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderAddressDefaultProposed(
+            address(0xBEE), uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+
+        (address addr, uint64 ea) = factory.pendingBuilderAddressDefault();
+        assertEq(addr, address(0xBEE));
+        assertEq(ea, uint64(block.timestamp + 7 days));
+    }
+
+    function test_admin_proposes_builder_rate_change_24h() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderFeeRateDefaultProposed(
+            100, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(100);
+
+        (uint64 rate, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        assertEq(rate, 100);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_builder_address_execute_reverts_before_7_days() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        uint64 ea = uint64(block.timestamp + 7 days);
+
+        // 24h short of 7d must revert.
+        vm.warp(block.timestamp + 6 days + 23 hours);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        factory.executeBuilderAddressDefault();
+    }
+
+    function test_builder_address_execute_succeeds_exactly_at_executable_at() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        (, uint64 ea) = factory.pendingBuilderAddressDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeBuilderAddressDefault();
+        assertEq(factory.defaultBuilderAddress(), address(0xBEE));
+    }
+
+    function test_builder_rate_execute_succeeds_exactly_at_executable_at() public {
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(50);
+        (, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeBuilderFeeRateDefault();
+        assertEq(factory.defaultBuilderFeeRate(), 50);
+    }
+
+    function test_factory_builder_change_does_not_affect_existing_vaults() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(2e6);
+
+        // Vault A inherits (0xBEE, 50).
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER(), address(0xBEE));
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER_FEE_RATE(), 50);
+
+        // Admin changes factory defaults.
+        _setFactoryBuilderDefaults(address(0xCAFE), 100);
+
+        // Vault A's immutables unchanged.
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER(), address(0xBEE));
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER_FEE_RATE(), 50);
+
+        // Vault B inherits the new defaults.
+        address vaultB = _deployVaultWithCurrentDefaults(bob, "bob");
+        assertEq(CreatorVault(vaultB).INITIAL_BUILDER(), address(0xCAFE));
+        assertEq(CreatorVault(vaultB).INITIAL_BUILDER_FEE_RATE(), 100);
+    }
+
+    function test_per_vault_override_via_PR4_mechanism_works() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        CreatorVault v = CreatorVault(vault);
+
+        // Admin overrides per-vault via the PR 4 propose/execute path.
+        vm.prank(admin); v.proposeBuilderFeeChange(address(0xCAFE), 200);
+        vm.warp(block.timestamp + 24 hours);
+
+        // CoreWriter call is mocked; the assertion is that execute
+        // doesn't revert (state machine works) and emits the
+        // BuilderApproved + BuilderFeeChangeExecuted events.
+        vm.expectEmit(true, true, true, true, vault);
+        emit CreatorVault.BuilderApproved(address(0xCAFE), 200);
+        vm.prank(admin); v.executeBuilderFeeChange();
+
+        // Vault's immutable INITIAL_BUILDER reflects deploy-time value,
+        // not the override (this is by design -- audit forensics).
+        assertEq(v.INITIAL_BUILDER(), address(0xBEE), "immutable unchanged by override");
+    }
+
+    function test_cancel_builder_address_permissionless() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderAddressDefaultCancelled(address(0xBEE));
+        vm.prank(alice); // permissionless
+        factory.cancelPendingBuilderAddressDefault();
+
+        (address addr, uint64 ea) = factory.pendingBuilderAddressDefault();
+        assertEq(addr, address(0)); assertEq(ea, 0);
+    }
+
+    function test_cancel_builder_rate_permissionless() public {
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(100);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderFeeRateDefaultCancelled(100);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingBuilderFeeRateDefault();
+
+        (uint64 rate, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        assertEq(rate, 0); assertEq(ea, 0);
+    }
+
+    function test_builder_address_delay_is_7d_not_24h() public {
+        // Specifically asserts the asymmetry: address uses TREASURY-tier
+        // 7-day delay, rate uses FEE-tier 24h delay. Execute at 24h
+        // must revert; execute at 7d succeeds.
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin);
+        vm.expectRevert(); // TimelockNotElapsed
+        factory.executeBuilderAddressDefault();
     }
 }

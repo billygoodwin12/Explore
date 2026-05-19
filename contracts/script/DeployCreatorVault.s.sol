@@ -28,7 +28,14 @@ contract DeployCreatorVault is Script {
         // initialDepositFeeBps = 0: direct-deploy vaults start at zero
         // fee; creator can raise via `setDepositFee` (PR 6a). Factory-
         // deployed vaults instead inherit `factory.defaultDepositFeeBps`.
-        vault = new CreatorVault(IERC20(usdc), creator, admin, cdw, address(0), 100, 0, name_, symbol_);
+        // initialBuilder = address(0), initialBuilderFeeRate = 0:
+        // direct deploys start with no builder configured (PR 6d). Admin
+        // can register one via the PR 4 per-vault propose/execute path.
+        vault = new CreatorVault(
+            IERC20(usdc), creator, admin, cdw,
+            address(0), 100, 0, address(0), 0,
+            name_, symbol_
+        );
         vm.stopBroadcast();
 
         console.log("CreatorVault deployed at:", address(vault));

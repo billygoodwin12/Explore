@@ -90,6 +90,16 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         since there's no factory to look up.
     uint16  public immutable MAX_DEPOSIT_FEE_BPS;
 
+    /// @notice Initial builder values stamped at deploy. Set by the
+    ///         factory's PR 6d defaults at createVault time. The
+    ///         CURRENT builder/rate live on HyperCore (set by the
+    ///         constructor's CoreWriter action or any subsequent
+    ///         per-vault `executeBuilderFeeChange` from PR 4); these
+    ///         immutables document the deploy-time values for
+    ///         forensics and audit narrative.
+    address public immutable INITIAL_BUILDER;
+    uint64  public immutable INITIAL_BUILDER_FEE_RATE;
+
     // ─── Deposit floor ────────────────────────────────────────
     /// @notice Minimum gross USDC per deposit. Prevents dust-spam +
     ///         shares-round-to-zero edge cases at high TVL.
@@ -307,6 +317,8 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         address factory_,
         uint16 maxDepositFeeBps_,
         uint16 initialDepositFeeBps_,
+        address initialBuilder_,
+        uint64 initialBuilderFeeRate_,
         string memory name_,
         string memory symbol_
     ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
@@ -324,8 +336,20 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         FACTORY = factory_;
         MAX_DEPOSIT_FEE_BPS = maxDepositFeeBps_;
+        INITIAL_BUILDER = initialBuilder_;
+        INITIAL_BUILDER_FEE_RATE = initialBuilderFeeRate_;
         depositFeeBps = initialDepositFeeBps_;
         creatorStakeCapUsdc = 250_000e6;
+
+        // PR 6d: if a non-zero builder is configured at deploy, fire
+        // CoreWriter approveBuilderFee so the new vault arrives on
+        // HyperCore with the builder pre-approved. Zero-address skips
+        // the action (direct-deploy or factory-without-default state).
+        if (initialBuilder_ != address(0)) {
+            bytes memory payload = abi.encode(initialBuilderFeeRate_, initialBuilder_);
+            _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
+            emit BuilderApproved(initialBuilder_, initialBuilderFeeRate_);
+        }
     }
 
     function _decimalsOffset() internal pure override returns (uint8) {
