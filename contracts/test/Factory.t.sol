@@ -452,14 +452,15 @@ contract FactoryTest is Test {
     }
 
     function test_createVault_reverts_stake_below_minimum() public {
-        _fundFloat(1e6); _seedCreator(alice, 999e6);
+        // PR 6e: minimum is now $100 (state). Try $50 (50e6) -- below.
+        _fundFloat(1e6); _seedCreator(alice, 50e6);
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(
-                Factory.InitialStakeBelowMinimum.selector, uint256(999e6), uint256(1000e6)
+                Factory.InitialStakeBelowMinimum.selector, uint256(50e6), uint256(100e6)
             )
         );
-        factory.createVault("alice", 999e6, "v", "V");
+        factory.createVault("alice", 50e6, "v", "V");
     }
 
     function test_createVault_reverts_float_exhausted() public {
@@ -548,7 +549,7 @@ contract FactoryTest is Test {
 
         vm.prank(creator);
         // Cannot vary args at call site here; name is the only var that
-        // changes per vault, and _seedCreator uses MIN_INITIAL_STAKE_USDC.
+        // changes per vault, and _seedCreator uses minInitialStakeUsdc.
         return _createVaultDynamic(creator, name, 1000e6);
     }
 
@@ -864,11 +865,11 @@ contract FactoryTest is Test {
     }
 
     function test_createVault_succeeds_at_exactly_min_initial_stake() public {
-        // Boundary: stake == MIN_INITIAL_STAKE_USDC ($1000) must
+        // Boundary: stake == minInitialStakeUsdc (PR 6e: $100) must
         // succeed; stake one wei below must revert. Bracket the spam
         // guard threshold.
         _fundFloat(1e6);
-        _seedCreator(alice, 1000e6);
+        _seedCreator(alice, 100e6);
 
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
@@ -881,22 +882,23 @@ contract FactoryTest is Test {
         _mockVaultCorePrecompiles(predicted, 0);
 
         vm.prank(alice);
-        address vault = factory.createVault("alice", 1000e6, "v", "V");
+        address vault = factory.createVault("alice", 100e6, "v", "V");
         assertEq(vault, predicted, "exact-minimum stake succeeds");
-        assertEq(CreatorVault(vault).balanceOf(alice), 1000e6 * 1e6);
+        assertEq(CreatorVault(vault).balanceOf(alice), 100e6 * 1e6);
     }
 
     function test_createVault_reverts_one_wei_below_min_initial_stake() public {
-        _fundFloat(1e6); _seedCreator(alice, 999_999_999);
+        // PR 6e: 99_999_999 = 100e6 - 1.
+        _fundFloat(1e6); _seedCreator(alice, 99_999_999);
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(
                 Factory.InitialStakeBelowMinimum.selector,
-                uint256(999_999_999),
-                uint256(1000e6)
+                uint256(99_999_999),
+                uint256(100e6)
             )
         );
-        factory.createVault("alice", 999_999_999, "v", "V");
+        factory.createVault("alice", 99_999_999, "v", "V");
     }
 
     function test_vaultSalt_is_deterministic_across_calls() public view {
@@ -1525,5 +1527,123 @@ contract FactoryTest is Test {
         vm.prank(admin);
         vm.expectRevert(); // TimelockNotElapsed
         factory.executeBuilderAddressDefault();
+    }
+
+    // ─── PR 6e: MIN_INITIAL_STAKE configurable with 7d timelock ──────
+
+    function test_factory_initial_min_stake_is_100() public view {
+        // PR 6e initial value (lowered from PR 5's $1000 constant to
+        // $100 state-with-timelock). Admin can crank back up via
+        // propose + execute.
+        assertEq(factory.minInitialStakeUsdc(), 100e6);
+    }
+
+    function test_createVault_below_min_reverts() public {
+        // $50 stake when min is $100 -- reverts.
+        _fundFloat(1e6); _seedCreator(alice, 50e6);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.InitialStakeBelowMinimum.selector,
+                uint256(50e6), uint256(100e6)
+            )
+        );
+        factory.createVault("alice", 50e6, "v", "V");
+    }
+
+    function test_admin_proposes_min_stake_change() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.MinStakeChangeProposed(
+            500e6, uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        (uint256 newMin, uint64 ea) = factory.pendingMinStakeChange();
+        assertEq(newMin, 500e6);
+        assertEq(ea, uint64(block.timestamp + 7 days));
+    }
+
+    function test_min_stake_change_executes_after_7d() public {
+        // Specifically asserts the 7-day delay (stake-tier).
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        // 24h short of 7d must revert.
+        vm.warp(block.timestamp + 6 days + 23 hours);
+        vm.prank(admin);
+        vm.expectRevert(); // TimelockNotElapsed
+        factory.executeMinStakeChange();
+
+        // Cross 7d boundary.
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+    }
+
+    function test_min_stake_execute_succeeds_exactly_at_executable_at() public {
+        // Boundary check: block.timestamp == executableAt must succeed.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        (, uint64 ea) = factory.pendingMinStakeChange();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+    }
+
+    function test_propose_min_stake_zero_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(Factory.MinStakeZero.selector);
+        factory.proposeMinStakeChange(0);
+    }
+
+    function test_min_stake_change_propagates_to_subsequent_creates() public {
+        // Bump min to $500; new createVault must require >= $500.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+
+        // $499 stake now reverts.
+        _fundFloat(1e6); _seedCreator(alice, 499e6);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.InitialStakeBelowMinimum.selector,
+                uint256(499e6), uint256(500e6)
+            )
+        );
+        factory.createVault("alice", 499e6, "v", "V");
+    }
+
+    function test_existing_vaults_unaffected_by_min_stake_change() public {
+        // Vault A deployed at min = $100. Admin bumps min to $500.
+        // Vault A continues operating normally (deposits, redeems).
+        _fundFloat(1e6);
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        CreatorVault v = CreatorVault(vaultA);
+
+        // Bump min stake to $500.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+
+        // Vault A's existing state intact. A follower deposit (≥
+        // vault MIN_DEPOSIT_USDC = $10) still works -- factory minimum
+        // applies only at createVault, not to follower deposits.
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(vaultA, type(uint256).max);
+        vm.prank(bob); v.deposit(100e6, bob);
+        assertGt(v.balanceOf(bob), 0, "existing vault still accepts deposits");
+    }
+
+    function test_cancel_min_stake_permissionless() public {
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.MinStakeChangeCancelled(500e6);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingMinStakeChange();
+
+        (uint256 newMin, uint64 ea) = factory.pendingMinStakeChange();
+        assertEq(newMin, 0); assertEq(ea, 0);
     }
 }

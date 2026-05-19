@@ -23,7 +23,6 @@ contract Factory is ReentrancyGuard {
     address public immutable PROTOCOL_ADMIN;
 
     // ─── Constants ─────────────────────────────────────────────────
-    uint256 public constant MIN_INITIAL_STAKE_USDC   = 1000e6; // $1,000 spam guard
     uint256 public constant MIN_USERNAME_LENGTH      = 3;
     uint256 public constant MAX_USERNAME_LENGTH      = 30;
     uint256 public constant NEW_CORE_ACCOUNT_FEE_USDC = 1e6;   // 1 USDC absorbed per vault
@@ -44,6 +43,11 @@ contract Factory is ReentrancyGuard {
     ///         routing). Fee rate change is 24h (fee tier).
     uint256 public constant BUILDER_ADDRESS_DEFAULT_DELAY  = 7 days;
     uint256 public constant BUILDER_FEE_RATE_DEFAULT_DELAY = 24 hours;
+    /// @notice PR 6e: minimum-stake change uses 7-day timelock. Same
+    ///         tier as treasury / stake-cap changes -- raising the
+    ///         minimum can block legitimate creators mid-onboarding,
+    ///         so depositors and partners need real notice.
+    uint256 public constant MIN_STAKE_CHANGE_DELAY = 7 days;
     /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
     ///         calls comfortably under HyperEVM's block gas limit
     ///         regardless of how large `_vaults` grows. Clients
@@ -157,6 +161,23 @@ contract Factory is ReentrancyGuard {
     }
     PendingBuilderFeeRateDefault public pendingBuilderFeeRateDefault;
 
+    // ─── Min initial stake (PR 6e) ─────────────────────────────────
+    /// @notice Minimum stake required to create a vault via
+    ///         `createVault`. Initial value: $100 (100e6) per PR 6e
+    ///         spec. Was a constant at 1000e6 ($1000) in PR 5; PR 6e
+    ///         converts to admin-controlled state with 7-day timelock,
+    ///         and the spec also LOWERS the initial value to $100.
+    ///         Cannot be set to 0 -- zero-stake vaults would break the
+    ///         5%-of-TVL stake floor mechanism (creator with 0 stake
+    ///         is structurally in breach).
+    uint256 public minInitialStakeUsdc = 100e6;
+
+    struct PendingMinStakeChange {
+        uint256 newMinStake;
+        uint64  executableAt;
+    }
+    PendingMinStakeChange public pendingMinStakeChange;
+
     // ─── Events ────────────────────────────────────────────────────
     event VaultDeployed(
         address indexed vault,
@@ -202,6 +223,10 @@ contract Factory is ReentrancyGuard {
     event BuilderFeeRateDefaultExecuted(uint64 newRate);
     event BuilderFeeRateDefaultCancelled(uint64 newRate);
 
+    event MinStakeChangeProposed(uint256 newMinStake, uint64 executableAt);
+    event MinStakeChangeExecuted(uint256 newMinStake);
+    event MinStakeChangeCancelled(uint256 newMinStake);
+
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
     error ZeroAddress();
@@ -238,6 +263,8 @@ contract Factory is ReentrancyGuard {
     error DepositFeeDefaultAboveCap(uint16 newDefault, uint16 cap);
     error DepositFeeCapBelowDefault(uint16 newCap, uint16 currentDefault);
     error DepositFeeCapZero();
+    /// @notice PR 6e: `proposeMinStakeChange` rejects newMin == 0.
+    error MinStakeZero();
 
     /// @notice Mirrors PR 4's timelock error surface. Float withdrawal
     ///         reuses the same propose/execute/cancel state machine.
@@ -279,12 +306,12 @@ contract Factory is ReentrancyGuard {
     // ─── createVault (PR 5 commit 3b) ──────────────────────────────
     /// @notice Self-deploy a vault for `msg.sender` (the creator).
     ///         Permissionless per decision 8; spam-bounded by
-    ///         MIN_INITIAL_STAKE_USDC. Atomic single-tx flow:
+    ///         minInitialStakeUsdc. Atomic single-tx flow:
     ///
     ///         1. Validate username (length, charset, underscore
     ///            rules, not reserved, not taken).
     ///         2. Reject if `msg.sender` already owns a vault.
-    ///         3. Reject if `initialStake < MIN_INITIAL_STAKE_USDC`.
+    ///         3. Reject if `initialStake < minInitialStakeUsdc`.
     ///         4. Reject if factory float < `NEW_CORE_ACCOUNT_FEE_USDC`.
     ///         5. Pull `initialStake` from creator EVM-side.
     ///         6. Deploy vault via CREATE2 with salt =
@@ -303,7 +330,7 @@ contract Factory is ReentrancyGuard {
     ///
     /// @param  username     Lowercase ASCII handle. Validated by
     ///                      `_validateUsernameOrRevert`.
-    /// @param  initialStake Net stake (6-dec USDC), >= MIN_INITIAL_STAKE_USDC.
+    /// @param  initialStake Net stake (6-dec USDC), >= minInitialStakeUsdc.
     /// @param  vaultName    ERC-20 token name (e.g. "Theorise alice BTC Long").
     /// @param  vaultSymbol  ERC-20 token symbol (e.g. "alice-BTC-L").
     /// @return vault        Deterministic CREATE2 address of the new vault.
@@ -351,8 +378,8 @@ contract Factory is ReentrancyGuard {
     function _checkCreatorAndStake(uint256 initialStake) internal view {
         address existing = creatorToVault[msg.sender];
         if (existing != address(0)) revert CreatorAlreadyHasVault(existing);
-        if (initialStake < MIN_INITIAL_STAKE_USDC) {
-            revert InitialStakeBelowMinimum(initialStake, MIN_INITIAL_STAKE_USDC);
+        if (initialStake < minInitialStakeUsdc) {
+            revert InitialStakeBelowMinimum(initialStake, minInitialStakeUsdc);
         }
         if (floatBalance < NEW_CORE_ACCOUNT_FEE_USDC) {
             revert FloatExhausted(floatBalance, NEW_CORE_ACCOUNT_FEE_USDC);
@@ -728,6 +755,42 @@ contract Factory is ReentrancyGuard {
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingBuilderFeeRateDefault;
         emit BuilderFeeRateDefaultCancelled(p.newRate);
+    }
+
+    // ─── Min initial stake (PR 6e, 7-day timelock) ─────────────────
+    /// @notice Admin proposes a new `minInitialStakeUsdc`. 7-day delay
+    ///         matches the stake-cap tier from PR 4 -- raising the
+    ///         minimum can block legitimate creators mid-onboarding,
+    ///         and partners building on top need notice.
+    function proposeMinStakeChange(uint256 newMinStake) external onlyAdmin {
+        if (pendingMinStakeChange.executableAt != 0) {
+            revert PendingChangeExists(pendingMinStakeChange.executableAt);
+        }
+        if (newMinStake == 0) revert MinStakeZero();
+        uint64 executableAt = uint64(block.timestamp + MIN_STAKE_CHANGE_DELAY);
+        pendingMinStakeChange = PendingMinStakeChange({
+            newMinStake: newMinStake,
+            executableAt: executableAt
+        });
+        emit MinStakeChangeProposed(newMinStake, executableAt);
+    }
+
+    function executeMinStakeChange() external {
+        PendingMinStakeChange memory p = pendingMinStakeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        minInitialStakeUsdc = p.newMinStake;
+        delete pendingMinStakeChange;
+        emit MinStakeChangeExecuted(p.newMinStake);
+    }
+
+    function cancelPendingMinStakeChange() external {
+        PendingMinStakeChange memory p = pendingMinStakeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingMinStakeChange;
+        emit MinStakeChangeCancelled(p.newMinStake);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────
