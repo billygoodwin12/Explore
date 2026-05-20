@@ -12,6 +12,15 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 import {HLConstants, ICoreWriter, ICoreDepositWallet} from "./HLConstants.sol";
 
+/// @notice Minimal interface to the factory's protocol treasury lookup.
+///         Factory-deployed vaults route deposit fees to whichever
+///         address the factory currently has set as
+///         `protocolTreasury`. PR 6c introduces this single-treasury
+///         design; pre-6c the recipient was stored per-vault.
+interface ICreatorFactory {
+    function protocolTreasury() external view returns (address);
+}
+
 /// @title  CreatorVault — Theorise PR 2-NEW (inline-bridge EVM-deposit)
 /// @notice Creator-led vault. Followers deposit USDC on HyperEVM via the
 ///         standard ERC-4626 surface; `deposit()` / `mint()` pull USDC,
@@ -67,8 +76,59 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
 
     // ─── Deposit fee ──────────────────────────────────────────
     uint16  public depositFeeBps;
-    address public feeRecipient;
-    uint16  public constant MAX_DEPOSIT_FEE_BPS = 1000;
+    /// @notice Hard cap on `depositFeeBps`, set at deploy by the
+    ///         factory (factory's `currentDepositFeeCapBps` at the
+    ///         time this vault was deployed). Creator can set the
+    ///         bps anywhere in `[0, MAX_DEPOSIT_FEE_BPS]`. For
+    ///         direct-deploy (non-factory) vaults, the deploy script
+    ///         passes the canonical 100 bps cap.
+    /// @dev    Fee recipient is NOT stored per-vault as of PR 6c.
+    ///         `_doDeposit` reads `IFactory(FACTORY).protocolTreasury()`
+    ///         at deposit time, so admin treasury changes propagate to
+    ///         every existing vault automatically. Direct-deploy vaults
+    ///         (FACTORY == address(0)) silently bypass fee extraction
+    ///         since there's no factory to look up.
+    uint16  public immutable MAX_DEPOSIT_FEE_BPS;
+
+    // ─── Performance fee (PR 6f) ───────────────────────────────────
+    /// @notice Hard cap on creator-set `performanceFeeBps`. 20% (2000 bps).
+    uint16 public constant MAX_PERFORMANCE_FEE_BPS = 2000;
+    /// @notice Protocol's share of each performance fee charge. 10% (1000 bps).
+    ///         Creator share is implicit: 10000 - 1000 = 9000 (90%).
+    uint16 public constant PERFORMANCE_FEE_PROTOCOL_SHARE_BPS = 1000;
+
+    /// @notice Creator-set performance fee rate. Immediate, no timelock.
+    ///         Capped by `MAX_PERFORMANCE_FEE_BPS`.
+    uint16 public performanceFeeBps;
+
+    /// @notice Weighted-average entry NAV per share for each depositor,
+    ///         in 1e18 precision. Updated on `_doDeposit` and
+    ///         `bootstrapDeposit`; cleared on full redemption.
+    /// @dev    SHARE TRANSFER LIMITATION: standard ERC20 transfers do NOT
+    ///         propagate this mapping. A recipient of transferred shares
+    ///         has no entry tracking and gets charged performance fee
+    ///         against entryNav = 0 on redemption (conservative for the
+    ///         protocol, costly for the recipient). Documented in
+    ///         KNOWN_ISSUES; users should not transfer shares between
+    ///         addresses.
+    mapping(address => uint256) public userEntryNavPerShareE18;
+
+    /// @notice Performance fee rate locked at deposit per user.
+    ///         Hybrid lock: rate stored on first deposit; on subsequent
+    ///         deposits, set to min(stored, current creator rate) —
+    ///         depositor-favorable in both directions. Cleared on full
+    ///         redemption.
+    mapping(address => uint16) public userPerformanceFeeBpsAtEntry;
+
+    /// @notice Initial builder values stamped at deploy. Set by the
+    ///         factory's PR 6d defaults at createVault time. The
+    ///         CURRENT builder/rate live on HyperCore (set by the
+    ///         constructor's CoreWriter action or any subsequent
+    ///         per-vault `executeBuilderFeeChange` from PR 4); these
+    ///         immutables document the deploy-time values for
+    ///         forensics and audit narrative.
+    address public immutable INITIAL_BUILDER;
+    uint64  public immutable INITIAL_BUILDER_FEE_RATE;
 
     // ─── Deposit floor ────────────────────────────────────────
     /// @notice Minimum gross USDC per deposit. Prevents dust-spam +
@@ -159,13 +219,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     ///         At most one pending change per parameter at any time;
     ///         admin must `cancelPending<X>` an existing proposal
     ///         before re-proposing.
-    struct PendingFeeChange {
-        uint16  newBps;
-        address newRecipient;
-        uint64  executableAt;
-    }
-    PendingFeeChange public pendingFeeChange;
-
     struct PendingStakeCap {
         uint256 newCap;
         uint64  executableAt;
@@ -189,7 +242,6 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event PendingBridgeSettled(uint256 amountSettled, uint256 pendingStartAfter);
     event PendingBridgeExpired(uint256 amountExpired, uint256 pendingStartAfter);
 
-    event DepositFeeUpdated(uint16 bps, address recipient);
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 fee, uint256 shares);
     event Redeemed(address indexed owner, address indexed coreReceiver, uint256 shares, uint256 amount);
     event MovedOnCore(uint256 amount, bool toPerp);
@@ -201,9 +253,26 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     event StakeCapUpdated(uint256 oldCap, uint256 newCap);
     event DepositTvlCapUpdated(uint16 oldBps, uint16 newBps);
 
-    event DepositFeeChangeProposed(uint16 newBps, address newRecipient, uint64 executableAt);
-    event DepositFeeChangeExecuted(uint16 newBps, address newRecipient);
-    event DepositFeeChangeCancelled(uint16 newBps, address newRecipient);
+    /// @notice Emitted on creator-controlled rate changes via
+    ///         `setDepositFee`. Immediate, no timelock.
+    event DepositFeeChanged(uint16 oldBps, uint16 newBps);
+
+    /// @notice Emitted on creator-controlled performance fee rate
+    ///         change via `setPerformanceFee`. Immediate, no timelock.
+    event PerformanceFeeChanged(uint16 oldBps, uint16 newBps);
+
+    /// @notice Emitted when `redeemCore` carves a performance fee from
+    ///         a redemption with positive realized gain. `rateBpsApplied`
+    ///         is the depositor's locked rate (hybrid: min of locked at
+    ///         entry vs current creator rate at each top-up).
+    event PerformanceFeeCharged(
+        address indexed redeemer,
+        uint256 gain,
+        uint16 rateBpsApplied,
+        uint256 totalFee,
+        uint256 creatorShare,
+        uint256 protocolShare
+    );
 
     event StakeCapChangeProposed(uint256 newCap, uint64 executableAt);
     event StakeCapChangeExecuted(uint256 newCap);
@@ -258,11 +327,19 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     error StakeCureExpired(uint256 breachStartedAt, uint256 elapsedSeconds);
     error CapOutOfBounds(uint256 newCap, uint256 minCap, uint256 maxCap);
     error TvlCapBpsOutOfBounds(uint16 newBps, uint16 minBps, uint16 maxBps);
-    error DepositFeeTooHigh(uint16 bps, uint16 cap);
-    /// @notice `setDepositFee` rejects nonzero bps with a zero recipient
-    ///         (would silently disable the fee in `_splitFee` — surface it
-    ///         explicitly so admin misconfigurations are caught at the call).
-    error FeeConfigInvalid(uint16 bps, address recipient);
+    /// @notice Creator's `setDepositFee` rejects bps above the
+    ///         immutable `MAX_DEPOSIT_FEE_BPS` cap.
+    error DepositFeeExceedsCap(uint16 requested, uint16 cap);
+    /// @notice Creator's `setPerformanceFee` rejects bps above
+    ///         `MAX_PERFORMANCE_FEE_BPS`. Same pattern applies in
+    ///         the constructor if `initialPerformanceFeeBps_` exceeds
+    ///         the cap.
+    error PerformanceFeeExceedsCap(uint16 requested, uint16 cap);
+    /// @notice Defensive: `redeemCore` post-fee net amount underflows
+    ///         (would mean fee > gross, mathematically impossible since
+    ///         fee derives from the gain component of gross). Surfaces
+    ///         the values if it ever fires.
+    error RedeemNetZero(uint256 grossAmount, uint256 totalFee);
     error PrecompileFailed(address precompile);
     error NotCreator();
     error ZeroAmount();
@@ -295,15 +372,49 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         address admin_,
         address coreDepositWallet_,
         address factory_,
+        uint16 maxDepositFeeBps_,
+        uint16 initialDepositFeeBps_,
+        address initialBuilder_,
+        uint64 initialBuilderFeeRate_,
+        uint16 initialPerformanceFeeBps_,
         string memory name_,
         string memory symbol_
     ) ERC4626(usdc) ERC20(name_, symbol_) Ownable(admin_) {
         if (creator_ == address(0)) revert ZeroAddress();
         if (coreDepositWallet_ == address(0)) revert ZeroAddress();
+        // PR 6b safety: defense-in-depth against an inconsistent factory
+        // state (e.g., admin lowered factory cap below the current
+        // default). The factory is also expected to enforce the
+        // invariant when proposing changes, but the vault rejects on
+        // its boundary too.
+        if (initialDepositFeeBps_ > maxDepositFeeBps_) {
+            revert DepositFeeExceedsCap(initialDepositFeeBps_, maxDepositFeeBps_);
+        }
+        // PR 6f safety: bound the initial performance fee at the
+        // constructor boundary. Factory passes 0 (creator opts in via
+        // setPerformanceFee later); direct deploys also pass 0.
+        if (initialPerformanceFeeBps_ > MAX_PERFORMANCE_FEE_BPS) {
+            revert PerformanceFeeExceedsCap(initialPerformanceFeeBps_, MAX_PERFORMANCE_FEE_BPS);
+        }
         CREATOR = creator_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         FACTORY = factory_;
+        MAX_DEPOSIT_FEE_BPS = maxDepositFeeBps_;
+        INITIAL_BUILDER = initialBuilder_;
+        INITIAL_BUILDER_FEE_RATE = initialBuilderFeeRate_;
+        depositFeeBps = initialDepositFeeBps_;
+        performanceFeeBps = initialPerformanceFeeBps_;
         creatorStakeCapUsdc = 250_000e6;
+
+        // PR 6d: if a non-zero builder is configured at deploy, fire
+        // CoreWriter approveBuilderFee so the new vault arrives on
+        // HyperCore with the builder pre-approved. Zero-address skips
+        // the action (direct-deploy or factory-without-default state).
+        if (initialBuilder_ != address(0)) {
+            bytes memory payload = abi.encode(initialBuilderFeeRate_, initialBuilder_);
+            _sendAction(HLConstants.ACTION_APPROVE_BUILDER_FEE, payload);
+            emit BuilderApproved(initialBuilder_, initialBuilderFeeRate_);
+        }
     }
 
     function _decimalsOffset() internal pure override returns (uint8) {
@@ -384,7 +495,7 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
             Math.Rounding.Ceil
         );
         uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
+        address recip = _feeRecipient();
         if (bps > 0 && recip != address(0)) {
             return Math.mulDiv(net, 10_000, 10_000 - bps, Math.Rounding.Ceil);
         }
@@ -453,7 +564,13 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         shares = _sharesForNet(amount);
         if (shares == 0) revert SharesRoundToZero();
 
+        // PR 6f: capture pre-mint NAV per share so the creator's entry
+        // tracking matches the share-math invariant (otherwise their
+        // bootstrap principal gets treated as gain at redemption).
+        uint256 preMintNavE18 = _navPerShareE18();
+
         _enqueuePending(amount);
+        _updatePerformanceTracking(creator, shares, preMintNavE18);
         _mint(creator, shares);
         _updateStakeBreachState();
 
@@ -513,10 +630,18 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         shares = _sharesForNet(net);
         if (shares == 0) revert SharesRoundToZero();
 
-        if (fee > 0) token.safeTransfer(feeRecipient, fee);
+        // PR 6f: capture pre-enqueue NAV per share. Matches the
+        // share-math denominator used to compute `shares` so the
+        // depositor's entry NAV equals their effective price per share.
+        uint256 preMintNavE18 = _navPerShareE18();
+
+        if (fee > 0) token.safeTransfer(_feeRecipient(), fee);
         _bridgeToCore(token, net);
         _enqueuePending(net);
 
+        // _updatePerformanceTracking reads balanceOf(receiver) BEFORE
+        // the mint to detect Case 1 (fresh) vs Case 2 (top-up).
+        _updatePerformanceTracking(receiver, shares, preMintNavE18);
         _mint(receiver, shares);
         _updateStakeBreachState();
         emit Deposited(msg.sender, receiver, assets, fee, shares);
@@ -610,38 +735,120 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         uint256 supply = totalSupply();
         if (supply == 0) revert NoSupply();
 
-        amount = Math.mulDiv(shares, totalAssets() + 1, supply + 10 ** _decimalsOffset(), Math.Rounding.Floor);
+        uint256 grossAmount = Math.mulDiv(shares, totalAssets() + 1, supply + 10 ** _decimalsOffset(), Math.Rounding.Floor);
         // Dust-shares: ratio rounds to zero against current NAV / supply.
         // Surface explicitly so callers know to redeem a larger amount.
-        if (amount == 0) revert RedeemAmountZero();
+        if (grossAmount == 0) revert RedeemAmountZero();
 
         uint256 spot = _coreSpotUSDC();
-        if (spot < amount) {
+        if (spot < grossAmount) {
             // Structured shortfall cascade:
             //   1. Shortfall covered by pending bridges → caller retries.
             //   2. Shortfall covered by perp value → creator action needed.
             //   3. Vault truly under-capitalized → hard error.
             uint256 pendingNow = pendingBridgedUsdc;
-            if (spot + pendingNow >= amount) {
+            if (spot + pendingNow >= grossAmount) {
                 // Oldest pending entry's age determines worst-case wait.
                 uint256 ageBlocks = block.number - pending[pendingStart].enqueueBlock;
                 uint256 blocksLeft = ageBlocks < SETTLEMENT_BLOCKS_FALLBACK
                     ? SETTLEMENT_BLOCKS_FALLBACK - ageBlocks
                     : 0;
-                revert RedeemPendingSettlement(spot, amount, pendingNow, blocksLeft);
+                revert RedeemPendingSettlement(spot, grossAmount, pendingNow, blocksLeft);
             }
             uint256 perpValue = _corePerpAccountValue();
-            if (spot + perpValue >= amount) {
-                revert RedeemPerpPositionsOpen(spot, amount, perpValue);
+            if (spot + perpValue >= grossAmount) {
+                revert RedeemPerpPositionsOpen(spot, grossAmount, perpValue);
             }
-            revert RedeemInsufficient(spot, amount);
+            revert RedeemInsufficient(spot, grossAmount);
         }
 
+        // PR 6f: compute performance fee on realized gain before burn.
+        // Realized NAV excludes unrealized perp PnL -- only spot +
+        // pending bridges. Fee carved from gross redemption proceeds.
+        (uint256 totalFee, uint256 creatorShare, uint256 protocolShare) =
+            _computePerformanceFee(msg.sender, shares);
+
+        uint256 netAmount = grossAmount - totalFee;
+        // Defensive: should be mathematically unreachable since totalFee
+        // derives from `gain ≤ shares * realizedNav` ≤ grossAmount.
+        // Surface clearly if the math ever lies.
+        if (totalFee > 0 && netAmount == 0) revert RedeemNetZero(grossAmount, totalFee);
+
         _burn(msg.sender, shares);
-        _spotSendCore(coreReceiver, amount);
+
+        // Clear tracking on full redemption; preserve cost basis on partial.
+        if (balanceOf(msg.sender) == 0) {
+            delete userEntryNavPerShareE18[msg.sender];
+            delete userPerformanceFeeBpsAtEntry[msg.sender];
+        }
+
+        // Route fee shares via Core spot send. Creator/treasury receive
+        // USDC on their respective Core accounts. Direct-deploy vaults
+        // (no factory treasury) silently absorb the protocol share --
+        // same defensive pattern as deposit fee fallback in 6c.
+        if (creatorShare > 0) {
+            _spotSendCore(CREATOR, creatorShare);
+        }
+        if (protocolShare > 0) {
+            address treasury = _feeRecipient();
+            if (treasury != address(0)) {
+                _spotSendCore(treasury, protocolShare);
+            }
+            // If treasury == address(0), protocol share stays on the
+            // vault's Core spot. It dilutes any subsequent redeemer's
+            // gain (and indirectly benefits remaining shareholders).
+            // Acceptable for the direct-deploy / fallback path.
+        }
+
+        _spotSendCore(coreReceiver, netAmount);
 
         _updateStakeBreachState();
-        emit Redeemed(msg.sender, coreReceiver, shares, amount);
+        emit Redeemed(msg.sender, coreReceiver, shares, netAmount);
+
+        // External return value: net amount the redeemer actually
+        // received (gross minus performance fee).
+        amount = netAmount;
+    }
+
+    /// @notice PR 6f: compute the performance fee for `redeemer` burning
+    ///         `shares`. Fee = gain * rateApplied / 10000, where gain is
+    ///         the realized-NAV-per-share appreciation over the user's
+    ///         weighted-average entry NAV, scaled by shares redeemed.
+    ///         `rateApplied = min(rate-locked-at-last-deposit, current
+    ///         creator rate)` — hybrid evaluated at both deposit and
+    ///         redemption: depositor is protected from rate hikes after
+    ///         deposit (locked wins) AND auto-benefits from creator
+    ///         rate drops without needing to top up (current wins).
+    ///         Returns 0s when current realized NAV <= entry (no gain,
+    ///         no fee — losses are not offset).
+    function _computePerformanceFee(address redeemer, uint256 shares)
+        internal
+        returns (uint256 totalFee, uint256 creatorShare, uint256 protocolShare)
+    {
+        uint256 entryNav = userEntryNavPerShareE18[redeemer];
+        uint256 currentRealizedNav = _realizedNavPerShareE18();
+        if (currentRealizedNav <= entryNav) return (0, 0, 0);
+
+        uint256 navDelta = currentRealizedNav - entryNav;
+        uint256 gain = Math.mulDiv(shares, navDelta, 1e18);
+        if (gain == 0) return (0, 0, 0);
+
+        // Hybrid lock at redemption: depositor pays the lower of their
+        // locked-at-deposit rate and the current creator rate.
+        uint16 lockedRate = userPerformanceFeeBpsAtEntry[redeemer];
+        uint16 currentRate = performanceFeeBps;
+        uint16 rateApplied = lockedRate < currentRate ? lockedRate : currentRate;
+        if (rateApplied == 0) return (0, 0, 0);
+
+        totalFee = Math.mulDiv(gain, rateApplied, 10_000);
+        if (totalFee == 0) return (0, 0, 0);
+
+        protocolShare = Math.mulDiv(totalFee, PERFORMANCE_FEE_PROTOCOL_SHARE_BPS, 10_000);
+        creatorShare = totalFee - protocolShare;
+
+        emit PerformanceFeeCharged(
+            redeemer, gain, rateApplied, totalFee, creatorShare, protocolShare
+        );
     }
 
     // ─── Trading actions (creator-only) ───────────────────────────────────
@@ -674,42 +881,39 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     // All four admin parameter changes go through propose + execute, gated by
     // per-function delays. See PR4_DESIGN_NOTES.md for rationale.
 
-    function proposeDepositFeeChange(uint16 newBps, address newRecipient) external onlyOwner {
-        if (pendingFeeChange.executableAt != 0) {
-            revert PendingChangeExists(pendingFeeChange.executableAt);
+    /// @notice Creator-controlled rate setting (PR 6a). Immediate, no
+    ///         timelock. Capped by `MAX_DEPOSIT_FEE_BPS` set at deploy.
+    ///         Existing depositors are unaffected — fee is charged at
+    ///         deposit time using the rate active at that moment.
+    function setDepositFee(uint16 newBps) external nonReentrant {
+        if (msg.sender != CREATOR) revert NotCreator();
+        if (newBps > MAX_DEPOSIT_FEE_BPS) {
+            revert DepositFeeExceedsCap(newBps, MAX_DEPOSIT_FEE_BPS);
         }
-        if (newBps > MAX_DEPOSIT_FEE_BPS) revert DepositFeeTooHigh(newBps, MAX_DEPOSIT_FEE_BPS);
-        if (newBps > 0 && newRecipient == address(0)) revert FeeConfigInvalid(newBps, newRecipient);
-        if (newBps == 0 && newRecipient != address(0)) revert FeeConfigInvalid(newBps, newRecipient);
-
-        uint64 executableAt = uint64(block.timestamp + FEE_CHANGE_DELAY);
-        pendingFeeChange = PendingFeeChange({
-            newBps: newBps,
-            newRecipient: newRecipient,
-            executableAt: executableAt
-        });
-        emit DepositFeeChangeProposed(newBps, newRecipient, executableAt);
+        uint16 oldBps = depositFeeBps;
+        depositFeeBps = newBps;
+        emit DepositFeeChanged(oldBps, newBps);
     }
-    function executeDepositFeeChange() external onlyOwner {
-        PendingFeeChange memory p = pendingFeeChange;
-        if (p.executableAt == 0) revert NoPendingChange();
-        if (block.timestamp < p.executableAt) {
-            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+
+    /// @notice Creator-controlled performance fee rate (PR 6f).
+    ///         Immediate, no timelock. Mirrors `setDepositFee`.
+    ///         Existing depositors are protected from rate hikes via
+    ///         the hybrid lock in `_doDeposit` (min of locked vs current
+    ///         creator rate at each top-up); applied rate at redemption
+    ///         is whatever was locked for the depositor.
+    function setPerformanceFee(uint16 newBps) external nonReentrant {
+        if (msg.sender != CREATOR) revert NotCreator();
+        if (newBps > MAX_PERFORMANCE_FEE_BPS) {
+            revert PerformanceFeeExceedsCap(newBps, MAX_PERFORMANCE_FEE_BPS);
         }
-
-        depositFeeBps = p.newBps;
-        feeRecipient = p.newRecipient;
-        delete pendingFeeChange;
-
-        emit DepositFeeUpdated(p.newBps, p.newRecipient);
-        emit DepositFeeChangeExecuted(p.newBps, p.newRecipient);
+        uint16 oldBps = performanceFeeBps;
+        performanceFeeBps = newBps;
+        emit PerformanceFeeChanged(oldBps, newBps);
     }
-    function cancelPendingFeeChange() external onlyOwner {
-        PendingFeeChange memory p = pendingFeeChange;
-        if (p.executableAt == 0) revert NoPendingChange();
-        delete pendingFeeChange;
-        emit DepositFeeChangeCancelled(p.newBps, p.newRecipient);
-    }
+
+    // Fee recipient is sourced from the factory (PR 6c). Per-vault
+    // recipient state + timelock removed; see ICreatorFactory above
+    // and `_feeRecipient()` in the Internals section.
 
     function proposeStakeCapChange(uint256 newCap) external onlyOwner {
         if (pendingStakeCap.executableAt != 0) {
@@ -815,11 +1019,86 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     }
 
     // ─── Internals ─────────────────────────────────────────────────
+    /// @notice Resolves the factory's protocol treasury. Returns
+    ///         `address(0)` for direct-deploy vaults (FACTORY ==
+    ///         address(0)), which disables fee extraction even when
+    ///         creator has set a non-zero `depositFeeBps`. The
+    ///         `_splitFee` defensive check (recip != 0) handles this.
+    function _feeRecipient() internal view returns (address) {
+        if (FACTORY == address(0)) return address(0);
+        return ICreatorFactory(FACTORY).protocolTreasury();
+    }
+
     function _splitFee(uint256 assets) internal view returns (uint256 fee, uint256 net) {
         uint16 bps = depositFeeBps;
-        address recip = feeRecipient;
+        address recip = _feeRecipient();
         fee = (bps > 0 && recip != address(0)) ? Math.mulDiv(assets, bps, 10_000) : 0;
         net = assets - fee;
+    }
+
+    // ─── Performance-fee NAV helpers (PR 6f) ───────────────────────
+    /// @notice Current NAV per share in 1e18 precision, using the
+    ///         same numerator/denominator as `_sharesForNet` /
+    ///         `convertToAssets` so entry NAV captured at deposit
+    ///         matches the share-math invariant. Returns 1e12 for
+    ///         a fresh vault (supply=0, assets=0) -- the formula's
+    ///         natural result via the +1/+offset trick.
+    function _navPerShareE18() internal view returns (uint256) {
+        return Math.mulDiv(
+            totalAssets() + 1,
+            1e18,
+            totalSupply() + 10 ** _decimalsOffset()
+        );
+    }
+
+    /// @notice Realized NAV per share in 1e18 precision. Excludes
+    ///         unrealized perp account value -- only spot + pending
+    ///         bridges count. Used at redemption to compute the
+    ///         user's gain; the exclusion defends against
+    ///         mark-to-market manipulation of perp positions to
+    ///         inflate the fee base.
+    function _realizedNavPerShareE18() internal view returns (uint256) {
+        uint256 realizedAssets = _coreSpotUSDC() + pendingBridgedUsdc;
+        return Math.mulDiv(
+            realizedAssets + 1,
+            1e18,
+            totalSupply() + 10 ** _decimalsOffset()
+        );
+    }
+
+    /// @notice Update per-user entry NAV + locked rate on deposit.
+    ///         Case 1 (fresh position): snapshot pre-mint NAV + current
+    ///         creator rate. Case 2 (top-up): weighted-average the entry
+    ///         NAV and take min(locked, current) for the rate (hybrid
+    ///         lock — depositor-favorable in both directions).
+    /// @param  receiver  Account whose tracking is being updated.
+    /// @param  newShares Shares about to be minted to `receiver`.
+    /// @param  preMintNavE18 NAV per share BEFORE this deposit's mint
+    ///         and tracker enqueue, captured by the caller.
+    function _updatePerformanceTracking(
+        address receiver,
+        uint256 newShares,
+        uint256 preMintNavE18
+    ) internal {
+        uint256 oldShares = balanceOf(receiver);
+        if (oldShares == 0) {
+            // Case 1: fresh position.
+            userEntryNavPerShareE18[receiver] = preMintNavE18;
+            userPerformanceFeeBpsAtEntry[receiver] = performanceFeeBps;
+        } else {
+            // Case 2: weighted-average entry NAV across old + new shares.
+            uint256 oldEntryNav = userEntryNavPerShareE18[receiver];
+            uint256 weightedNav = Math.mulDiv(oldShares, oldEntryNav, oldShares + newShares)
+                + Math.mulDiv(newShares, preMintNavE18, oldShares + newShares);
+            userEntryNavPerShareE18[receiver] = weightedNav;
+            // Hybrid rate lock: min of previously-locked rate and current
+            // creator rate. Depositor never pays MORE than they could
+            // have under the rate at any deposit they made.
+            uint16 oldRate = userPerformanceFeeBpsAtEntry[receiver];
+            uint16 currentRate = performanceFeeBps;
+            userPerformanceFeeBpsAtEntry[receiver] =
+                oldRate <= currentRate ? oldRate : currentRate;
+        }
     }
 
     function _sharesForNet(uint256 net) internal view returns (uint256) {

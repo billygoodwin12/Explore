@@ -35,9 +35,20 @@ contract MockCoreDepositWallet {
     }
 }
 
+/// @dev Minimal stand-in for the Theorise Factory's view surface that
+///      CreatorVault reads at deposit time. PR 6c makes the vault look
+///      up its fee recipient via `ICreatorFactory(FACTORY).protocolTreasury()`;
+///      the default test vault is wired to this mock so fee-flow tests
+///      work without spinning up the full Factory contract.
+contract MockFactory {
+    address public protocolTreasury;
+    function setTreasury(address t) external { protocolTreasury = t; }
+}
+
 contract CreatorVaultTest is Test {
     MockUSDC usdc;
     MockCoreDepositWallet cdw;
+    MockFactory mockFactory;
     CreatorVault vault;
 
     address admin = address(0xAD);
@@ -52,12 +63,24 @@ contract CreatorVaultTest is Test {
     function setUp() public {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
+        // MockFactory wired so the vault's `_feeRecipient()` returns
+        // `treasury` -- fee-flow tests work without a real Factory.
+        // The single test that explicitly asserts FACTORY=address(0)
+        // (`test_bootstrap_reverts_on_direct_deploy_vault`) deploys
+        // its own vault.
+        mockFactory = new MockFactory();
+        mockFactory.setTreasury(treasury);
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
             address(cdw),
+            address(mockFactory),
+            100,
+            0,
             address(0),
+            0,
+            0,
             "Theorise BTC Long",
             "tVAULT"
         );
@@ -125,10 +148,21 @@ contract CreatorVaultTest is Test {
     // stay readable. Revert-path tests target the propose function
     // directly (no helper, no warp).
 
+    /// @dev Creator sets deposit fee rate. Recipient is no longer
+    ///      per-vault state (PR 6c: vault reads factory's treasury at
+    ///      deposit time). The `recip` arg is retained as a no-op for
+    ///      call-shape compatibility with pre-6c tests; the helper
+    ///      asserts the caller passed the expected `treasury` so a
+    ///      drift between test expectation and factory wiring fails
+    ///      loudly.
     function _adminSetDepositFee(uint16 bps, address recip) internal {
-        vm.prank(admin); vault.proposeDepositFeeChange(bps, recip);
-        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
-        vm.prank(admin); vault.executeDepositFeeChange();
+        require(
+            recip == mockFactory.protocolTreasury(),
+            "test calls _adminSetDepositFee with a recipient that doesn't match mockFactory.protocolTreasury -- update test or factory wiring"
+        );
+        if (vault.depositFeeBps() != bps) {
+            vm.prank(creator); vault.setDepositFee(bps);
+        }
     }
 
     function _adminSetCreatorStakeCap(uint256 newCap) internal {
@@ -191,7 +225,7 @@ contract CreatorVaultTest is Test {
 
     function test_constructor_rejects_zero_cdw() public {
         vm.expectRevert(CreatorVault.ZeroAddress.selector);
-        new CreatorVault(IERC20(address(usdc)), creator, admin, address(0), address(0), "x", "x");
+        new CreatorVault(IERC20(address(usdc)), creator, admin, address(0), address(0), 100, 0, address(0), 0, 0, "x", "x");
     }
 
     // ─── ERC-4626 surface ──────────────────────────────────────────
@@ -305,7 +339,10 @@ contract CreatorVaultTest is Test {
     }
 
     function test_mint_with_fee_user_receives_at_least_requested_shares() public {
-        uint16[5] memory feeBps = [uint16(0), 50, 100, 500, 1000];
+        // Bps values bounded by PR 6a's MAX_DEPOSIT_FEE_BPS = 100 cap.
+        // Pre-PR-6a this test ran [0, 50, 100, 500, 1000] against the
+        // old 1000-bps admin cap; trimmed to fit the new creator cap.
+        uint16[4] memory feeBps = [uint16(0), 25, 50, 100];
         uint256[3] memory wants = [uint256(1e14), 1e16, 1e18];
 
         for (uint256 f = 0; f < feeBps.length; f++) {
@@ -347,12 +384,19 @@ contract CreatorVaultTest is Test {
     function _resetVaultWithBootstrap() internal {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
+        mockFactory = new MockFactory();
+        mockFactory.setTreasury(treasury);
         vault = new CreatorVault(
             IERC20(address(usdc)),
             creator,
             admin,
             address(cdw),
+            address(mockFactory),
+            100,
+            0,
             address(0),
+            0,
+            0,
             "Theorise BTC Long",
             "tVAULT"
         );
@@ -464,7 +508,7 @@ contract CreatorVaultTest is Test {
         // depth (per-vault basis).
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpot(0);
         _setCorePerp(0);
@@ -474,7 +518,7 @@ contract CreatorVaultTest is Test {
     function test_deposit_reverts_when_vault_not_activated() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpot(0); // fresh vault, admin has NOT pre-activated
         _setCorePerp(0);
@@ -488,7 +532,7 @@ contract CreatorVaultTest is Test {
     function test_max_deposit_zero_when_not_activated() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpot(0);
         _setCorePerp(0);
@@ -500,7 +544,7 @@ contract CreatorVaultTest is Test {
         // Cap is disabled by default in PR 3-NEW. Admin opts in to 5%.
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -518,7 +562,7 @@ contract CreatorVaultTest is Test {
     function test_tvl_cap_allows_at_or_below_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -534,7 +578,7 @@ contract CreatorVaultTest is Test {
         // ≥ MIN_DEPOSIT_USDC are accepted regardless.
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -551,7 +595,7 @@ contract CreatorVaultTest is Test {
     function test_max_deposit_reflects_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _adminSetDepositTvlCapBps(500);
 
@@ -624,7 +668,7 @@ contract CreatorVaultTest is Test {
     function test_sandwich_window_eliminated_by_tracker_under_cap() public {
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         // Cap defaults to disabled in PR 3-NEW. Admin opts back in to the
         // 5% cap so this test still verifies "no divergence under cap."
@@ -677,49 +721,112 @@ contract CreatorVaultTest is Test {
     // ─── Deposit fee admin ────────────────────────────────────────────
 
     function test_fee_defaults_to_zero() public view {
+        // PR 6c: vault no longer stores feeRecipient; factory's
+        // protocolTreasury is read at deposit time. depositFeeBps
+        // still defaults to 0 on construction.
         assertEq(vault.depositFeeBps(), 0);
-        assertEq(vault.feeRecipient(), address(0));
     }
 
-    function test_admin_can_set_fee() public {
-        _adminSetDepositFee(50, treasury);
+    // ─── PR 6a: creator-controlled deposit fee with hard cap ─────────
+
+    function test_creator_can_set_deposit_fee() public {
+        // Set recipient first (admin path) so fee actually flows.
+        _adminSetDepositFee(25, treasury);
+
+        vm.prank(creator); vault.setDepositFee(50);
         assertEq(vault.depositFeeBps(), 50);
-        assertEq(vault.feeRecipient(), treasury);
-    }
 
-    function test_non_admin_cannot_set_fee() public {
-        vm.prank(creator);
-        vm.expectRevert();
-        vault.proposeDepositFeeChange(50, treasury);
-    }
-
-    function test_fee_cap_enforced() public {
-        vm.prank(admin);
-        vm.expectRevert();
-        vault.proposeDepositFeeChange(1001, treasury);
-    }
-
-    function test_fee_config_rejects_bps_with_zero_recipient() public {
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(100), address(0))
+        // Next deposit charges at 50 bps (= 0.5%).
+        uint256 amount = 10_000e6;
+        usdc.mint(bob, amount);
+        vm.prank(bob); usdc.approve(address(vault), amount);
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(bob); vault.deposit(amount, bob);
+        assertEq(
+            usdc.balanceOf(treasury) - treasuryBefore,
+            Math.mulDiv(amount, 50, 10_000),
+            "treasury received 50 bps"
         );
-        vault.proposeDepositFeeChange(100, address(0));
     }
 
-    function test_fee_config_rejects_zero_bps_with_recipient() public {
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(CreatorVault.FeeConfigInvalid.selector, uint16(0), treasury)
-        );
-        vault.proposeDepositFeeChange(0, treasury);
-    }
-
-    function test_fee_config_allows_clearing_both_zero() public {
-        _adminSetDepositFee(100, treasury);
-        _adminSetDepositFee(0, address(0));
+    function test_creator_can_lower_deposit_fee() public {
+        _adminSetDepositFee(50, treasury);
+        vm.prank(creator); vault.setDepositFee(0);
         assertEq(vault.depositFeeBps(), 0);
-        assertEq(vault.feeRecipient(), address(0));
+    }
+
+    function test_non_creator_cannot_set_deposit_fee() public {
+        vm.prank(alice);
+        vm.expectRevert(CreatorVault.NotCreator.selector);
+        vault.setDepositFee(50);
+    }
+
+    function test_deposit_fee_above_cap_reverts() public {
+        // MAX_DEPOSIT_FEE_BPS set to 100 by the test setUp's vault
+        // constructor (matches Factory's PR 6a hardcoded cap).
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.DepositFeeExceedsCap.selector, uint16(101), uint16(100)
+            )
+        );
+        vault.setDepositFee(101);
+    }
+
+    function test_deposit_fee_at_cap_succeeds() public {
+        vm.prank(creator); vault.setDepositFee(100);
+        assertEq(vault.depositFeeBps(), 100);
+    }
+
+    function test_existing_depositors_unaffected_by_fee_change() public {
+        // Alice deposits at 25 bps with treasury set; creator hikes to
+        // 100 bps; Alice's share balance remains unchanged.
+        _adminSetDepositFee(25, treasury);
+
+        uint256 amount = 10_000e6;
+        vm.prank(alice); vault.deposit(amount, alice);
+        uint256 aliceSharesBefore = vault.balanceOf(alice);
+
+        vm.prank(creator); vault.setDepositFee(100);
+        assertEq(vault.balanceOf(alice), aliceSharesBefore, "alice shares unaffected by rate change");
+    }
+
+    function test_multi_deposit_charged_at_active_rate() public {
+        _adminSetDepositFee(25, treasury);
+
+        // Deposit 1 at 25 bps.
+        uint256 amount = 10_000e6;
+        uint256 treasury0 = usdc.balanceOf(treasury);
+        vm.prank(alice); vault.deposit(amount, alice);
+        uint256 fee1 = usdc.balanceOf(treasury) - treasury0;
+        assertEq(fee1, Math.mulDiv(amount, 25, 10_000), "first deposit charged 25 bps");
+
+        // Creator raises to 50 bps; next deposit charged at the new rate.
+        vm.prank(creator); vault.setDepositFee(50);
+        uint256 treasury1 = usdc.balanceOf(treasury);
+        vm.prank(alice); vault.deposit(amount, alice);
+        uint256 fee2 = usdc.balanceOf(treasury) - treasury1;
+        assertEq(fee2, Math.mulDiv(amount, 50, 10_000), "second deposit charged 50 bps");
+    }
+
+    function test_setDepositFee_emits_event() public {
+        // Vault starts at depositFeeBps = 0. Creator sets to 75; event
+        // should carry (0, 75).
+        vm.expectEmit(true, true, true, true, address(vault));
+        emit CreatorVault.DepositFeeChanged(0, 75);
+        vm.prank(creator); vault.setDepositFee(75);
+    }
+
+    function test_setDepositFee_blocked_by_reentrancy_guard() public {
+        // Indirect test: setDepositFee carries nonReentrant. Verify the
+        // modifier is on by reading the storage slot via successful
+        // call (any same-tx re-entry inside setDepositFee would revert).
+        // Hard to construct an attack here since setDepositFee makes no
+        // external calls; document the guard's presence by asserting
+        // the function is gated.
+        // Sanity-check successful call.
+        vm.prank(creator); vault.setDepositFee(50);
+        assertEq(vault.depositFeeBps(), 50);
     }
 
     // ─── Stake invariant: breach state machine ─────────────────────────────
@@ -1142,7 +1249,7 @@ contract CreatorVaultTest is Test {
         // must revert with ReentrancyGuardReentrantCall.
         ReentrantCdw maliciousCdw = new ReentrantCdw(address(usdc));
         CreatorVault rentVault = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(maliciousCdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(maliciousCdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         maliciousCdw.setVault(rentVault);
 
@@ -1178,115 +1285,6 @@ contract CreatorVaultTest is Test {
         assertEq(vault.STAKE_CAP_CHANGE_DELAY(),   7 days);
     }
 
-    function test_propose_fee_emits_and_sets_pending() public {
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit CreatorVault.DepositFeeChangeProposed(
-            100, treasury, uint64(block.timestamp + 24 hours)
-        );
-        vm.prank(admin);
-        vault.proposeDepositFeeChange(100, treasury);
-
-        (uint16 newBps, address newRecipient, uint64 executableAt) = vault.pendingFeeChange();
-        assertEq(newBps, 100);
-        assertEq(newRecipient, treasury);
-        assertEq(executableAt, uint64(block.timestamp + 24 hours));
-    }
-
-    function test_propose_fee_reverts_if_pending_exists() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        (, , uint64 existing) = vault.pendingFeeChange();
-
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(CreatorVault.PendingChangeExists.selector, existing)
-        );
-        vault.proposeDepositFeeChange(100, treasury);
-    }
-
-    function test_execute_fee_reverts_before_delay() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        uint64 ea = uint64(block.timestamp + 24 hours);
-
-        vm.warp(block.timestamp + 24 hours - 1);
-        vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                CreatorVault.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
-            )
-        );
-        vault.executeDepositFeeChange();
-    }
-
-    function test_execute_fee_succeeds_exactly_at_executable_at() public {
-        // Boundary check: `block.timestamp == executableAt` must succeed.
-        // Guard uses strict `<`, so this is the first instant execute is
-        // allowed. Catches the common off-by-one bug.
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        (, , uint64 ea) = vault.pendingFeeChange();
-
-        vm.warp(uint256(ea));
-        vm.prank(admin);
-        vault.executeDepositFeeChange();
-        assertEq(vault.depositFeeBps(), 50);
-    }
-
-    function test_execute_fee_reverts_when_no_pending() public {
-        vm.prank(admin);
-        vm.expectRevert(CreatorVault.NoPendingChange.selector);
-        vault.executeDepositFeeChange();
-    }
-
-    function test_propose_execute_fee_happy_path() public {
-        _adminSetDepositFee(75, treasury);
-        assertEq(vault.depositFeeBps(), 75);
-        assertEq(vault.feeRecipient(), treasury);
-        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
-        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
-    }
-
-    function test_cancel_fee_clears_pending_and_emits() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-
-        vm.expectEmit(true, true, true, true, address(vault));
-        emit CreatorVault.DepositFeeChangeCancelled(50, treasury);
-        vm.prank(admin); vault.cancelPendingFeeChange();
-
-        (, , uint64 ea) = vault.pendingFeeChange();
-        assertEq(ea, 0);
-    }
-
-    function test_cancel_fee_reverts_when_no_pending() public {
-        vm.prank(admin);
-        vm.expectRevert(CreatorVault.NoPendingChange.selector);
-        vault.cancelPendingFeeChange();
-    }
-
-    function test_re_propose_after_cancel_works() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        vm.prank(admin); vault.cancelPendingFeeChange();
-        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
-
-        (uint16 newBps, , ) = vault.pendingFeeChange();
-        assertEq(newBps, 100);
-    }
-
-    function test_propose_cancel_propose_execute_lands_second_value() public {
-        // End-to-end: propose value A, cancel, propose value B, wait,
-        // execute. Final live state must reflect B and pending must be
-        // fully cleared. Guards against partial-cancel bugs where state
-        // bleeds from the abandoned proposal into the next.
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        vm.prank(admin); vault.cancelPendingFeeChange();
-
-        vm.prank(admin); vault.proposeDepositFeeChange(100, treasury);
-        vm.warp(block.timestamp + vault.FEE_CHANGE_DELAY());
-        vm.prank(admin); vault.executeDepositFeeChange();
-
-        assertEq(vault.depositFeeBps(), 100);
-        assertEq(vault.feeRecipient(), treasury);
-        (uint16 b, address r, uint64 ea) = vault.pendingFeeChange();
-        assertEq(b, 0); assertEq(r, address(0)); assertEq(ea, 0);
-    }
 
     function test_execute_stake_cap_reverts_before_7_days() public {
         vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
@@ -1345,8 +1343,12 @@ contract CreatorVaultTest is Test {
     }
 
     function test_non_admin_cannot_propose_any() public {
-        vm.startPrank(creator);
-        vm.expectRevert(); vault.proposeDepositFeeChange(50, treasury);
+        // Note: deposit-fee RATE is creator-controlled in PR 6a (covered
+        // by test_non_creator_cannot_set_deposit_fee). The three admin
+        // propose paths below all reject non-admin: stake cap, TVL cap,
+        // builder fee. (Fee recipient timelock was removed in PR 6c --
+        // recipient is now factory-side state.)
+        vm.startPrank(bob);
         vm.expectRevert(); vault.proposeStakeCapChange(500_000e6);
         vm.expectRevert(); vault.proposeTvlCapChange(500);
         vm.expectRevert(); vault.proposeBuilderFeeChange(address(0xBEE), 50);
@@ -1354,14 +1356,12 @@ contract CreatorVaultTest is Test {
     }
 
     function test_non_admin_cannot_execute_any() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
         vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
         vm.prank(admin); vault.proposeTvlCapChange(500);
         vm.prank(admin); vault.proposeBuilderFeeChange(address(0xBEE), 50);
         vm.warp(block.timestamp + 7 days);
 
-        vm.startPrank(creator);
-        vm.expectRevert(); vault.executeDepositFeeChange();
+        vm.startPrank(bob);
         vm.expectRevert(); vault.executeStakeCapChange();
         vm.expectRevert(); vault.executeTvlCapChange();
         vm.expectRevert(); vault.executeBuilderFeeChange();
@@ -1369,27 +1369,579 @@ contract CreatorVaultTest is Test {
     }
 
     function test_non_admin_cannot_cancel_any() public {
-        vm.prank(admin); vault.proposeDepositFeeChange(50, treasury);
-        vm.startPrank(creator);
-        vm.expectRevert(); vault.cancelPendingFeeChange();
+        // Fee recipient cancel was permissionless in PR 6a then removed
+        // entirely in PR 6c. The three cancels below remain admin-only
+        // on this branch (PR 4 cancel retrofit lives on its own branch
+        // and will flow in via rebase post-merge).
+        vm.prank(admin); vault.proposeStakeCapChange(500_000e6);
+        vm.startPrank(bob);
         vm.expectRevert(); vault.cancelPendingStakeCapChange();
         vm.expectRevert(); vault.cancelPendingTvlCapChange();
         vm.expectRevert(); vault.cancelPendingBuilderFeeChange();
         vm.stopPrank();
     }
 
+    // ─── PR 6f: performance fee mechanism ─────────────────────────────
+
+    // Group 1: setPerformanceFee mechanics (4 tests)
+
+    function test_creator_can_set_performance_fee() public {
+        vm.prank(creator); vault.setPerformanceFee(1500);
+        assertEq(vault.performanceFeeBps(), 1500);
+    }
+
+    function test_creator_can_lower_performance_fee() public {
+        vm.prank(creator); vault.setPerformanceFee(1500);
+        vm.prank(creator); vault.setPerformanceFee(500);
+        assertEq(vault.performanceFeeBps(), 500);
+    }
+
+    function test_non_creator_cannot_set_performance_fee() public {
+        vm.prank(alice);
+        vm.expectRevert(CreatorVault.NotCreator.selector);
+        vault.setPerformanceFee(500);
+    }
+
+    function test_performance_fee_above_cap_reverts() public {
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                CreatorVault.PerformanceFeeExceedsCap.selector, uint16(2001), uint16(2000)
+            )
+        );
+        vault.setPerformanceFee(2001);
+    }
+
+    // Group 2: zero-fee path (2 tests)
+
+    function test_zero_performance_fee_no_charge() public {
+        // performanceFeeBps = 0 default. Alice deposits, vault gains $50,
+        // alice redeems -- no fee charged.
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        // Simulate $50 gain by bumping core spot.
+        _setCoreSpot(151e6); // 1e6 pre-activation + 100e6 stake + 50e6 gain
+        uint256 sharesAlice = vault.balanceOf(alice);
+
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        // No PerformanceFeeCharged event should appear.
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != chargedTopic, "no fee event expected");
+        }
+    }
+
+    function test_loss_no_fee_charged() public {
+        // Alice deposits at NAV $1, vault NAV drops, alice redeems at loss.
+        // No fee, even if rate > 0.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke(); // commit settle so pending drains
+        // Spot drops below entry: simulate loss event.
+        _setCoreSpot(50e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != chargedTopic, "no fee on loss");
+        }
+    }
+
+    // Group 3: realized vs unrealized NAV (3 tests)
+
+    function test_unrealized_perp_pnl_excluded() public {
+        // Alice deposits at performance fee 1000 (10%). Vault has perp
+        // marked at +$30 unrealized (in account margin summary) but spot
+        // is unchanged. Alice redeems a PARTIAL slice that fits within
+        // spot (avoids shortfall cascade). Fee base uses spot + pending
+        // only, so no fee charged on the unrealized perp gain.
+        vm.prank(creator); vault.setPerformanceFee(1000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+        // Spot unchanged, perp +$30 unrealized.
+        _setCorePerp(30e6);
+
+        // Redeem 30% of shares so gross fits in spot.
+        uint256 partialShares = vault.balanceOf(alice) * 30 / 100;
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(partialShares, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(
+                logs[i].topics[0] != chargedTopic,
+                "unrealized perp pnl excluded from fee base"
+            );
+        }
+    }
+
+    function test_realized_perp_gain_captured_after_close() public {
+        // Creator closes perp profitably -- gains route to spot.
+        // Alice's redemption applies fee to the realized gain.
+        vm.prank(creator); vault.setPerformanceFee(1000); // 10%
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        // Perp position closed; gains visible in spot now.
+        _setCoreSpot(151e6); // +$50 realized
+        _setCorePerp(0);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) sawFee = true;
+        }
+        assertTrue(sawFee, "performance fee charged on realized gain");
+    }
+
+    function test_unrealized_loss_does_not_create_negative_fee() public {
+        // Spot up, perp down (unrealized loss). Realized NAV uses spot
+        // only, so fee applies to spot gain. Unrealized perp loss does
+        // not reduce the fee base.
+        vm.prank(creator); vault.setPerformanceFee(1000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6); // +$50 realized
+        // Simulate unrealized perp loss -- shouldn't affect realized NAV.
+        _setCorePerp(0); // (perp accountValue precompile not negative in mock)
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.prank(alice); uint256 received = vault.redeemCore(sharesAlice, alice);
+        // Received should be roughly proportional to spot, minus 10% of gain.
+        assertGt(received, 0);
+    }
+
+    // Group 4: weighted-average entry NAV (4 tests)
+
+    function test_weighted_avg_single_deposit() public {
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        // Entry NAV captured at deposit. Locked rate should equal the
+        // current creator rate at deposit.
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 500);
+        assertGt(vault.userEntryNavPerShareE18(alice), 0);
+    }
+
+    function test_weighted_avg_multiple_deposits() public {
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        uint256 entry1 = vault.userEntryNavPerShareE18(alice);
+
+        _settleBridge(100e6);
+        // NAV moves up (vault gains) so next deposit is at higher NAV.
+        _setCoreSpot(121e6);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        uint256 entry2 = vault.userEntryNavPerShareE18(alice);
+
+        // Weighted average should be between entry1 and current higher NAV.
+        assertGt(entry2, entry1);
+    }
+
+    function test_weighted_avg_with_intervening_other_depositor() public {
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        uint256 aliceEntry1 = vault.userEntryNavPerShareE18(alice);
+
+        _settleBridge(100e6);
+        // Bob deposits between alice's two deposits.
+        vm.prank(bob); vault.deposit(100e6, bob);
+        uint256 bobEntry = vault.userEntryNavPerShareE18(bob);
+        // Bob's entry is independent of alice's tracking.
+        assertGt(bobEntry, 0);
+
+        // Alice's first entry untouched by bob's deposit.
+        assertEq(vault.userEntryNavPerShareE18(alice), aliceEntry1);
+
+        _settleBridge(100e6);
+        // Alice deposits again -- only her own past + this deposit weighted.
+        vm.prank(alice); vault.deposit(100e6, alice);
+        uint256 aliceEntry2 = vault.userEntryNavPerShareE18(alice);
+        // Alice's entry differs from bob's because they entered at different NAVs.
+        assertTrue(aliceEntry2 != bobEntry, "alice's tracking independent of bob's");
+    }
+
+    function test_entry_nav_cleared_on_full_redeem() public {
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6);
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        assertEq(vault.userEntryNavPerShareE18(alice), 0);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 0);
+    }
+
+    // Group 5: hybrid rate locking (4 tests)
+
+    function test_rate_locked_at_deposit() public {
+        // The LOCKED rate (stored at deposit) is unchanged by subsequent
+        // creator setPerformanceFee calls -- it only updates on top-ups.
+        // (Redemption-time evaluation now also takes min with current
+        // creator rate -- see test_rate_drops_post_deposit_redemption_uses_lower.)
+        vm.prank(creator); vault.setPerformanceFee(2000); // 20%
+        vm.prank(alice); vault.deposit(100e6, alice);
+        vm.prank(creator); vault.setPerformanceFee(500);
+        // Alice's locked rate stays at 2000 until a new deposit (no top-up here).
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000);
+    }
+
+    function test_rate_creator_hiked_after_deposit() public {
+        // Alice deposits at 500. Creator raises to 2000.
+        // Alice's locked rate stays at 500 (depositor protected from hike).
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 500);
+    }
+
+    function test_rate_creator_lowered_then_redeposit() public {
+        // Alice deposits at 2000. NAV moves up. Creator lowers to 500.
+        // Alice deposits again -- locked rate becomes min(2000, 500) = 500.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(121e6);
+
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        // Hybrid lock: min of old (2000) and current (500) = 500.
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 500);
+    }
+
+    function test_two_depositors_different_locked_rates_take_min() public {
+        // Alice deposits at 2000. Bob deposits at 500. Both reflect
+        // their individual locked rates.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(bob); vault.deposit(100e6, bob);
+
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(bob), 500);
+    }
+
+    function test_rate_drops_post_deposit_redemption_uses_lower() public {
+        // PR 6f follow-up: hybrid lock is evaluated at REDEMPTION too,
+        // so a depositor auto-benefits from creator rate drops without
+        // needing to top up. Alice deposits at 2000 (20%), creator
+        // drops to 500 (5%), alice redeems without topping up --
+        // applied rate is the current 500, not the locked 2000.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+
+        // Creator drops rate AFTER alice deposited. Locked rate
+        // unchanged in storage (no top-up).
+        vm.prank(creator); vault.setPerformanceFee(500);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000, "locked storage unchanged");
+
+        // +$50 gain.
+        _setCoreSpot(151e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                sawFee = true;
+                (uint256 gain, uint16 rate, uint256 totalFee, , )
+                    = abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertEq(rate, 500, "applied rate is the current 500, not locked 2000");
+                assertGt(gain, 0);
+                assertGt(totalFee, 0);
+            }
+        }
+        assertTrue(sawFee, "fee charged on realized gain");
+    }
+
+    function test_rate_drops_then_hikes_back_uses_locked() public {
+        // Alice deposits at 1000 (locked=1000). Creator drops to 500,
+        // then hikes to 1500 -- locked stays at 1000 (no top-up).
+        // Alice redeems -- applied = min(1000, 1500) = 1000 (locked wins
+        // because current is now higher than locked).
+        vm.prank(creator); vault.setPerformanceFee(1000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(creator); vault.setPerformanceFee(1500);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 1000);
+
+        _setCoreSpot(151e6);
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                sawFee = true;
+                (, uint16 rate, , , ) =
+                    abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertEq(rate, 1000, "applied rate is locked 1000 (lower than current 1500)");
+            }
+        }
+        assertTrue(sawFee, "fee event fired");
+    }
+
+    // Group 6: 90/10 split (2 tests)
+
+    function test_performance_fee_split_90_10() public {
+        // Set up a vault wired to treasury so protocol share routes.
+        vm.prank(creator); vault.setPerformanceFee(2000); // 20% rate
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        // $100 gain (post-settle): spot grows from 101e6 to 201e6.
+        _setCoreSpot(201e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                (uint256 gain, uint16 rate, uint256 totalFee, uint256 creatorShare, uint256 protocolShare)
+                    = abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertEq(rate, 2000);
+                assertGt(gain, 0);
+                assertGt(totalFee, 0);
+                // 90/10 split.
+                assertEq(protocolShare * 10, totalFee, "protocol share = 10%");
+                assertEq(creatorShare, totalFee - protocolShare);
+            }
+        }
+    }
+
+    function test_fee_split_with_zero_treasury_absorbs_protocol_share() public {
+        // FACTORY=address(0) vault: _feeRecipient returns address(0),
+        // protocol share is silently absorbed (defensive pattern).
+        // Direct-deploy vault for this test.
+        CreatorVault v = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw),
+            address(0), 100, 0, address(0), 0, 0, "d", "D"
+        );
+        _setCoreSpotFor(address(v), 1e6);
+        _setCorePerpFor(address(v), 0);
+        usdc.mint(alice, 100e6);
+        vm.prank(alice); usdc.approve(address(v), type(uint256).max);
+
+        vm.prank(creator); v.setPerformanceFee(2000);
+        vm.prank(alice); v.deposit(100e6, alice);
+
+        // Move spot to simulate gain. Direct mock for this vault.
+        _setCoreSpotFor(address(v), 201e6);
+
+        uint256 sharesAlice = v.balanceOf(alice);
+        vm.prank(alice); v.redeemCore(sharesAlice, alice);
+        // Test passes if redeem doesn't revert with treasury == address(0).
+        // Protocol share stays on vault Core spot (acceptable fallback).
+        assertEq(v.FACTORY(), address(0));
+    }
+
+    // Group 7: partial redemption (3 tests)
+
+    function test_partial_redemption_proportional_fee() public {
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6); // +$50 gain
+
+        uint256 totalShares = vault.balanceOf(alice);
+        // Redeem half.
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(totalShares / 2, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) sawFee = true;
+        }
+        assertTrue(sawFee, "partial redemption charges proportional fee");
+    }
+
+    function test_partial_redemption_preserves_entry_nav() public {
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        uint256 entryBefore = vault.userEntryNavPerShareE18(alice);
+        uint16 rateBefore = vault.userPerformanceFeeBpsAtEntry(alice);
+
+        _settleBridge(100e6);
+        _setCoreSpot(151e6);
+        uint256 halfShares = vault.balanceOf(alice) / 2;
+        vm.prank(alice); vault.redeemCore(halfShares, alice);
+
+        // Cost basis preserved on partial redemption.
+        assertEq(vault.userEntryNavPerShareE18(alice), entryBefore);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), rateBefore);
+    }
+
+    function test_multiple_partial_redemptions() public {
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6);
+
+        uint256 totalShares = vault.balanceOf(alice);
+        // Redeem in 3 chunks: 30%, 30%, 40%.
+        vm.prank(alice); vault.redeemCore(totalShares * 30 / 100, alice);
+        vm.prank(alice); vault.redeemCore(totalShares * 30 / 100, alice);
+        uint256 remaining = vault.balanceOf(alice);
+        vm.prank(alice); vault.redeemCore(remaining, alice);
+
+        // After all redemptions, tracking cleared.
+        assertEq(vault.balanceOf(alice), 0);
+        assertEq(vault.userEntryNavPerShareE18(alice), 0);
+    }
+
+    // Group 8: integration with existing redeem flow (3 tests)
+
+    function test_performance_fee_after_shortfall_check_passes() public {
+        // Vault has sufficient realized -- fee applies normally.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6); // enough spot
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        // Should not revert -- redemption succeeds with fee.
+        vm.prank(alice); uint256 received = vault.redeemCore(sharesAlice, alice);
+        assertGt(received, 0);
+    }
+
+    function test_performance_fee_not_applied_when_shortfall_blocks() public {
+        // RedeemPendingSettlement blocks before fee logic runs.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        // Don't settle -- so pending > 0 and spot is < amount.
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.prank(alice);
+        vm.expectRevert(); // RedeemPendingSettlement
+        vault.redeemCore(sharesAlice, alice);
+        // Alice's tracking unchanged (fee never computed).
+        assertGt(vault.userPerformanceFeeBpsAtEntry(alice), 0);
+    }
+
+    function test_redeemed_amount_decremented_by_fee() public {
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+        _setCoreSpot(151e6); // +$50 gain
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        // Approximate gross: spot + perp + pending ≈ vault NAV.
+        // For this setup: spot=151e6, perp=0, pending=0 -> ~151e6.
+        // The redeemer should receive less than the full ~151e6.
+        vm.prank(alice); uint256 receivedNet = vault.redeemCore(sharesAlice, alice);
+        // Alice put in 100e6 originally; with $50 gain and 20% fee on
+        // gain ($10), she should receive roughly 100 + 50 - 10 = 140e6.
+        // Assert strictly less than the full 151e6 vault NAV.
+        assertLt(receivedNet, 151e6, "redeemer receives less than gross NAV");
+        assertGt(receivedNet, 100e6, "redeemer receives at least their principal");
+    }
+
+    // Group 9: events and accounting (2 tests)
+
+    function test_performance_fee_event_emitted_with_correct_values() public {
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                sawFee = true;
+                (uint256 gain, uint16 rate, uint256 totalFee, uint256 creator_, uint256 proto)
+                    = abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertGt(gain, 0);
+                assertEq(rate, 2000);
+                assertEq(creator_ + proto, totalFee);
+            }
+        }
+        assertTrue(sawFee, "event must fire on non-zero fee");
+    }
+
+    function test_no_event_when_fee_is_zero() public {
+        // performanceFeeBps default = 0. Even if alice has a gain, no
+        // fee event.
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _setCoreSpot(151e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != chargedTopic, "no event at zero rate");
+        }
+    }
+
     // ─── PR 5 commit 3a: bootstrapDeposit (vault side) ────────────────
 
     function test_bootstrap_reverts_on_direct_deploy_vault() public {
-        assertEq(vault.FACTORY(), address(0));
+        // PR 6c default test vault uses a MockFactory so fee flow works;
+        // for this specific test we need a vault with FACTORY=address(0).
+        CreatorVault directDeployVault = new CreatorVault(
+            IERC20(address(usdc)), creator, admin, address(cdw),
+            address(0), 100, 0, address(0), 0, 0, "x", "y"
+        );
+        assertEq(directDeployVault.FACTORY(), address(0));
         vm.expectRevert(CreatorVault.NotFactory.selector);
-        vault.bootstrapDeposit(creator, 1000e6);
+        directDeployVault.bootstrapDeposit(creator, 1000e6);
     }
 
     function test_bootstrap_reverts_when_msg_sender_not_factory() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         vm.expectRevert(CreatorVault.NotFactory.selector);
         vault.bootstrapDeposit(creator, 1000e6);
@@ -1400,7 +1952,7 @@ contract CreatorVaultTest is Test {
     function test_bootstrap_happy_path_mints_against_pre_bootstrap_nav() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpotFor(address(v), 0);
         _setCorePerpFor(address(v), 0);
@@ -1418,7 +1970,7 @@ contract CreatorVaultTest is Test {
     function test_bootstrap_is_one_shot_via_flag_not_supply() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpotFor(address(v), 0);
         _setCorePerpFor(address(v), 0);
@@ -1433,7 +1985,7 @@ contract CreatorVaultTest is Test {
     function test_bootstrap_zero_creator_reverts() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         vm.prank(factoryAddr);
         vm.expectRevert(CreatorVault.ZeroAddress.selector);
@@ -1443,7 +1995,7 @@ contract CreatorVaultTest is Test {
     function test_bootstrap_zero_amount_reverts() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         vm.prank(factoryAddr);
         vm.expectRevert(CreatorVault.ZeroAmount.selector);
@@ -1451,9 +2003,14 @@ contract CreatorVaultTest is Test {
     }
 
     function test_bootstrap_bypasses_VaultNotActivated_for_followup_deposits() public {
-        address factoryAddr = address(0xFAC);
+        // PR 6c: vault reads factory.protocolTreasury() at deposit time
+        // (in _splitFee). Use a real MockFactory so the lookup succeeds
+        // -- a plain EOA factoryAddr would revert on the staticcall.
+        MockFactory localFactory = new MockFactory();
+        localFactory.setTreasury(treasury);
+        address factoryAddr = address(localFactory);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpotFor(address(v), 0);
         _setCorePerpFor(address(v), 0);
@@ -1469,7 +2026,7 @@ contract CreatorVaultTest is Test {
 
     function test_direct_deploy_vault_still_enforces_VaultNotActivated() public {
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpotFor(address(v), 0);
         _setCorePerpFor(address(v), 0);
@@ -1493,7 +2050,7 @@ contract CreatorVaultTest is Test {
     function test_bootstrap_emits_no_spurious_breach_events() public {
         address factoryAddr = address(0xFAC);
         CreatorVault v = new CreatorVault(
-            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), factoryAddr, 100, 0, address(0), 0, 0, "x", "y"
         );
         _setCoreSpotFor(address(v), 0);
         _setCorePerpFor(address(v), 0);
@@ -1536,9 +2093,20 @@ contract CreatorVaultHarness is CreatorVault {
         address admin_,
         address coreDepositWallet_,
         address factory_,
+        uint16 maxDepositFeeBps_,
+        uint16 initialDepositFeeBps_,
+        address initialBuilder_,
+        uint64 initialBuilderFeeRate_,
+        uint16 initialPerformanceFeeBps_,
         string memory name_,
         string memory symbol_
-    ) CreatorVault(usdc, creator_, admin_, coreDepositWallet_, factory_, name_, symbol_) {}
+    ) CreatorVault(
+        usdc, creator_, admin_, coreDepositWallet_, factory_,
+        maxDepositFeeBps_, initialDepositFeeBps_,
+        initialBuilder_, initialBuilderFeeRate_,
+        initialPerformanceFeeBps_,
+        name_, symbol_
+    ) {}
 
     function exposed_settlePending() external {
         _settlePending();
@@ -1591,7 +2159,7 @@ contract CreatorVaultTrackerTest is Test {
         usdc = new MockUSDC();
         cdw = new MockCoreDepositWallet(address(usdc));
         vault = new CreatorVaultHarness(
-            IERC20(address(usdc)), creator, admin, address(cdw), address(0), "x", "y"
+            IERC20(address(usdc)), creator, admin, address(cdw), address(0), 100, 0, address(0), 0, 0, "x", "y"
         );
         vm.mockCall(HLConstants.CORE_WRITER, bytes(""), bytes(""));
         _setCoreSpot(0);

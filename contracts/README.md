@@ -251,6 +251,83 @@ a different value while one is in flight — `propose<X>` reverts
 builder-identity-only switches that route through the same
 `proposeBuilderFeeChange` tuple. See `KNOWN_ISSUES.md` §11-§12.
 
+## Commercial mechanics (PR 6)
+
+PR 6 layers commercial controls on top of the structural contracts.
+Five admin operations + two creator operations + one auto-charged
+deployment fee. Full audit-narrative summary in
+`INVESTIGATION_EVM_DEPOSIT.md` §17.
+
+### Creator-controlled (immediate, no timelock)
+
+- **`vault.setDepositFee(uint16 bps)`** — deposit-time fee skimmed
+  from each follower deposit. Bounded by the vault's immutable
+  `MAX_DEPOSIT_FEE_BPS` (set at deploy from the factory's then-current
+  `currentDepositFeeCapBps`). Default cap = 100 bps (1%).
+- **`vault.setPerformanceFee(uint16 bps)`** — fee charged on realized
+  gains at redemption. Capped at 2000 bps (20%) by the
+  `MAX_PERFORMANCE_FEE_BPS` constant. Per-depositor entry NAV and
+  rate are locked at deposit; the **applied** rate at redemption is
+  `min(locked, current)` — depositors are protected from hikes and
+  auto-benefit from drops. 90% to creator, 10% to protocol treasury.
+
+### Admin-controlled (timelocked, permissionless cancel)
+
+| Operation | Delay | Function |
+|---|---|---|
+| Protocol treasury (where fees route) | 7 days | `factory.proposeTreasuryChange` |
+| Deployment fee (per-vault, charged at createVault) | 24 hours | `factory.proposeDeploymentFee` |
+| Default deposit fee for new vaults | 24 hours | `factory.proposeDepositFeeDefault` |
+| Cap on deposit fee (per-vault `MAX_DEPOSIT_FEE_BPS`) | 24 hours | `factory.proposeDepositFeeCap` |
+| Default builder identity for new vaults | 7 days | `factory.proposeBuilderAddressDefault` |
+| Default builder fee rate for new vaults | 24 hours | `factory.proposeBuilderFeeRateDefault` |
+| Minimum stake for vault creation | 7 days | `factory.proposeMinStakeChange` |
+
+Each comes with `execute<X>` (after delay; admin-only) and
+`cancelPending<X>` (permissionless — anyone can abort during the
+window).
+
+### Pre-mainnet launch checklist (admin operational sequence)
+
+A freshly-deployed factory has `defaultBuilderAddress = address(0)`
+and `defaultBuilderFeeRate = 0`, meaning new vaults deploy without
+a builder configured. Before opening to creators, admin must:
+
+```
+T+0    : factory deployed with (USDC, CDW, admin, treasury, $20 deployment fee, reserved names)
+T+0    : factory.treasuryFundFloat(N USDC)  -- fund the activation float
+T+0    : factory.proposeBuilderAddressDefault(<builder>)
+         factory.proposeBuilderFeeRateDefault(<bps>)
+         factory.proposeDepositFeeDefault(<bps>)  -- optional (default = 25 bps)
+         factory.proposeDepositFeeCap(<bps>)      -- optional (default cap = 100 bps)
+         factory.proposeMinStakeChange(<usdc>)    -- optional (default = $100)
+T+24h  : factory.executeBuilderFeeRateDefault()
+         factory.executeDepositFeeDefault() / executeDepositFeeCap()
+T+7d   : factory.executeBuilderAddressDefault()
+         factory.executeMinStakeChange()
+T+7d+  : Creators can call factory.createVault, deploys land with
+         builder pre-approved and fee defaults inherited
+```
+
+**Do not forget the 7-day wait on mainnet for treasury, builder
+address, and min-stake changes.** Testnet timeline is non-critical
+but the delay still applies.
+
+### Routing (where fees flow)
+
+- **Deposit fee:** skimmed EVM-side at deposit, transferred to
+  `factory.protocolTreasury()` immediately. Vaults look up the
+  treasury at runtime, so an admin treasury change propagates to
+  every existing vault automatically (subject to the 7-day timelock).
+- **Deployment fee:** $20 (default) USDC pulled from creator on top
+  of their stake at `createVault`; forwarded to treasury before vault
+  deploy.
+- **Performance fee on redemption:** carved from gross redemption
+  proceeds; routed via CoreWriter `spotSend` — creator's 90% to
+  `vault.CREATOR()`'s Core spot account, protocol's 10% to
+  `factory.protocolTreasury()`'s Core spot. Recipients receive USDC
+  on Core (not EVM).
+
 ## Integration notes for UI and indexer
 
 The following behaviors are correct-by-design but require careful

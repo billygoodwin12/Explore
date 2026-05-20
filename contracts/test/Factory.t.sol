@@ -62,8 +62,13 @@ contract FactoryHarness is Factory {
         IERC20 usdc_,
         address coreDepositWallet_,
         address protocolAdmin_,
+        address protocolTreasury_,
+        uint256 initialDeploymentFeeUsdc_,
         bytes32[] memory reservedNameHashes_
-    ) Factory(usdc_, coreDepositWallet_, protocolAdmin_, reservedNameHashes_) {}
+    ) Factory(
+        usdc_, coreDepositWallet_, protocolAdmin_,
+        protocolTreasury_, initialDeploymentFeeUsdc_, reservedNameHashes_
+    ) {}
 
     function exposed_validateUsernameOrRevert(string calldata u) external view returns (bytes32) {
         return _validateUsernameOrRevert(u);
@@ -79,10 +84,12 @@ contract FactoryTest is Test {
     MockUSDC usdc;
     MockCoreDepositWallet cdw;
 
-    address admin   = address(0xA1);
-    address alice   = address(0xA2);
-    address bob     = address(0xB0);
-    address charlie = address(0xC1);
+    address admin    = address(0xA1);
+    address alice    = address(0xA2);
+    address bob      = address(0xB0);
+    address charlie  = address(0xC1);
+    address treasury = address(0xFEE);
+    uint256 constant INITIAL_DEPLOYMENT_FEE = 20e6; // $20
 
     function setUp() public {
         usdc = new MockUSDC();
@@ -91,7 +98,10 @@ contract FactoryTest is Test {
         reserved[0] = keccak256(bytes("admin"));
         reserved[1] = keccak256(bytes("theorise"));
         reserved[2] = keccak256(bytes("support"));
-        factory = new FactoryHarness(IERC20(address(usdc)), address(cdw), admin, reserved);
+        factory = new FactoryHarness(
+            IERC20(address(usdc)), address(cdw), admin,
+            treasury, INITIAL_DEPLOYMENT_FEE, reserved
+        );
 
         // Mock the CoreWriter precompile so vault's bootstrapDeposit
         // path -> _updateStakeBreachState -> any indirect CoreWriter
@@ -319,9 +329,15 @@ contract FactoryTest is Test {
 
     // ─── PR 5 commit 3b: createVault end-to-end ───────────────────────
 
+    /// @dev `amount` is the intended STAKE. PR 6c: factory pulls
+    ///      `deploymentFeeUsdc + stake` from the creator, so the seed
+    ///      must cover both. Helper reads current factory state so
+    ///      tests that change the deployment fee mid-suite still
+    ///      seed correctly.
     function _seedCreator(address creator, uint256 amount) internal {
-        usdc.mint(creator, amount);
-        vm.prank(creator); usdc.approve(address(factory), amount);
+        uint256 total = amount + factory.deploymentFeeUsdc();
+        usdc.mint(creator, total);
+        vm.prank(creator); usdc.approve(address(factory), total);
     }
 
     function test_createVault_happy_path_atomic() public {
@@ -333,7 +349,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -363,10 +379,13 @@ contract FactoryTest is Test {
 
         // CDW received gross (fee + stake).
         assertEq(usdc.balanceOf(address(cdw)), 1e6 + stake);
-        // Factory holds no leftover USDC.
+        // Factory holds no leftover USDC (deploymentFee forwarded to treasury;
+        // stake + activation fee bridged to CDW).
         assertEq(usdc.balanceOf(address(factory)), 0);
-        // Creator's EVM USDC fully transferred to factory then bridged out.
+        // Creator's EVM USDC fully transferred to factory.
         assertEq(usdc.balanceOf(alice), 0);
+        // PR 6c: treasury received the deployment fee.
+        assertEq(usdc.balanceOf(treasury), INITIAL_DEPLOYMENT_FEE);
     }
 
     function test_createVault_reverts_username_reserved() public {
@@ -392,7 +411,7 @@ contract FactoryTest is Test {
         bytes32 salt1 = factory.vaultSalt(alice, "trader");
         bytes32 initHash1 = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted1 = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt1, initHash1
@@ -416,7 +435,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -433,14 +452,15 @@ contract FactoryTest is Test {
     }
 
     function test_createVault_reverts_stake_below_minimum() public {
-        _fundFloat(1e6); _seedCreator(alice, 999e6);
+        // PR 6e: minimum is now $100 (state). Try $50 (50e6) -- below.
+        _fundFloat(1e6); _seedCreator(alice, 50e6);
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(
-                Factory.InitialStakeBelowMinimum.selector, uint256(999e6), uint256(1000e6)
+                Factory.InitialStakeBelowMinimum.selector, uint256(50e6), uint256(100e6)
             )
         );
-        factory.createVault("alice", 999e6, "v", "V");
+        factory.createVault("alice", 50e6, "v", "V");
     }
 
     function test_createVault_reverts_float_exhausted() public {
@@ -458,7 +478,7 @@ contract FactoryTest is Test {
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -520,7 +540,7 @@ contract FactoryTest is Test {
         bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), creator, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -529,7 +549,7 @@ contract FactoryTest is Test {
 
         vm.prank(creator);
         // Cannot vary args at call site here; name is the only var that
-        // changes per vault, and _seedCreator uses MIN_INITIAL_STAKE_USDC.
+        // changes per vault, and _seedCreator uses minInitialStakeUsdc.
         return _createVaultDynamic(creator, name, 1000e6);
     }
 
@@ -845,16 +865,16 @@ contract FactoryTest is Test {
     }
 
     function test_createVault_succeeds_at_exactly_min_initial_stake() public {
-        // Boundary: stake == MIN_INITIAL_STAKE_USDC ($1000) must
+        // Boundary: stake == minInitialStakeUsdc (PR 6e: $100) must
         // succeed; stake one wei below must revert. Bracket the spam
         // guard threshold.
         _fundFloat(1e6);
-        _seedCreator(alice, 1000e6);
+        _seedCreator(alice, 100e6);
 
         bytes32 salt = factory.vaultSalt(alice, "alice");
         bytes32 initHash = keccak256(abi.encodePacked(
             type(CreatorVault).creationCode,
-            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), "v", "V")
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
         ));
         address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
             bytes1(0xff), address(factory), salt, initHash
@@ -862,22 +882,23 @@ contract FactoryTest is Test {
         _mockVaultCorePrecompiles(predicted, 0);
 
         vm.prank(alice);
-        address vault = factory.createVault("alice", 1000e6, "v", "V");
+        address vault = factory.createVault("alice", 100e6, "v", "V");
         assertEq(vault, predicted, "exact-minimum stake succeeds");
-        assertEq(CreatorVault(vault).balanceOf(alice), 1000e6 * 1e6);
+        assertEq(CreatorVault(vault).balanceOf(alice), 100e6 * 1e6);
     }
 
     function test_createVault_reverts_one_wei_below_min_initial_stake() public {
-        _fundFloat(1e6); _seedCreator(alice, 999_999_999);
+        // PR 6e: 99_999_999 = 100e6 - 1.
+        _fundFloat(1e6); _seedCreator(alice, 99_999_999);
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(
                 Factory.InitialStakeBelowMinimum.selector,
-                uint256(999_999_999),
-                uint256(1000e6)
+                uint256(99_999_999),
+                uint256(100e6)
             )
         );
-        factory.createVault("alice", 999_999_999, "v", "V");
+        factory.createVault("alice", 99_999_999, "v", "V");
     }
 
     function test_vaultSalt_is_deterministic_across_calls() public view {
@@ -956,5 +977,674 @@ contract FactoryTest is Test {
         vm.prank(bob);
         vm.expectRevert(); // DepositExceedsTvlCap
         v.deposit(100e6, bob);
+    }
+
+    // ─── PR 6c: deployment fee + treasury management ──────────────────
+
+    function test_createVault_charges_deployment_fee() public {
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake + deploymentFee
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, INITIAL_DEPLOYMENT_FEE);
+    }
+
+    function test_createVault_insufficient_approval_reverts() public {
+        _fundFloat(1e6);
+        usdc.mint(alice, 1000e6);
+        // Approve only the stake; not enough to cover stake + deploymentFee.
+        vm.prank(alice); usdc.approve(address(factory), 1000e6);
+        vm.prank(alice);
+        vm.expectRevert(); // SafeERC20 / allowance revert
+        factory.createVault("alice", 1000e6, "v", "V");
+    }
+
+    function test_createVault_zero_deployment_fee() public {
+        // Admin proposes deploymentFee = 0 and executes after 24h.
+        vm.prank(admin); factory.proposeDeploymentFee(0);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDeploymentFee();
+        assertEq(factory.deploymentFeeUsdc(), 0);
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake (deploymentFee now 0)
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+
+        // Treasury unchanged; no fee event expected.
+        assertEq(usdc.balanceOf(treasury), treasuryBefore);
+    }
+
+    function test_admin_propose_deployment_fee_change() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DeploymentFeeChangeProposed(
+            25e6, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeDeploymentFee(25e6);
+
+        (uint256 newFee, uint64 ea) = factory.pendingDeploymentFee();
+        assertEq(newFee, 25e6);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_deployment_fee_executes_after_timelock() public {
+        vm.prank(admin); factory.proposeDeploymentFee(25e6);
+        (, uint64 ea) = factory.pendingDeploymentFee();
+
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeDeploymentFee();
+        assertEq(factory.deploymentFeeUsdc(), 25e6);
+        // Pending cleared.
+        (uint256 newFee, uint64 eaAfter) = factory.pendingDeploymentFee();
+        assertEq(newFee, 0); assertEq(eaAfter, 0);
+    }
+
+    function test_deployment_fee_change_propagates_to_subsequent_deploys() public {
+        vm.prank(admin); factory.proposeDeploymentFee(50e6);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDeploymentFee();
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake); // seeds stake + new 50e6 fee
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 treasuryBefore = usdc.balanceOf(treasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+        assertEq(usdc.balanceOf(treasury) - treasuryBefore, 50e6);
+    }
+
+    function test_cancel_pending_deployment_fee_permissionless() public {
+        vm.prank(admin); factory.proposeDeploymentFee(50e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DeploymentFeeChangeCancelled(50e6);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDeploymentFee();
+
+        (uint256 newFee, uint64 ea) = factory.pendingDeploymentFee();
+        assertEq(newFee, 0); assertEq(ea, 0);
+    }
+
+    function test_treasury_change_propose_execute_with_7d_timelock() public {
+        address newTreasury = address(0xBEEF);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.TreasuryChangeProposed(
+            newTreasury, uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+
+        // Cannot execute before 7 days.
+        vm.warp(block.timestamp + 7 days - 1);
+        vm.prank(admin);
+        vm.expectRevert();
+        factory.executeTreasuryChange();
+
+        // Execute at exactly 7 days.
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin); factory.executeTreasuryChange();
+        assertEq(factory.protocolTreasury(), newTreasury);
+    }
+
+    function test_treasury_change_blocks_at_24h() public {
+        // Treasury is 7-day timelock (TREASURY_CHANGE_DELAY), NOT 24h
+        // like the fee tiers. This test asserts execute at 24h reverts.
+        vm.prank(admin); factory.proposeTreasuryChange(address(0xBEEF));
+
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin);
+        vm.expectRevert();
+        factory.executeTreasuryChange();
+    }
+
+    function test_treasury_receives_deployment_fee_after_change() public {
+        // Propose + execute treasury change; subsequent createVault
+        // routes deployment fee to the new treasury.
+        address newTreasury = address(0xBEEF);
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeTreasuryChange();
+
+        _fundFloat(1e6);
+        uint256 stake = 1000e6;
+        _seedCreator(alice, stake);
+
+        bytes32 salt = factory.vaultSalt(alice, "alice");
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(IERC20(address(usdc)), alice, admin, address(cdw), address(factory), uint16(100), uint16(25), address(0), uint64(0), uint16(0), "v", "V")
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        uint256 oldTreasuryBefore = usdc.balanceOf(treasury);
+        uint256 newTreasuryBefore = usdc.balanceOf(newTreasury);
+        vm.prank(alice);
+        factory.createVault("alice", stake, "v", "V");
+
+        assertEq(usdc.balanceOf(treasury), oldTreasuryBefore, "old treasury unchanged");
+        assertEq(
+            usdc.balanceOf(newTreasury) - newTreasuryBefore,
+            INITIAL_DEPLOYMENT_FEE,
+            "new treasury received the deployment fee"
+        );
+    }
+
+    function test_cancel_pending_treasury_change_permissionless() public {
+        address newTreasury = address(0xBEEF);
+        vm.prank(admin); factory.proposeTreasuryChange(newTreasury);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.TreasuryChangeCancelled(newTreasury);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingTreasuryChange();
+
+        (address t, uint64 ea) = factory.pendingTreasuryChange();
+        assertEq(t, address(0)); assertEq(ea, 0);
+    }
+
+    // ─── PR 6b: factory-level deposit fee default + cap ──────────────
+
+    /// @dev Builds a vault via factory.createVault for the given creator
+    ///      with username "alice"-style. Returns the deployed address.
+    ///      Uses the current factory state (defaultDepositFeeBps,
+    ///      currentDepositFeeCapBps) for the CREATE2 init-code hash.
+    function _deployVaultWithCurrentDefaults(
+        address creator,
+        string memory name
+    ) internal returns (address vault) {
+        _seedCreator(creator, 1000e6);
+
+        bytes32 nameHash = keccak256(bytes(name));
+        bytes32 salt = keccak256(abi.encodePacked(address(factory), creator, nameHash));
+        uint16 cap = factory.currentDepositFeeCapBps();
+        uint16 def = factory.defaultDepositFeeBps();
+        address builderAddr = factory.defaultBuilderAddress();
+        uint64 builderRate  = factory.defaultBuilderFeeRate();
+        // PR 6f: initialPerformanceFeeBps = 0 (factory always passes 0).
+        bytes32 initHash = keccak256(abi.encodePacked(
+            type(CreatorVault).creationCode,
+            abi.encode(
+                IERC20(address(usdc)), creator, admin, address(cdw), address(factory),
+                cap, def, builderAddr, builderRate, uint16(0), "v", "V"
+            )
+        ));
+        address predicted = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xff), address(factory), salt, initHash
+        )))));
+        _mockVaultCorePrecompiles(predicted, 0);
+
+        vm.prank(creator);
+        return _createVaultDynamic(creator, name, 1000e6);
+    }
+
+    function test_factory_default_deposit_fee_applied_to_new_vault() public {
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).depositFeeBps(), 25, "vault inherits factory default at deploy");
+    }
+
+    function test_factory_default_deposit_fee_cap_applied_to_new_vault() public {
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).MAX_DEPOSIT_FEE_BPS(), 100, "vault inherits factory cap at deploy");
+    }
+
+    function test_admin_propose_new_default_deposit_fee() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultProposed(
+            30, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeDepositFeeDefault(30);
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeDefault();
+        assertEq(newBps, 30);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_admin_cannot_propose_default_above_cap() public {
+        // Cap is 100; propose default = 101 must revert.
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.DepositFeeDefaultAboveCap.selector, uint16(101), uint16(100)
+            )
+        );
+        factory.proposeDepositFeeDefault(101);
+    }
+
+    function test_default_executed_after_timelock() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultExecuted(50);
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+    }
+
+    function test_default_execute_before_timelock_reverts() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        uint64 ea = uint64(block.timestamp + 24 hours);
+
+        vm.warp(block.timestamp + 24 hours - 1);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        factory.executeDepositFeeDefault();
+    }
+
+    function test_default_execute_succeeds_exactly_at_executable_at() public {
+        // Boundary: block.timestamp == executableAt must succeed.
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        (, uint64 ea) = factory.pendingDepositFeeDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+    }
+
+    function test_default_change_does_not_affect_existing_vaults() public {
+        _fundFloat(2e6);
+
+        // Deploy vault A at default = 25.
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).depositFeeBps(), 25);
+
+        // Admin changes default to 50.
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDepositFeeDefault();
+        assertEq(factory.defaultDepositFeeBps(), 50);
+
+        // Vault A's bps unchanged.
+        assertEq(CreatorVault(vaultA).depositFeeBps(), 25, "existing vault unaffected");
+
+        // Deploy vault B; inherits new default.
+        address vaultB = _deployVaultWithCurrentDefaults(bob, "bob");
+        assertEq(CreatorVault(vaultB).depositFeeBps(), 50, "new vault inherits 50");
+    }
+
+    function test_cap_change_does_not_affect_existing_vaults() public {
+        _fundFloat(1e6);
+
+        // Deploy vault A at cap = 100.
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).MAX_DEPOSIT_FEE_BPS(), 100);
+
+        // Admin changes cap to 200.
+        vm.prank(admin); factory.proposeDepositFeeCap(200);
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin); factory.executeDepositFeeCap();
+        assertEq(factory.currentDepositFeeCapBps(), 200);
+
+        // Vault A's MAX_DEPOSIT_FEE_BPS is immutable; unchanged.
+        assertEq(CreatorVault(vaultA).MAX_DEPOSIT_FEE_BPS(), 100, "existing vault immutable cap unaffected");
+    }
+
+    function test_cap_change_below_default_reverts() public {
+        // Default is 25; propose cap = 10 < default must revert.
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.DepositFeeCapBelowDefault.selector, uint16(10), uint16(25)
+            )
+        );
+        factory.proposeDepositFeeCap(10);
+    }
+
+    function test_cap_zero_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(Factory.DepositFeeCapZero.selector);
+        factory.proposeDepositFeeCap(0);
+    }
+
+    function test_cancel_default_permissionless() public {
+        vm.prank(admin); factory.proposeDepositFeeDefault(50);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeDefaultCancelled(50);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDepositFeeDefault();
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeDefault();
+        assertEq(newBps, 0); assertEq(ea, 0);
+    }
+
+    function test_cancel_cap_permissionless() public {
+        vm.prank(admin); factory.proposeDepositFeeCap(200);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.DepositFeeCapCancelled(200);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingDepositFeeCap();
+
+        (uint16 newBps, uint64 ea) = factory.pendingDepositFeeCap();
+        assertEq(newBps, 0); assertEq(ea, 0);
+    }
+
+    // ─── PR 6d: factory builder address + fee rate defaults ──────────
+
+    /// @dev Configures factory builder defaults via the timelocks (max
+    ///      delay = 7 days for the address). Vault deploys after this
+    ///      pick up the configured values.
+    function _setFactoryBuilderDefaults(address addr, uint64 rate) internal {
+        if (factory.defaultBuilderAddress() != addr) {
+            vm.prank(admin); factory.proposeBuilderAddressDefault(addr);
+            vm.warp(block.timestamp + 7 days);
+            vm.prank(admin); factory.executeBuilderAddressDefault();
+        }
+        if (factory.defaultBuilderFeeRate() != rate) {
+            vm.prank(admin); factory.proposeBuilderFeeRateDefault(rate);
+            vm.warp(block.timestamp + 24 hours);
+            vm.prank(admin); factory.executeBuilderFeeRateDefault();
+        }
+    }
+
+    function test_new_vault_inherits_factory_builder_address() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).INITIAL_BUILDER(), address(0xBEE));
+    }
+
+    function test_new_vault_inherits_factory_builder_rate() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 75);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vault).INITIAL_BUILDER_FEE_RATE(), 75);
+    }
+
+    function test_admin_proposes_builder_address_change_7d() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderAddressDefaultProposed(
+            address(0xBEE), uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+
+        (address addr, uint64 ea) = factory.pendingBuilderAddressDefault();
+        assertEq(addr, address(0xBEE));
+        assertEq(ea, uint64(block.timestamp + 7 days));
+    }
+
+    function test_admin_proposes_builder_rate_change_24h() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderFeeRateDefaultProposed(
+            100, uint64(block.timestamp + 24 hours)
+        );
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(100);
+
+        (uint64 rate, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        assertEq(rate, 100);
+        assertEq(ea, uint64(block.timestamp + 24 hours));
+    }
+
+    function test_builder_address_execute_reverts_before_7_days() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        uint64 ea = uint64(block.timestamp + 7 days);
+
+        // 24h short of 7d must revert.
+        vm.warp(block.timestamp + 6 days + 23 hours);
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.TimelockNotElapsed.selector, ea, uint64(block.timestamp)
+            )
+        );
+        factory.executeBuilderAddressDefault();
+    }
+
+    function test_builder_address_execute_succeeds_exactly_at_executable_at() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        (, uint64 ea) = factory.pendingBuilderAddressDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeBuilderAddressDefault();
+        assertEq(factory.defaultBuilderAddress(), address(0xBEE));
+    }
+
+    function test_builder_rate_execute_succeeds_exactly_at_executable_at() public {
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(50);
+        (, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeBuilderFeeRateDefault();
+        assertEq(factory.defaultBuilderFeeRate(), 50);
+    }
+
+    function test_factory_builder_change_does_not_affect_existing_vaults() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(2e6);
+
+        // Vault A inherits (0xBEE, 50).
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER(), address(0xBEE));
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER_FEE_RATE(), 50);
+
+        // Admin changes factory defaults.
+        _setFactoryBuilderDefaults(address(0xCAFE), 100);
+
+        // Vault A's immutables unchanged.
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER(), address(0xBEE));
+        assertEq(CreatorVault(vaultA).INITIAL_BUILDER_FEE_RATE(), 50);
+
+        // Vault B inherits the new defaults.
+        address vaultB = _deployVaultWithCurrentDefaults(bob, "bob");
+        assertEq(CreatorVault(vaultB).INITIAL_BUILDER(), address(0xCAFE));
+        assertEq(CreatorVault(vaultB).INITIAL_BUILDER_FEE_RATE(), 100);
+    }
+
+    function test_per_vault_override_via_PR4_mechanism_works() public {
+        _setFactoryBuilderDefaults(address(0xBEE), 50);
+        _fundFloat(1e6);
+        address vault = _deployVaultWithCurrentDefaults(alice, "alice");
+        CreatorVault v = CreatorVault(vault);
+
+        // Admin overrides per-vault via the PR 4 propose/execute path.
+        vm.prank(admin); v.proposeBuilderFeeChange(address(0xCAFE), 200);
+        vm.warp(block.timestamp + 24 hours);
+
+        // CoreWriter call is mocked; the assertion is that execute
+        // doesn't revert (state machine works) and emits the
+        // BuilderApproved + BuilderFeeChangeExecuted events.
+        vm.expectEmit(true, true, true, true, vault);
+        emit CreatorVault.BuilderApproved(address(0xCAFE), 200);
+        vm.prank(admin); v.executeBuilderFeeChange();
+
+        // Vault's immutable INITIAL_BUILDER reflects deploy-time value,
+        // not the override (this is by design -- audit forensics).
+        assertEq(v.INITIAL_BUILDER(), address(0xBEE), "immutable unchanged by override");
+    }
+
+    function test_cancel_builder_address_permissionless() public {
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderAddressDefaultCancelled(address(0xBEE));
+        vm.prank(alice); // permissionless
+        factory.cancelPendingBuilderAddressDefault();
+
+        (address addr, uint64 ea) = factory.pendingBuilderAddressDefault();
+        assertEq(addr, address(0)); assertEq(ea, 0);
+    }
+
+    function test_cancel_builder_rate_permissionless() public {
+        vm.prank(admin); factory.proposeBuilderFeeRateDefault(100);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.BuilderFeeRateDefaultCancelled(100);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingBuilderFeeRateDefault();
+
+        (uint64 rate, uint64 ea) = factory.pendingBuilderFeeRateDefault();
+        assertEq(rate, 0); assertEq(ea, 0);
+    }
+
+    function test_builder_address_delay_is_7d_not_24h() public {
+        // Specifically asserts the asymmetry: address uses TREASURY-tier
+        // 7-day delay, rate uses FEE-tier 24h delay. Execute at 24h
+        // must revert; execute at 7d succeeds.
+        vm.prank(admin); factory.proposeBuilderAddressDefault(address(0xBEE));
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(admin);
+        vm.expectRevert(); // TimelockNotElapsed
+        factory.executeBuilderAddressDefault();
+    }
+
+    // ─── PR 6e: MIN_INITIAL_STAKE configurable with 7d timelock ──────
+
+    function test_factory_initial_min_stake_is_100() public view {
+        // PR 6e initial value (lowered from PR 5's $1000 constant to
+        // $100 state-with-timelock). Admin can crank back up via
+        // propose + execute.
+        assertEq(factory.minInitialStakeUsdc(), 100e6);
+    }
+
+    function test_createVault_below_min_reverts() public {
+        // $50 stake when min is $100 -- reverts.
+        _fundFloat(1e6); _seedCreator(alice, 50e6);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.InitialStakeBelowMinimum.selector,
+                uint256(50e6), uint256(100e6)
+            )
+        );
+        factory.createVault("alice", 50e6, "v", "V");
+    }
+
+    function test_admin_proposes_min_stake_change() public {
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.MinStakeChangeProposed(
+            500e6, uint64(block.timestamp + 7 days)
+        );
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        (uint256 newMin, uint64 ea) = factory.pendingMinStakeChange();
+        assertEq(newMin, 500e6);
+        assertEq(ea, uint64(block.timestamp + 7 days));
+    }
+
+    function test_min_stake_change_executes_after_7d() public {
+        // Specifically asserts the 7-day delay (stake-tier).
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        // 24h short of 7d must revert.
+        vm.warp(block.timestamp + 6 days + 23 hours);
+        vm.prank(admin);
+        vm.expectRevert(); // TimelockNotElapsed
+        factory.executeMinStakeChange();
+
+        // Cross 7d boundary.
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+    }
+
+    function test_min_stake_execute_succeeds_exactly_at_executable_at() public {
+        // Boundary check: block.timestamp == executableAt must succeed.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        (, uint64 ea) = factory.pendingMinStakeChange();
+        vm.warp(uint256(ea));
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+    }
+
+    function test_propose_min_stake_zero_reverts() public {
+        vm.prank(admin);
+        vm.expectRevert(Factory.MinStakeZero.selector);
+        factory.proposeMinStakeChange(0);
+    }
+
+    function test_min_stake_change_propagates_to_subsequent_creates() public {
+        // Bump min to $500; new createVault must require >= $500.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+
+        // $499 stake now reverts.
+        _fundFloat(1e6); _seedCreator(alice, 499e6);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Factory.InitialStakeBelowMinimum.selector,
+                uint256(499e6), uint256(500e6)
+            )
+        );
+        factory.createVault("alice", 499e6, "v", "V");
+    }
+
+    function test_existing_vaults_unaffected_by_min_stake_change() public {
+        // Vault A deployed at min = $100. Admin bumps min to $500.
+        // Vault A continues operating normally (deposits, redeems).
+        _fundFloat(1e6);
+        address vaultA = _deployVaultWithCurrentDefaults(alice, "alice");
+        CreatorVault v = CreatorVault(vaultA);
+
+        // Bump min stake to $500.
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(admin); factory.executeMinStakeChange();
+        assertEq(factory.minInitialStakeUsdc(), 500e6);
+
+        // Vault A's existing state intact. A follower deposit (≥
+        // vault MIN_DEPOSIT_USDC = $10) still works -- factory minimum
+        // applies only at createVault, not to follower deposits.
+        usdc.mint(bob, 100e6);
+        vm.prank(bob); usdc.approve(vaultA, type(uint256).max);
+        vm.prank(bob); v.deposit(100e6, bob);
+        assertGt(v.balanceOf(bob), 0, "existing vault still accepts deposits");
+    }
+
+    function test_cancel_min_stake_permissionless() public {
+        vm.prank(admin); factory.proposeMinStakeChange(500e6);
+
+        vm.expectEmit(true, true, true, true, address(factory));
+        emit Factory.MinStakeChangeCancelled(500e6);
+        vm.prank(alice); // permissionless
+        factory.cancelPendingMinStakeChange();
+
+        (uint256 newMin, uint64 ea) = factory.pendingMinStakeChange();
+        assertEq(newMin, 0); assertEq(ea, 0);
     }
 }

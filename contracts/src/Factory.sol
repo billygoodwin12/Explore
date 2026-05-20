@@ -23,11 +23,31 @@ contract Factory is ReentrancyGuard {
     address public immutable PROTOCOL_ADMIN;
 
     // ─── Constants ─────────────────────────────────────────────────
-    uint256 public constant MIN_INITIAL_STAKE_USDC   = 1000e6; // $1,000 spam guard
     uint256 public constant MIN_USERNAME_LENGTH      = 3;
     uint256 public constant MAX_USERNAME_LENGTH      = 30;
     uint256 public constant NEW_CORE_ACCOUNT_FEE_USDC = 1e6;   // 1 USDC absorbed per vault
     uint256 public constant FLOAT_WITHDRAWAL_DELAY    = 7 days;
+    /// @notice Delay constants for PR 6c admin operations.
+    ///         Treasury (7d) carries the highest blast radius — it's the
+    ///         destination for every protocol revenue stream. Deployment
+    ///         fee (24h) is a pricing knob, same tier as PR 4 fee/TVL.
+    uint256 public constant TREASURY_CHANGE_DELAY      = 7 days;
+    uint256 public constant DEPLOYMENT_FEE_CHANGE_DELAY = 24 hours;
+    /// @notice PR 6b: deposit-fee default and cap both timelocked at 24h.
+    ///         Same tier as DEPLOYMENT_FEE_CHANGE_DELAY -- pricing knobs,
+    ///         not asset-extraction operations.
+    uint256 public constant DEPOSIT_FEE_DEFAULT_DELAY   = 24 hours;
+    uint256 public constant DEPOSIT_FEE_CAP_DELAY       = 24 hours;
+    /// @notice PR 6d: builder defaults. Address change is 7d (treasury
+    ///         tier -- builder identity affects every new vault's trade
+    ///         routing). Fee rate change is 24h (fee tier).
+    uint256 public constant BUILDER_ADDRESS_DEFAULT_DELAY  = 7 days;
+    uint256 public constant BUILDER_FEE_RATE_DEFAULT_DELAY = 24 hours;
+    /// @notice PR 6e: minimum-stake change uses 7-day timelock. Same
+    ///         tier as treasury / stake-cap changes -- raising the
+    ///         minimum can block legitimate creators mid-onboarding,
+    ///         so depositors and partners need real notice.
+    uint256 public constant MIN_STAKE_CHANGE_DELAY = 7 days;
     /// @notice Hard cap on a single `getVaults` page. Keeps RPC view
     ///         calls comfortably under HyperEVM's block gas limit
     ///         regardless of how large `_vaults` grows. Clients
@@ -68,6 +88,96 @@ contract Factory is ReentrancyGuard {
     ///         PR 4's propose/execute pattern.
     PendingFloatWithdrawal public pendingFloatWithdrawal;
 
+    // ─── Protocol revenue routing (PR 6c) ──────────────────────────
+    /// @notice Single destination for every protocol revenue stream:
+    ///         deployment fees (this PR), deposit fees skimmed by vaults
+    ///         (looked up via `ICreatorFactory.protocolTreasury`),
+    ///         builder code fees (already configured separately).
+    ///         Mutable via 7-day timelock — see `proposeTreasuryChange`.
+    address public protocolTreasury;
+
+    /// @notice Per-vault deployment fee, charged in `createVault`.
+    ///         Default 20 USDC at construction; mutable via 24h timelock.
+    uint256 public deploymentFeeUsdc;
+
+    struct PendingTreasuryChange {
+        address newTreasury;
+        uint64  executableAt;
+    }
+    PendingTreasuryChange public pendingTreasuryChange;
+
+    struct PendingDeploymentFee {
+        uint256 newFeeUsdc;
+        uint64  executableAt;
+    }
+    PendingDeploymentFee public pendingDeploymentFee;
+
+    // ─── Vault deposit-fee defaults (PR 6b) ────────────────────────
+    /// @notice Initial deposit-fee bps stamped onto every new vault at
+    ///         createVault time. Vaults snapshot this value into their
+    ///         own `depositFeeBps` at construction; subsequent factory
+    ///         changes only affect FUTURE deploys (existing vaults
+    ///         unaffected, since `depositFeeBps` is per-vault mutable
+    ///         only by the creator via `setDepositFee`).
+    uint16 public defaultDepositFeeBps = 25;
+
+    /// @notice Cap on `depositFeeBps` at vault deployment, stamped into
+    ///         the vault's immutable `MAX_DEPOSIT_FEE_BPS`. Existing
+    ///         vaults' caps are frozen at their deploy-time value.
+    uint16 public currentDepositFeeCapBps = 100;
+
+    struct PendingDepositFeeDefault {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingDepositFeeDefault public pendingDepositFeeDefault;
+
+    struct PendingDepositFeeCap {
+        uint16 newBps;
+        uint64 executableAt;
+    }
+    PendingDepositFeeCap public pendingDepositFeeCap;
+
+    // ─── Builder defaults (PR 6d) ──────────────────────────────────
+    /// @notice Builder address stamped onto every new vault at deploy.
+    ///         Vault constructor fires CoreWriter ACTION_APPROVE_BUILDER_FEE
+    ///         iff this is non-zero. Per-vault overrides via PR 4's
+    ///         proposeBuilderFeeChange path remain available.
+    address public defaultBuilderAddress;
+
+    /// @notice Builder fee rate (HL-native units, per PR 4 convention).
+    ///         Stamped into new vaults alongside `defaultBuilderAddress`.
+    uint64 public defaultBuilderFeeRate;
+
+    struct PendingBuilderAddressDefault {
+        address newAddress;
+        uint64  executableAt;
+    }
+    PendingBuilderAddressDefault public pendingBuilderAddressDefault;
+
+    struct PendingBuilderFeeRateDefault {
+        uint64 newRate;
+        uint64 executableAt;
+    }
+    PendingBuilderFeeRateDefault public pendingBuilderFeeRateDefault;
+
+    // ─── Min initial stake (PR 6e) ─────────────────────────────────
+    /// @notice Minimum stake required to create a vault via
+    ///         `createVault`. Initial value: $100 (100e6) per PR 6e
+    ///         spec. Was a constant at 1000e6 ($1000) in PR 5; PR 6e
+    ///         converts to admin-controlled state with 7-day timelock,
+    ///         and the spec also LOWERS the initial value to $100.
+    ///         Cannot be set to 0 -- zero-stake vaults would break the
+    ///         5%-of-TVL stake floor mechanism (creator with 0 stake
+    ///         is structurally in breach).
+    uint256 public minInitialStakeUsdc = 100e6;
+
+    struct PendingMinStakeChange {
+        uint256 newMinStake;
+        uint64  executableAt;
+    }
+    PendingMinStakeChange public pendingMinStakeChange;
+
     // ─── Events ────────────────────────────────────────────────────
     event VaultDeployed(
         address indexed vault,
@@ -84,6 +194,38 @@ contract Factory is ReentrancyGuard {
     event FloatWithdrawalProposed(address to, uint256 amount, uint64 executableAt);
     event FloatWithdrawalExecuted(address to, uint256 amount);
     event FloatWithdrawalCancelled(address to, uint256 amount);
+
+    event TreasuryChangeProposed(address newTreasury, uint64 executableAt);
+    event TreasuryChangeExecuted(address oldTreasury, address newTreasury);
+    event TreasuryChangeCancelled(address newTreasury);
+
+    event DeploymentFeeChangeProposed(uint256 newFeeUsdc, uint64 executableAt);
+    event DeploymentFeeChangeExecuted(uint256 newFeeUsdc);
+    event DeploymentFeeChangeCancelled(uint256 newFeeUsdc);
+
+    /// @notice Emitted on every `createVault` when the configured
+    ///         deployment fee was > 0 and transferred to the treasury.
+    event DeploymentFeePaid(address indexed payer, uint256 amount, address indexed treasury);
+
+    event DepositFeeDefaultProposed(uint16 newBps, uint64 executableAt);
+    event DepositFeeDefaultExecuted(uint16 newBps);
+    event DepositFeeDefaultCancelled(uint16 newBps);
+
+    event DepositFeeCapProposed(uint16 newBps, uint64 executableAt);
+    event DepositFeeCapExecuted(uint16 newBps);
+    event DepositFeeCapCancelled(uint16 newBps);
+
+    event BuilderAddressDefaultProposed(address newAddress, uint64 executableAt);
+    event BuilderAddressDefaultExecuted(address newAddress);
+    event BuilderAddressDefaultCancelled(address newAddress);
+
+    event BuilderFeeRateDefaultProposed(uint64 newRate, uint64 executableAt);
+    event BuilderFeeRateDefaultExecuted(uint64 newRate);
+    event BuilderFeeRateDefaultCancelled(uint64 newRate);
+
+    event MinStakeChangeProposed(uint256 newMinStake, uint64 executableAt);
+    event MinStakeChangeExecuted(uint256 newMinStake);
+    event MinStakeChangeCancelled(uint256 newMinStake);
 
     // ─── Errors ────────────────────────────────────────────────────
     error NotAdmin();
@@ -112,6 +254,17 @@ contract Factory is ReentrancyGuard {
     ///         Offsets beyond `vaultCount` and `limit == 0` return an
     ///         empty array rather than reverting — simpler client UX.
     error PaginationLimitTooLarge(uint256 limit, uint256 max);
+    /// @notice PR 6b: `proposeDepositFeeDefault` rejects a default
+    ///         that exceeds the current cap; `proposeDepositFeeCap`
+    ///         rejects a cap below the current default. Either path
+    ///         keeps the invariant `default <= cap` enforced at the
+    ///         factory level (vault constructor enforces it again
+    ///         as defense-in-depth).
+    error DepositFeeDefaultAboveCap(uint16 newDefault, uint16 cap);
+    error DepositFeeCapBelowDefault(uint16 newCap, uint16 currentDefault);
+    error DepositFeeCapZero();
+    /// @notice PR 6e: `proposeMinStakeChange` rejects newMin == 0.
+    error MinStakeZero();
 
     /// @notice Mirrors PR 4's timelock error surface. Float withdrawal
     ///         reuses the same propose/execute/cancel state machine.
@@ -130,15 +283,20 @@ contract Factory is ReentrancyGuard {
         IERC20 usdc_,
         address coreDepositWallet_,
         address protocolAdmin_,
+        address protocolTreasury_,
+        uint256 initialDeploymentFeeUsdc_,
         bytes32[] memory reservedNameHashes_
     ) {
         if (address(usdc_) == address(0))    revert ZeroAddress();
         if (coreDepositWallet_ == address(0)) revert ZeroAddress();
         if (protocolAdmin_ == address(0))     revert ZeroAddress();
+        if (protocolTreasury_ == address(0))  revert ZeroAddress();
 
         USDC = usdc_;
         CORE_DEPOSIT_WALLET = coreDepositWallet_;
         PROTOCOL_ADMIN = protocolAdmin_;
+        protocolTreasury = protocolTreasury_;
+        deploymentFeeUsdc = initialDeploymentFeeUsdc_;
 
         for (uint256 i = 0; i < reservedNameHashes_.length; i++) {
             _isReservedByHash[reservedNameHashes_[i]] = true;
@@ -148,12 +306,12 @@ contract Factory is ReentrancyGuard {
     // ─── createVault (PR 5 commit 3b) ──────────────────────────────
     /// @notice Self-deploy a vault for `msg.sender` (the creator).
     ///         Permissionless per decision 8; spam-bounded by
-    ///         MIN_INITIAL_STAKE_USDC. Atomic single-tx flow:
+    ///         minInitialStakeUsdc. Atomic single-tx flow:
     ///
     ///         1. Validate username (length, charset, underscore
     ///            rules, not reserved, not taken).
     ///         2. Reject if `msg.sender` already owns a vault.
-    ///         3. Reject if `initialStake < MIN_INITIAL_STAKE_USDC`.
+    ///         3. Reject if `initialStake < minInitialStakeUsdc`.
     ///         4. Reject if factory float < `NEW_CORE_ACCOUNT_FEE_USDC`.
     ///         5. Pull `initialStake` from creator EVM-side.
     ///         6. Deploy vault via CREATE2 with salt =
@@ -172,7 +330,7 @@ contract Factory is ReentrancyGuard {
     ///
     /// @param  username     Lowercase ASCII handle. Validated by
     ///                      `_validateUsernameOrRevert`.
-    /// @param  initialStake Net stake (6-dec USDC), >= MIN_INITIAL_STAKE_USDC.
+    /// @param  initialStake Net stake (6-dec USDC), >= minInitialStakeUsdc.
     /// @param  vaultName    ERC-20 token name (e.g. "Theorise alice BTC Long").
     /// @param  vaultSymbol  ERC-20 token symbol (e.g. "alice-BTC-L").
     /// @return vault        Deterministic CREATE2 address of the new vault.
@@ -185,7 +343,17 @@ contract Factory is ReentrancyGuard {
         bytes32 nameHash = _validateUsernameOrRevert(username);
         _checkCreatorAndStake(initialStake);
 
-        USDC.safeTransferFrom(msg.sender, address(this), initialStake);
+        // PR 6c: pull (deploymentFee + initialStake) atomically. The
+        // deployment fee is forwarded to `protocolTreasury` before any
+        // other state mutation; failure on the treasury transfer
+        // unwinds the whole tx (atomic guarantee preserved).
+        uint256 fee = deploymentFeeUsdc;
+        USDC.safeTransferFrom(msg.sender, address(this), fee + initialStake);
+        if (fee > 0) {
+            address treasury = protocolTreasury;
+            USDC.safeTransfer(treasury, fee);
+            emit DeploymentFeePaid(msg.sender, fee, treasury);
+        }
 
         vault = _deployVault(msg.sender, nameHash, vaultName, vaultSymbol);
 
@@ -210,8 +378,8 @@ contract Factory is ReentrancyGuard {
     function _checkCreatorAndStake(uint256 initialStake) internal view {
         address existing = creatorToVault[msg.sender];
         if (existing != address(0)) revert CreatorAlreadyHasVault(existing);
-        if (initialStake < MIN_INITIAL_STAKE_USDC) {
-            revert InitialStakeBelowMinimum(initialStake, MIN_INITIAL_STAKE_USDC);
+        if (initialStake < minInitialStakeUsdc) {
+            revert InitialStakeBelowMinimum(initialStake, minInitialStakeUsdc);
         }
         if (floatBalance < NEW_CORE_ACCOUNT_FEE_USDC) {
             revert FloatExhausted(floatBalance, NEW_CORE_ACCOUNT_FEE_USDC);
@@ -227,12 +395,25 @@ contract Factory is ReentrancyGuard {
         // Salt includes the factory address so v1/v2 factory redeploys
         // can't collide on the same (creator, username) pair.
         bytes32 salt = keccak256(abi.encodePacked(address(this), creator, nameHash));
+        // PR 6b: factory state drives both vault fee params. The vault
+        // constructor checks `initial <= max` defensively; the factory's
+        // propose-side checks (default <= cap on both paths) keep the
+        // invariant. New vaults inherit current values; existing vaults
+        // unaffected by subsequent factory changes.
+        // PR 6f: initialPerformanceFeeBps = 0. Creator opts in via
+        // setPerformanceFee post-deploy. No factory-level performance
+        // fee default in v1 (deferred per PR 6f spec).
         vault = address(new CreatorVault{salt: salt}(
             USDC,
             creator,
             PROTOCOL_ADMIN,
             CORE_DEPOSIT_WALLET,
             address(this),
+            currentDepositFeeCapBps,
+            defaultDepositFeeBps,
+            defaultBuilderAddress,
+            defaultBuilderFeeRate,
+            0,
             vaultName,
             vaultSymbol
         ));
@@ -363,6 +544,257 @@ contract Factory is ReentrancyGuard {
         if (p.executableAt == 0) revert NoPendingChange();
         delete pendingFloatWithdrawal;
         emit FloatWithdrawalCancelled(p.to, p.amount);
+    }
+
+    // ─── Treasury change (PR 6c, 7-day timelock) ───────────────────
+    /// @notice Admin proposes a new protocol treasury address.
+    ///         Highest-blast-radius admin op on the factory — every
+    ///         protocol revenue stream routes here, so 7-day delay
+    ///         matches the stake-cap tier from PR 4.
+    function proposeTreasuryChange(address newTreasury) external onlyAdmin {
+        if (pendingTreasuryChange.executableAt != 0) {
+            revert PendingChangeExists(pendingTreasuryChange.executableAt);
+        }
+        if (newTreasury == address(0)) revert ZeroAddress();
+        uint64 executableAt = uint64(block.timestamp + TREASURY_CHANGE_DELAY);
+        pendingTreasuryChange = PendingTreasuryChange({
+            newTreasury: newTreasury,
+            executableAt: executableAt
+        });
+        emit TreasuryChangeProposed(newTreasury, executableAt);
+    }
+
+    function executeTreasuryChange() external onlyAdmin {
+        PendingTreasuryChange memory p = pendingTreasuryChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        address old = protocolTreasury;
+        protocolTreasury = p.newTreasury;
+        delete pendingTreasuryChange;
+        emit TreasuryChangeExecuted(old, p.newTreasury);
+    }
+
+    /// @notice Permissionless cancel of a pending treasury change.
+    ///         Defense against admin-key compromise queuing a hostile
+    ///         treasury swap during the 7-day window. Matches PR 5
+    ///         float-withdrawal cancel semantics.
+    function cancelPendingTreasuryChange() external {
+        PendingTreasuryChange memory p = pendingTreasuryChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingTreasuryChange;
+        emit TreasuryChangeCancelled(p.newTreasury);
+    }
+
+    // ─── Deployment fee change (PR 6c, 24h timelock) ───────────────
+    /// @notice Admin proposes a new per-vault deployment fee. 24h
+    ///         delay matches PR 4's fee-tier cadence; lower stakes
+    ///         than the treasury (no asset extraction, just pricing).
+    function proposeDeploymentFee(uint256 newFeeUsdc) external onlyAdmin {
+        if (pendingDeploymentFee.executableAt != 0) {
+            revert PendingChangeExists(pendingDeploymentFee.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPLOYMENT_FEE_CHANGE_DELAY);
+        pendingDeploymentFee = PendingDeploymentFee({
+            newFeeUsdc: newFeeUsdc,
+            executableAt: executableAt
+        });
+        emit DeploymentFeeChangeProposed(newFeeUsdc, executableAt);
+    }
+
+    function executeDeploymentFee() external onlyAdmin {
+        PendingDeploymentFee memory p = pendingDeploymentFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        deploymentFeeUsdc = p.newFeeUsdc;
+        delete pendingDeploymentFee;
+        emit DeploymentFeeChangeExecuted(p.newFeeUsdc);
+    }
+
+    function cancelPendingDeploymentFee() external {
+        PendingDeploymentFee memory p = pendingDeploymentFee;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDeploymentFee;
+        emit DeploymentFeeChangeCancelled(p.newFeeUsdc);
+    }
+
+    // ─── Deposit fee default + cap (PR 6b, 24h timelock each) ─────
+    /// @notice Admin proposes a new default deposit-fee bps that new
+    ///         vaults will inherit. Invariant: `newBps <= currentDepositFeeCapBps`
+    ///         keeps `default <= cap`. Existing vaults unaffected --
+    ///         they snapshotted their default at deploy time.
+    function proposeDepositFeeDefault(uint16 newBps) external onlyAdmin {
+        if (pendingDepositFeeDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingDepositFeeDefault.executableAt);
+        }
+        if (newBps > currentDepositFeeCapBps) {
+            revert DepositFeeDefaultAboveCap(newBps, currentDepositFeeCapBps);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPOSIT_FEE_DEFAULT_DELAY);
+        pendingDepositFeeDefault = PendingDepositFeeDefault({
+            newBps: newBps,
+            executableAt: executableAt
+        });
+        emit DepositFeeDefaultProposed(newBps, executableAt);
+    }
+
+    function executeDepositFeeDefault() external {
+        PendingDepositFeeDefault memory p = pendingDepositFeeDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultDepositFeeBps = p.newBps;
+        delete pendingDepositFeeDefault;
+        emit DepositFeeDefaultExecuted(p.newBps);
+    }
+
+    function cancelPendingDepositFeeDefault() external {
+        PendingDepositFeeDefault memory p = pendingDepositFeeDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDepositFeeDefault;
+        emit DepositFeeDefaultCancelled(p.newBps);
+    }
+
+    /// @notice Admin proposes a new deposit-fee cap. Invariants:
+    ///         `newBps > 0` (cap == 0 would freeze every creator's
+    ///         pricing at 0) and `newBps >= defaultDepositFeeBps`
+    ///         (cap below default would create an inconsistent factory
+    ///         state where new vaults deploy with bps > cap, which the
+    ///         vault constructor would reject anyway).
+    function proposeDepositFeeCap(uint16 newBps) external onlyAdmin {
+        if (pendingDepositFeeCap.executableAt != 0) {
+            revert PendingChangeExists(pendingDepositFeeCap.executableAt);
+        }
+        if (newBps == 0) revert DepositFeeCapZero();
+        if (newBps < defaultDepositFeeBps) {
+            revert DepositFeeCapBelowDefault(newBps, defaultDepositFeeBps);
+        }
+        uint64 executableAt = uint64(block.timestamp + DEPOSIT_FEE_CAP_DELAY);
+        pendingDepositFeeCap = PendingDepositFeeCap({
+            newBps: newBps,
+            executableAt: executableAt
+        });
+        emit DepositFeeCapProposed(newBps, executableAt);
+    }
+
+    function executeDepositFeeCap() external {
+        PendingDepositFeeCap memory p = pendingDepositFeeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        currentDepositFeeCapBps = p.newBps;
+        delete pendingDepositFeeCap;
+        emit DepositFeeCapExecuted(p.newBps);
+    }
+
+    function cancelPendingDepositFeeCap() external {
+        PendingDepositFeeCap memory p = pendingDepositFeeCap;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingDepositFeeCap;
+        emit DepositFeeCapCancelled(p.newBps);
+    }
+
+    // ─── Builder address default (PR 6d, 7-day timelock) ──────────
+    function proposeBuilderAddressDefault(address newAddress) external onlyAdmin {
+        if (pendingBuilderAddressDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderAddressDefault.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + BUILDER_ADDRESS_DEFAULT_DELAY);
+        pendingBuilderAddressDefault = PendingBuilderAddressDefault({
+            newAddress: newAddress,
+            executableAt: executableAt
+        });
+        emit BuilderAddressDefaultProposed(newAddress, executableAt);
+    }
+
+    function executeBuilderAddressDefault() external {
+        PendingBuilderAddressDefault memory p = pendingBuilderAddressDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultBuilderAddress = p.newAddress;
+        delete pendingBuilderAddressDefault;
+        emit BuilderAddressDefaultExecuted(p.newAddress);
+    }
+
+    function cancelPendingBuilderAddressDefault() external {
+        PendingBuilderAddressDefault memory p = pendingBuilderAddressDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderAddressDefault;
+        emit BuilderAddressDefaultCancelled(p.newAddress);
+    }
+
+    // ─── Builder fee rate default (PR 6d, 24h timelock) ───────────
+    function proposeBuilderFeeRateDefault(uint64 newRate) external onlyAdmin {
+        if (pendingBuilderFeeRateDefault.executableAt != 0) {
+            revert PendingChangeExists(pendingBuilderFeeRateDefault.executableAt);
+        }
+        uint64 executableAt = uint64(block.timestamp + BUILDER_FEE_RATE_DEFAULT_DELAY);
+        pendingBuilderFeeRateDefault = PendingBuilderFeeRateDefault({
+            newRate: newRate,
+            executableAt: executableAt
+        });
+        emit BuilderFeeRateDefaultProposed(newRate, executableAt);
+    }
+
+    function executeBuilderFeeRateDefault() external {
+        PendingBuilderFeeRateDefault memory p = pendingBuilderFeeRateDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        defaultBuilderFeeRate = p.newRate;
+        delete pendingBuilderFeeRateDefault;
+        emit BuilderFeeRateDefaultExecuted(p.newRate);
+    }
+
+    function cancelPendingBuilderFeeRateDefault() external {
+        PendingBuilderFeeRateDefault memory p = pendingBuilderFeeRateDefault;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingBuilderFeeRateDefault;
+        emit BuilderFeeRateDefaultCancelled(p.newRate);
+    }
+
+    // ─── Min initial stake (PR 6e, 7-day timelock) ─────────────────
+    /// @notice Admin proposes a new `minInitialStakeUsdc`. 7-day delay
+    ///         matches the stake-cap tier from PR 4 -- raising the
+    ///         minimum can block legitimate creators mid-onboarding,
+    ///         and partners building on top need notice.
+    function proposeMinStakeChange(uint256 newMinStake) external onlyAdmin {
+        if (pendingMinStakeChange.executableAt != 0) {
+            revert PendingChangeExists(pendingMinStakeChange.executableAt);
+        }
+        if (newMinStake == 0) revert MinStakeZero();
+        uint64 executableAt = uint64(block.timestamp + MIN_STAKE_CHANGE_DELAY);
+        pendingMinStakeChange = PendingMinStakeChange({
+            newMinStake: newMinStake,
+            executableAt: executableAt
+        });
+        emit MinStakeChangeProposed(newMinStake, executableAt);
+    }
+
+    function executeMinStakeChange() external {
+        PendingMinStakeChange memory p = pendingMinStakeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        if (block.timestamp < p.executableAt) {
+            revert TimelockNotElapsed(p.executableAt, uint64(block.timestamp));
+        }
+        minInitialStakeUsdc = p.newMinStake;
+        delete pendingMinStakeChange;
+        emit MinStakeChangeExecuted(p.newMinStake);
+    }
+
+    function cancelPendingMinStakeChange() external {
+        PendingMinStakeChange memory p = pendingMinStakeChange;
+        if (p.executableAt == 0) revert NoPendingChange();
+        delete pendingMinStakeChange;
+        emit MinStakeChangeCancelled(p.newMinStake);
     }
 
     // ─── Username validation (PR 5 commit 2) ───────────────────────

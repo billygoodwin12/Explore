@@ -931,3 +931,144 @@ Any step revert unwinds the entire tx (Solidity-default).
 | 6 — coverage sweep | `0539ee3` | 7 access-control + boundary + bypass-isolation tests |
 | 7 — docs | this commit | INVESTIGATION §16, KNOWN_ISSUES updates, README factory runbook, GAS_ANALYSIS update |
 
+---
+
+## 17. PR 6: COMMERCIAL MECHANICS
+
+PR 6 lands the commercial layer on top of the structural contract
+work from PR 1–5. Six sub-PRs cover deposit fees, deployment fees,
+treasury management, factory-level defaults for fees + builder
+identity, configurable minimum stake, and performance fees with
+hybrid rate locking. Plus a 7th docs commit (this section).
+
+This is **the largest PR in the contract phase** — 263 LOC of
+vault changes + 700 LOC of factory changes + ~600 LOC of new
+tests. Suite grew 235 → 264 (+29 net new tests across all sub-PRs).
+
+### 17.1 Architecture decisions (all locked, no surfaced design questions)
+
+| # | Mechanism | Choice |
+|---|---|---|
+| 1 | Deposit fee rate control | Creator-set, immediate, capped (PR 6a) |
+| 2 | Deposit fee cap | Factory-level immutable per vault; factory default mutable via 24h timelock (PR 6a → 6b) |
+| 3 | Deposit fee recipient | Factory-level `protocolTreasury` only — vault-level recipient state removed; vault reads via `IFactory(FACTORY).protocolTreasury()` at deposit time (PR 6c Option A) |
+| 4 | Deployment fee | Charged in `createVault`, transferred to treasury before vault deploy; admin-mutable via 24h timelock (PR 6c) |
+| 5 | Protocol treasury | Factory state; mutable via 7-day timelock; permissionless cancel (PR 6c) |
+| 6 | Builder identity (default) | Factory state; mutable via 7-day timelock (treasury tier); new vaults inherit at deploy + fire CoreWriter `approveBuilderFee` from constructor (PR 6d) |
+| 7 | Builder fee rate (default) | Factory state; mutable via 24h timelock (fee tier); new vaults inherit (PR 6d) |
+| 8 | Per-vault builder override | PR 4's `proposeBuilderFeeChange` family preserved on vault (PR 6d) |
+| 9 | Minimum initial stake | Factory state (was constant in PR 5); mutable via 7-day timelock; initial $100; rejects zero (PR 6e) |
+| 10 | Performance fee rate control | Creator-set, immediate, capped at 20% (PR 6f) |
+| 11 | Performance fee crystallization | Pattern 3 — per-user at redemption (PR 6f) |
+| 12 | Performance fee entry tracking | Weighted-average entry NAV per depositor (1e18 precision); updated on deposit + bootstrap (PR 6f) |
+| 13 | Performance fee base | Realized only: `coreSpot + pendingBridgedUsdc`; excludes unrealized perp PnL (PR 6f) |
+| 14 | Performance fee rate lock | Hybrid: `min(locked-at-last-deposit, current-at-redemption)`. Protected from hikes + auto-benefits from drops (PR 6f + follow-up `397b31e`) |
+| 15 | Performance fee split | 90% creator / 10% protocol, hardcoded (PR 6f) |
+| 16 | Performance fee routing | `_spotSendCore` to creator and treasury; direct-deploy vaults absorb protocol share (PR 6f) |
+| 17 | Cancel permission model | All admin-proposed changes have permissionless cancel (matches PR 5/6c pattern across PRs 6b/6c/6d/6e/6f) |
+
+### 17.2 Vault constructor evolution
+
+PR 6 accumulated four new parameters into `CreatorVault.sol`'s
+constructor, slotted with the existing factory + admin params and
+grouped by concern:
+
+```solidity
+constructor(
+    IERC20 usdc,                       // ERC4626 asset
+    address creator_,                  // creator EOA
+    address admin_,                    // protocol admin (factory)
+    address coreDepositWallet_,        // Circle CDW
+    address factory_,                  // factory address (PR 5)
+    uint16 maxDepositFeeBps_,          // PR 6a: cap (from factory's currentDepositFeeCapBps)
+    uint16 initialDepositFeeBps_,      // PR 6b: initial bps (from factory's defaultDepositFeeBps)
+    address initialBuilder_,           // PR 6d: builder addr (from factory's defaultBuilderAddress)
+    uint64 initialBuilderFeeRate_,     // PR 6d: builder rate (from factory's defaultBuilderFeeRate)
+    uint16 initialPerformanceFeeBps_,  // PR 6f: initial perf fee (factory passes 0; creator opts in)
+    string memory name_,
+    string memory symbol_
+)
+```
+
+Defensive validations in the constructor:
+- `creator_ != address(0)` + `coreDepositWallet_ != address(0)` (PR 5)
+- `initialDepositFeeBps_ <= maxDepositFeeBps_` (PR 6b, defense vs inconsistent factory state)
+- `initialPerformanceFeeBps_ <= MAX_PERFORMANCE_FEE_BPS = 2000` (PR 6f)
+
+Constructor fires `ACTION_APPROVE_BUILDER_FEE` via CoreWriter iff
+`initialBuilder_ != address(0)` (PR 6d). Skipped for direct deploys
+and for factory-without-default state.
+
+### 17.3 Factory surface evolution
+
+PR 6 added five new admin-timelocked operations to the factory,
+each following the established propose/execute/cancel pattern with
+permissionless cancel:
+
+| Operation | Delay | Validation |
+|---|---|---|
+| `proposeTreasuryChange` / `execute` / `cancelPending` (6c) | 7 days | newTreasury != address(0) |
+| `proposeDeploymentFee` / `execute` / `cancelPending` (6c) | 24 hours | (none — zero allowed) |
+| `proposeDepositFeeDefault` / `execute` / `cancelPending` (6b) | 24 hours | newBps ≤ currentDepositFeeCapBps |
+| `proposeDepositFeeCap` / `execute` / `cancelPending` (6b) | 24 hours | newBps > 0 && newBps ≥ defaultDepositFeeBps |
+| `proposeBuilderAddressDefault` / `execute` / `cancelPending` (6d) | 7 days | (none) |
+| `proposeBuilderFeeRateDefault` / `execute` / `cancelPending` (6d) | 24 hours | (none) |
+| `proposeMinStakeChange` / `execute` / `cancelPending` (6e) | 7 days | newMinStake > 0 |
+
+Plus `treasuryFundFloat` (immediate, PR 5) and the float withdrawal
+timelock from PR 5 commit 5.
+
+`createVault` now also charges `deploymentFeeUsdc` (PR 6c), pulling
+`deploymentFee + initialStake` atomically and forwarding the fee to
+treasury before vault deploy.
+
+### 17.4 PR 6 commit map
+
+| Commit | Hash | Scope |
+|---|---|---|
+| 6a — creator deposit fee | `c12b813` | `setDepositFee` (creator-only, immediate, capped), MAX immutable, recipient timelock (later removed in 6c) |
+| 6c — deployment fee + treasury | `72aa0a4` | `protocolTreasury` (7d), `deploymentFeeUsdc` (24h), `createVault` deploy fee, vault-level recipient REMOVED, `IFactory(FACTORY).protocolTreasury()` lookup |
+| 6b — factory deposit fee defaults | `32abe86` | `defaultDepositFeeBps` + `currentDepositFeeCapBps` (24h each), default/cap invariants enforced at propose |
+| 6d — factory builder defaults | `e08749e` | `defaultBuilderAddress` (7d) + `defaultBuilderFeeRate` (24h), vault constructor fires CoreWriter on non-zero builder |
+| 6e — min stake configurable | `a32e0a6` | `minInitialStakeUsdc` (was constant in PR 5; 7d delay), initial $100 (lowered from PR 5's $1000) |
+| 6f — performance fees | `ebd2f5d` | Per-user weighted-avg entry NAV, realized-only fee base, 90/10 split, hybrid rate lock |
+| 6f follow-up — rate at redemption | `397b31e` | Hybrid lock evaluated at redemption too (`min(locked, current)`) |
+| 6g — docs | this commit | INVESTIGATION §17, KNOWN_ISSUES §18-§21, README + GAS_ANALYSIS updates |
+
+### 17.5 Audit narrative summary
+
+PR 6's commercial layer is **additive** to the structural contracts
+from PR 1–5. No changes to: the bridge mechanism, the in-flight
+tracker, the stake-cure state machine, the redemption shortfall
+cascade, the username registry, the factory deployment pattern. All
+the heavy structural and empirically-verified machinery from PR 3-NEW
+through PR 5 carries through unchanged.
+
+What's new in PR 6:
+- Several admin parameters become mutable via timelock (with
+  permissionless cancel matching the established v1 pattern).
+- Creator gets two economic levers (deposit fee, performance fee)
+  with immediate effect.
+- Treasury becomes a single factory-level address that all vaults
+  read at runtime — admin changes propagate automatically.
+- Vault constructor grows four parameters; defensive validations
+  preserve the invariant that no vault deploys with an
+  inconsistent fee configuration.
+- Performance fee mechanism introduces the most novel surface:
+  per-user weighted-average entry NAV + hybrid rate lock. Realized
+  NAV only (defense vs perp mark-to-market manipulation). Tested
+  across 27 dedicated scenarios.
+
+Five residual issues documented in KNOWN_ISSUES §18–§21:
+- §18: Share transfer drops performance-fee entry tracking (zero-
+  fee for recipient; protocol absorbs the lost revenue).
+- §19: Direct-deploy vaults silently absorb protocol fee shares.
+- §20: Performance fee on realized gains only (by design — defense
+  vs NAV manipulation).
+- §21: Hybrid rate lock dual evaluation semantics (depositor-
+  favorable in both directions).
+
+No new architectural risk. Audit firm's PR 6 scope is the additive
+mechanics; the structural contracts can be reviewed against the
+prior PR descriptions.
+

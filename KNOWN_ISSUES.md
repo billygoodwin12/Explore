@@ -528,3 +528,180 @@ Mitigated by the launch gating.
 **Tracking.** Indexer build progress is tracked outside this
 repo. Re-verify operational status before flipping the contract
 admin from testnet config to mainnet config at launch.
+
+---
+
+## 18. Share transfer drops performance-fee entry tracking — **OPEN — accepted v1**
+
+**What.** `CreatorVault` is ERC-4626 / ERC-20, so vault shares are
+transferable. PR 6f tracks per-depositor entry NAV and locked
+performance-fee rate in two mappings
+(`userEntryNavPerShareE18`, `userPerformanceFeeBpsAtEntry`). Standard
+ERC-20 `transfer` / `transferFrom` does **not** propagate these
+mappings to the recipient. The recipient of transferred shares has
+`entryNav = 0` and `lockedRate = 0`, which under PR 6f's redemption
+math means:
+- `gain = shares × (currentRealizedNav - 0) / 1e18`, i.e. **all
+  redemption proceeds are treated as gain**, not just the
+  appreciation from cost basis.
+- `lockedRate = 0` (no min-locked rate), so applied rate at
+  redemption is `min(0, currentRate) = 0`. The recipient pays no
+  fee — **conservative for the protocol, suboptimal for the
+  recipient** (they get the full proceeds but lose the auto-benefit
+  of any locked-low rate the original depositor had).
+
+Actually re-reading: applied rate is `min(0, currentRate) = 0`,
+so no fee is charged at all. The "all proceeds as gain" framing
+above only bites if `lockedRate > 0` for the recipient. With both
+mappings defaulting to 0, the recipient redeems fee-free.
+
+**Net effect.** Transferring vault shares **breaks** performance-fee
+accounting for the recipient. They pay zero performance fee on
+redemption regardless of vault gain. Original depositor's stored
+tracking remains on their own address (their shares were burned by
+the transfer's debit, but the mappings stay until they redeem
+something — note: their `balanceOf` may now be zero from the
+transfer, but the mappings still hold their cost basis).
+
+**Why accepted v1.**
+- Share transfers between addresses are unusual in practice. Vault
+  positions are typically held by the original depositor.
+- The protocol's downside is **zero fee** on transferred shares, not
+  negative fee. The protocol loses revenue; the depositor benefits.
+  Auditors should note this is the depositor-favorable failure mode.
+- Fixing requires either: (a) blocking transfers entirely (breaks
+  ERC-4626 composability), (b) propagating mappings on every
+  transfer (storage writes on every share movement — expensive +
+  complex weighted-avg merge on `transferFrom`), or (c) treating
+  transferred shares as cost-basis-zero at the recipient (sketchy
+  UX since recipient pays full-proceeds fee — current PR 6f design
+  defaults to zero-fee instead via `lockedRate = 0`).
+- **UI mitigation in v1:** display a warning in any UI surface that
+  exposes share transfers (e.g., portfolio tools) noting that
+  transferring vault shares forfeits the rate-lock benefit and
+  reverts to no-cost-basis tracking for the recipient.
+
+**Risk:** low for the protocol (zero fee, not negative). Medium for
+depositors who think they can transfer shares freely without losing
+benefits.
+
+**Future fix path (out of scope for v1).** Override the OZ
+`_update` hook to copy or weighted-average-merge the mappings on
+non-mint/burn transfers. Adds ~30k gas per transfer + per-call
+mapping read/write complexity. Revisit if production shows
+meaningful share-transfer volume.
+
+---
+
+## 19. Direct-deploy vaults silently absorb protocol fee shares — **OPEN — accepted v1**
+
+**What.** Two protocol-share flows depend on a factory treasury
+lookup:
+- **Deposit fee protocol share** (PR 6c): `_doDeposit` calls
+  `_feeRecipient()`, which returns `address(0)` for vaults with
+  `FACTORY == address(0)`. The `_splitFee` defensive check makes
+  `fee = 0` in this case, so the entire deposit is bridged without
+  any skim. The "protocol share" is structurally zero for direct
+  deploys.
+- **Performance fee protocol share** (PR 6f): `redeemCore`
+  computes the carve-out and routes the creator's 90% via
+  `_spotSendCore(CREATOR, creatorShare)`, then attempts the
+  treasury 10% via `_spotSendCore(treasury, protocolShare)`. For
+  `FACTORY == address(0)` vaults, treasury is `address(0)` so the
+  branch is skipped — the 10% protocol share stays on the vault's
+  Core spot account, diluting remaining shareholders' NAV.
+
+**Why accepted v1.** Direct-deploy vaults are dev/legacy path.
+Production vaults are factory-deployed and always have a configured
+treasury via `factory.protocolTreasury()`. The defensive fallback
+keeps direct-deploy vaults operational without requiring a
+factory-aware treasury, at the cost of losing the protocol's 10%
+performance fee on those vaults' redemptions.
+
+**Net effect on direct-deploy vaults:**
+- Deposit fee: never extracts a fee regardless of
+  `depositFeeBps` setting. Creator can call `setDepositFee(100)` but
+  no USDC flows to anyone.
+- Performance fee: creator's 90% routes correctly; protocol's 10%
+  stays on vault Core spot (slightly inflates NAV for remaining
+  shareholders, including the creator's own bootstrap stake).
+
+**Risk:** none. Direct-deploy vaults are not the production path;
+the fallback is operationally safe. Documented for auditor clarity.
+
+---
+
+## 20. Performance fee on realized gains only — by design — **OPEN — accepted v1**
+
+**What.** PR 6f computes performance fee against
+`_realizedNavPerShareE18 = (coreSpot + pendingBridgedUsdc + 1) × 1e18
+/ (totalSupply + 10^offset)`. The denominator includes the virtual-
+shares offset to match share math; the numerator includes settled
+spot + pending bridges. It **excludes** perp account value
+(`_corePerpAccountValue()`) — the unrealized mark-to-market of any
+open perp positions.
+
+**Why by design.** Defense against NAV manipulation. If unrealized
+perp PnL were included, a creator could:
+1. Open a perp position right before depositors redeem.
+2. Mark-to-market price moves favorably (lucky, or via low-liquidity
+   tape painting).
+3. Performance fee is computed on the inflated NAV.
+4. Position is closed at a worse price later; depositors who
+   redeemed early benefit, depositors who held lose.
+
+Excluding unrealized perp PnL means performance fee only applies
+to gains that have crystallized into spot USDC. Creators wanting
+to capture performance fee on a winning trade must **close the
+position and route gains to spot** before depositors can redeem
+against the realized gain.
+
+**Operational consequence.** Creators are incentivized to realize
+gains regularly rather than carry massive unrealized P&L on perp.
+Acceptable trade-off; the protective property is more valuable
+than the operational friction.
+
+**Risk:** none — this is a design feature, not a bug. Documented
+so auditors and creators understand the constraint.
+
+---
+
+## 21. Hybrid performance-fee rate lock — dual evaluation semantics — **OPEN — accepted v1**
+
+**What.** PR 6f's hybrid rate lock evaluates the applied performance
+fee rate at TWO points:
+- **At each deposit / top-up** (`_updatePerformanceTracking`,
+  Case 2): `userPerformanceFeeBpsAtEntry[receiver] = min(stored,
+  current creator rate)`. Lock-in propagates across multiple deposits
+  — once a depositor sees a lower rate, that lower rate is preserved.
+- **At redemption** (`_computePerformanceFee`, follow-up patch
+  `397b31e`): `applied rate = min(userPerformanceFeeBpsAtEntry,
+  current creator rate)`. Depositor benefits from creator rate drops
+  that happen between their last deposit and their redemption,
+  without needing to top up to capture the lower rate.
+
+**Net semantics.** Depositor pays
+`min(rate-locked-at-last-deposit, current-at-redemption)`. Protected
+from rate hikes after deposit (locked wins when current is higher)
+AND auto-benefits from creator rate drops without needing to top up
+(current wins when current is lower).
+
+**Why both evaluations are needed.** The at-deposit min is a
+permanent floor — a depositor who saw 5% at any deposit holds the
+5% locked even if creator hikes later and the depositor tops up
+during the hike (without the min lock, top-up would lose the
+prior 5% benefit). The at-redemption min is the "current is
+lower than locked" optimization — without it, depositors would
+need to redeposit any time creator drops the rate, which is
+cost-ineffective and bad UX.
+
+**Why accepted v1.** Standard pattern: depositor never pays more
+than they would have at any rate they encountered. Cap (20%)
+bounds worst-case fee exposure regardless. Documented so creators
+understand they cannot retroactively raise fees on existing
+depositors.
+
+**Risk:** none — this is the depositor-favorable failure mode.
+Mentioned for auditor clarity so the "rate" field in the
+`PerformanceFeeCharged` event isn't misread (it's the applied
+rate, possibly different from both stored and current).
