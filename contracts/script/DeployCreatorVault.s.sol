@@ -31,9 +31,11 @@ contract DeployCreatorVault is Script {
         // initialBuilder = address(0), initialBuilderFeeRate = 0:
         // direct deploys start with no builder configured (PR 6d). Admin
         // can register one via the PR 4 per-vault propose/execute path.
+        // initialPerformanceFeeBps = 0: creator opts in via
+        // setPerformanceFee (PR 6f).
         vault = new CreatorVault(
             IERC20(usdc), creator, admin, cdw,
-            address(0), 100, 0, address(0), 0,
+            address(0), 100, 0, address(0), 0, 0,
             name_, symbol_
         );
         vm.stopBroadcast();

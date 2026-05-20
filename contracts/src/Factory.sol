@@ -400,6 +400,9 @@ contract Factory is ReentrancyGuard {
         // propose-side checks (default <= cap on both paths) keep the
         // invariant. New vaults inherit current values; existing vaults
         // unaffected by subsequent factory changes.
+        // PR 6f: initialPerformanceFeeBps = 0. Creator opts in via
+        // setPerformanceFee post-deploy. No factory-level performance
+        // fee default in v1 (deferred per PR 6f spec).
         vault = address(new CreatorVault{salt: salt}(
             USDC,
             creator,
@@ -410,6 +413,7 @@ contract Factory is ReentrancyGuard {
             defaultDepositFeeBps,
             defaultBuilderAddress,
             defaultBuilderFeeRate,
+            0,
             vaultName,
             vaultSymbol
         ));
