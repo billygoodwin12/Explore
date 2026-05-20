@@ -1,8 +1,15 @@
-# Gas analysis — post PR 3-NEW + PR 4 + PR 5
+# Gas analysis — post PR 3-NEW + PR 4 + PR 5 + PR 6
 
-Measured via `forge test --gas-report` on the 197-test suite (PR 5
-commit 6 tip). All numbers in gas units; convert to USD at the
-prevailing HyperEVM gas price.
+Sections measured separately:
+- Top section (user-facing, admin, tracker): PR 5 tip, 197-test suite.
+- "PR 5 factory functions": PR 5 commit 6 tip.
+- "PR 6 commercial mechanics": PR 6 follow-up tip (commit `397b31e`),
+  264-test suite. PR 6 changes user-facing and admin numbers somewhat
+  (entry NAV writes on deposit, fee carve-out on redeemCore); see the
+  PR 6 section for the deltas.
+
+All numbers in gas units; convert to USD at the prevailing HyperEVM
+gas price.
 
 ## User-facing functions (medians)
 
@@ -129,6 +136,89 @@ by the protocol float (see `KNOWN_ISSUES.md` §14).
 - Registry writes (4 SSTOREs): ~100k
 - Events: ~5k
 - Solidity overhead + helpers: balance
+
+## PR 6 commercial mechanics (medians, from 264-test suite)
+
+PR 6 adds commercial controls on top of PR 5's structural surface.
+Numbers below from `forge test --no-match-contract BridgeForkTest
+--gas-report` on the post-6f branch (suite 264/264).
+
+### User-facing changes vs PR 5 baseline
+
+| Function | PR 5 median | PR 6 median | Delta | Notes |
+|---|---|---|---|---|
+| `deposit` | 247,426 | **277,146** | +29,720 | Per-user entry NAV + locked rate writes (Case 1 fresh + Case 2 top-up). Two SSTOREs minimum (mapping fields). |
+| `redeemCore` | 65,707 | **84,367** | +18,660 | Performance fee path: `_computePerformanceFee` (gain math + min-of-rates lookup) + `_feeRecipient()` factory call + up to 3 `_spotSendCore` actions on non-zero fee. |
+| `bootstrapDeposit` (factory→vault) | ~27k | **29,777** | +2.7k | Performance tracking update added in PR 6f to avoid creator-pays-full-principal-as-gain bug. |
+| `setDepositFee` (creator) | — | 47,491 | new | PR 6a creator op. |
+| `setPerformanceFee` (creator) | — | 48,401 | new | PR 6f creator op. |
+
+### Factory createVault — significant growth
+
+| Path | Min | Median | Max | Notes |
+|---|---|---|---|---|
+| `createVault` (happy + revert) | 30,461 | 3,044,221 | 3,865,058 | Median includes a mix of success and revert paths. Successful deploys cluster at ~3.85M. Up from PR 5's ~3.8M by ~50k (deployment fee transferFrom + transfer to treasury). |
+
+Cost decomposition for successful `createVault` (~3.85M):
+- USDC pull from creator (with deployment fee): ~35k
+- Transfer fee to treasury: ~22k
+- CreatorVault CREATE2 deploy: ~570k (slightly up from PR 5 — vault has more state for the performance fee mappings)
+- CDW.depositFor bridge: ~30-50k
+- bootstrapDeposit on new vault: ~250-300k (now includes performance tracking)
+- Registry writes (4 SSTOREs): ~100k
+- Events: ~5k
+- Solidity overhead + helpers: balance
+
+### Admin operations (PR 6 propose / execute / cancel)
+
+All admin operations follow the established propose/execute/cancel
+pattern. Each propose costs ~45-70k (SSTORE for pending struct +
+event). Each execute is ~30-45k (SSTORE for live state + delete
+pending + event). Cancels are trivial ~15-25k (delete + event).
+
+| Operation | Propose median | Execute median |
+|---|---|---|
+| `proposeTreasuryChange` | 46,812 | 26,805 |
+| `proposeDeploymentFee` | 64,368 | 29,389 |
+| `proposeDepositFeeDefault` | 44,712 | 27,776 |
+| `proposeDepositFeeCap` | 36,595 | 28,843 |
+| `proposeBuilderAddressDefault` | 45,944 | 37,799 |
+| `proposeBuilderFeeRateDefault` | 45,422 | 31,091 |
+| `proposeMinStakeChange` | 62,345 | 30,024 |
+| `treasuryFundFloat` (immediate, no timelock) | — | 74,133 |
+
+### Performance fee path breakdown
+
+`redeemCore` with non-zero performance fee adds ~30k gas vs
+zero-fee path:
+- `_computePerformanceFee` math: ~5k (Math.mulDiv ×3, compare,
+  branch)
+- `_feeRecipient()` external view to factory: ~2.5k
+- Two extra `_spotSendCore` CoreWriter actions (creator share +
+  protocol share): ~50k combined (~25k per action, gas-stable per
+  HL convention)
+- Mapping deletes on full redemption (free or refund-positive)
+- Event emit: ~3k
+
+Net p50: 84,367 gas for `redeemCore` (was 65,707 in PR 5). The
+~19k delta is the fee path overhead in the steady state where
+most redemptions involve some performance fee.
+
+### Economic implications
+
+At HyperEVM baseline gas (~0.0001 gwei equivalent), even the
+heaviest PR 6 operations cost fractions of a cent:
+- `createVault`: ~$0.0004 per vault (3.85M gas × 0.0001 gwei)
+- `redeemCore` with performance fee: ~$0.00001
+- Admin propose/execute: ~$0.000005 per call
+
+The PR 6 overhead is rounding error against the deployment fee
+($20 protocol revenue per vault) and against the performance fee
+itself (% of realized gain). Gas is not a binding constraint.
+
+`MIN_DEPOSIT_USDC = $10` remains a share-precision floor (avoid
+dust shares under the 6-dec virtual offset), not a gas floor.
+PR 6 doesn't change this analysis.
 
 ## When to re-run
 
