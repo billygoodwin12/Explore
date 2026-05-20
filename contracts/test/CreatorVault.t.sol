@@ -1594,18 +1594,15 @@ contract CreatorVaultTest is Test {
     // Group 5: hybrid rate locking (4 tests)
 
     function test_rate_locked_at_deposit() public {
+        // The LOCKED rate (stored at deposit) is unchanged by subsequent
+        // creator setPerformanceFee calls -- it only updates on top-ups.
+        // (Redemption-time evaluation now also takes min with current
+        // creator rate -- see test_rate_drops_post_deposit_redemption_uses_lower.)
         vm.prank(creator); vault.setPerformanceFee(2000); // 20%
         vm.prank(alice); vault.deposit(100e6, alice);
-        // Creator drops rate -- alice's locked rate becomes min(2000, 500) = 500.
-        // But alice's already-locked rate is 2000; no new deposit, no update.
         vm.prank(creator); vault.setPerformanceFee(500);
         // Alice's locked rate stays at 2000 until a new deposit (no top-up here).
         assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000);
-
-        // BUT redemption applies the locked rate (2000) for this scenario.
-        // The hybrid lock only updates on top-up deposits, not on rate
-        // changes alone. To get the lower rate, alice must redeposit.
-        // This test documents the locked-at-deposit semantics.
     }
 
     function test_rate_creator_hiked_after_deposit() public {
@@ -1641,6 +1638,80 @@ contract CreatorVaultTest is Test {
 
         assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000);
         assertEq(vault.userPerformanceFeeBpsAtEntry(bob), 500);
+    }
+
+    function test_rate_drops_post_deposit_redemption_uses_lower() public {
+        // PR 6f follow-up: hybrid lock is evaluated at REDEMPTION too,
+        // so a depositor auto-benefits from creator rate drops without
+        // needing to top up. Alice deposits at 2000 (20%), creator
+        // drops to 500 (5%), alice redeems without topping up --
+        // applied rate is the current 500, not the locked 2000.
+        vm.prank(creator); vault.setPerformanceFee(2000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+
+        // Creator drops rate AFTER alice deposited. Locked rate
+        // unchanged in storage (no top-up).
+        vm.prank(creator); vault.setPerformanceFee(500);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 2000, "locked storage unchanged");
+
+        // +$50 gain.
+        _setCoreSpot(151e6);
+
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                sawFee = true;
+                (uint256 gain, uint16 rate, uint256 totalFee, , )
+                    = abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertEq(rate, 500, "applied rate is the current 500, not locked 2000");
+                assertGt(gain, 0);
+                assertGt(totalFee, 0);
+            }
+        }
+        assertTrue(sawFee, "fee charged on realized gain");
+    }
+
+    function test_rate_drops_then_hikes_back_uses_locked() public {
+        // Alice deposits at 1000 (locked=1000). Creator drops to 500,
+        // then hikes to 1500 -- locked stays at 1000 (no top-up).
+        // Alice redeems -- applied = min(1000, 1500) = 1000 (locked wins
+        // because current is now higher than locked).
+        vm.prank(creator); vault.setPerformanceFee(1000);
+        vm.prank(alice); vault.deposit(100e6, alice);
+        _settleBridge(100e6);
+        _poke();
+
+        vm.prank(creator); vault.setPerformanceFee(500);
+        vm.prank(creator); vault.setPerformanceFee(1500);
+        assertEq(vault.userPerformanceFeeBpsAtEntry(alice), 1000);
+
+        _setCoreSpot(151e6);
+        uint256 sharesAlice = vault.balanceOf(alice);
+        vm.recordLogs();
+        vm.prank(alice); vault.redeemCore(sharesAlice, alice);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 chargedTopic = keccak256(
+            "PerformanceFeeCharged(address,uint256,uint16,uint256,uint256,uint256)"
+        );
+        bool sawFee;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == chargedTopic) {
+                sawFee = true;
+                (, uint16 rate, , , ) =
+                    abi.decode(logs[i].data, (uint256, uint16, uint256, uint256, uint256));
+                assertEq(rate, 1000, "applied rate is locked 1000 (lower than current 1500)");
+            }
+        }
+        assertTrue(sawFee, "fee event fired");
     }
 
     // Group 6: 90/10 split (2 tests)

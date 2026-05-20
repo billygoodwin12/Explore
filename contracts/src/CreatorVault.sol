@@ -811,9 +811,14 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
     }
 
     /// @notice PR 6f: compute the performance fee for `redeemer` burning
-    ///         `shares`. Fee = gain * rateLocked / 10000, where gain is
+    ///         `shares`. Fee = gain * rateApplied / 10000, where gain is
     ///         the realized-NAV-per-share appreciation over the user's
     ///         weighted-average entry NAV, scaled by shares redeemed.
+    ///         `rateApplied = min(rate-locked-at-last-deposit, current
+    ///         creator rate)` — hybrid evaluated at both deposit and
+    ///         redemption: depositor is protected from rate hikes after
+    ///         deposit (locked wins) AND auto-benefits from creator
+    ///         rate drops without needing to top up (current wins).
     ///         Returns 0s when current realized NAV <= entry (no gain,
     ///         no fee — losses are not offset).
     function _computePerformanceFee(address redeemer, uint256 shares)
@@ -828,7 +833,11 @@ contract CreatorVault is ERC4626, Ownable, ReentrancyGuard {
         uint256 gain = Math.mulDiv(shares, navDelta, 1e18);
         if (gain == 0) return (0, 0, 0);
 
-        uint16 rateApplied = userPerformanceFeeBpsAtEntry[redeemer];
+        // Hybrid lock at redemption: depositor pays the lower of their
+        // locked-at-deposit rate and the current creator rate.
+        uint16 lockedRate = userPerformanceFeeBpsAtEntry[redeemer];
+        uint16 currentRate = performanceFeeBps;
+        uint16 rateApplied = lockedRate < currentRate ? lockedRate : currentRate;
         if (rateApplied == 0) return (0, 0, 0);
 
         totalFee = Math.mulDiv(gain, rateApplied, 10_000);
