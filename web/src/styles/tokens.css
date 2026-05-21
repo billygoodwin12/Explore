@@ -1,0 +1,50 @@
+:root {
+  /* Surfaces */
+  --bg: 250 250 248;
+  --surface: 255 255 255;
+  --surface-2: 245 245 242;
+
+  /* Ink (text) */
+  --ink: 17 17 17;
+  --ink-2: 82 82 82;
+  --ink-3: 140 140 140;
+
+  /* Borders */
+  --line: 230 230 226;
+
+  /* Bloomberg amber accent */
+  --accent: 243 159 65;
+  --accent-soft: 252 232 209;
+
+  /* CVD-validated sentiment */
+  --positive: 0 122 255;
+  --negative: 244 33 46;
+  --warning: 245 158 11;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Type scale */
+  --fs-display-lg: 56px;
+  --fs-display-md: 40px;
+  --fs-heading-lg: 28px;
+  --fs-heading-md: 20px;
+  --fs-body: 14px;
+  --fs-label: 11px;
+
+  /* Spacing rhythm */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+}
