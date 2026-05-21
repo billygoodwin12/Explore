@@ -1,11 +1,16 @@
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+
 import { Wordmark } from "@/components/primitives/Wordmark";
+import { WrongChainBanner } from "@/components/primitives/WrongChainBanner";
 
 export default function HomePage() {
   return (
     <main className="min-h-screen bg-bg text-ink">
-      <nav className="border-b border-line px-6 py-4">
+      <nav className="border-b border-line px-6 py-4 flex items-center justify-between">
         <Wordmark as="a" size="nav" />
+        <ConnectButton showBalance={false} chainStatus="icon" />
       </nav>
+      <WrongChainBanner />
 
       <section className="px-6 py-16 space-y-12">
         <Wordmark size="hero" as="h1" />
