@@ -3,6 +3,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { Providers } from "./providers";
+import { Footer } from "@/components/nav/Footer";
 import { TopNav } from "@/components/nav/TopNav";
 import { WrongChainBanner } from "@/components/primitives/WrongChainBanner";
 import { cn } from "@/lib/utils";
@@ -25,9 +26,10 @@ export default function RootLayout({
       <body>
         <Providers>
           <TopNav />
-          <div className="pt-14">
+          <div className="pt-14 flex flex-col min-h-screen">
             <WrongChainBanner />
-            {children}
+            <div className="flex-1">{children}</div>
+            <Footer />
           </div>
         </Providers>
       </body>

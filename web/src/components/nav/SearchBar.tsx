@@ -45,7 +45,7 @@ export function SearchBar() {
   function go(handle: string) {
     setOpen(false);
     setQuery("");
-    router.push(`/creator/${handle}`);
+    router.push(`/@${handle}`);
   }
 
   return (
@@ -95,7 +95,7 @@ export function SearchBar() {
                 {results.map((c) => (
                   <li key={c.id}>
                     <Link
-                      href={`/creator/${c.handle}`}
+                      href={`/@${c.handle}`}
                       onClick={() => go(c.handle)}
                       className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 transition-colors"
                     >
