@@ -70,6 +70,7 @@ export type MockUserShare = {
   shares: number;
   costBasis: number;
   acquiredAt: number;
+  entryPerfFeeBps: number;
 };
 
 export type QueryLike<T> = {

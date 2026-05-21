@@ -164,11 +164,80 @@ class MockStore {
         shares,
         costBasis,
         acquiredAt: Date.now() - (30 + salt * 12) * 86_400_000,
+        entryPerfFeeBps: c.perfFeeBps,
       });
       salt++;
     }
     this.emit();
   }
+
+  addUserShares = (
+    creatorId: Hex,
+    sharesAdded: number,
+    costAdded: number,
+    userAddress: Hex | undefined,
+  ) => {
+    if (userAddress) this.seedUserSharesIfNeeded(userAddress);
+    const creator = this.creators.get(creatorId);
+    if (!creator) return;
+    const existing = this.userShares.get(creatorId);
+    const next: MockUserShare = existing
+      ? {
+          ...existing,
+          shares: existing.shares + sharesAdded,
+          costBasis: existing.costBasis + costAdded,
+        }
+      : {
+          creatorId,
+          shares: sharesAdded,
+          costBasis: costAdded,
+          acquiredAt: Date.now(),
+          entryPerfFeeBps: creator.perfFeeBps,
+        };
+    this.userShares.set(creatorId, next);
+
+    const newNav = creator.nav + costAdded;
+    const newSupply = creator.shareSupply + sharesAdded;
+    this.creators.set(creatorId, {
+      ...creator,
+      nav: newNav,
+      tvl: newNav,
+      shareSupply: newSupply,
+      pricePerShare: newSupply > 0 ? newNav / newSupply : 1,
+      depositorCount: existing ? creator.depositorCount : creator.depositorCount + 1,
+    });
+    this.emit();
+  };
+
+  removeUserShares = (creatorId: Hex, sharesRemoved: number) => {
+    const creator = this.creators.get(creatorId);
+    const existing = this.userShares.get(creatorId);
+    if (!creator || !existing) return;
+    const ratio = Math.min(1, sharesRemoved / existing.shares);
+    const costRemoved = existing.costBasis * ratio;
+    const gross = sharesRemoved * creator.pricePerShare;
+
+    if (sharesRemoved >= existing.shares) {
+      this.userShares.delete(creatorId);
+    } else {
+      this.userShares.set(creatorId, {
+        ...existing,
+        shares: existing.shares - sharesRemoved,
+        costBasis: existing.costBasis - costRemoved,
+      });
+    }
+
+    const newNav = Math.max(0, creator.nav - gross);
+    const newSupply = Math.max(0, creator.shareSupply - sharesRemoved);
+    this.creators.set(creatorId, {
+      ...creator,
+      nav: newNav,
+      tvl: newNav,
+      shareSupply: newSupply,
+      pricePerShare: newSupply > 0 ? newNav / newSupply : 1,
+    });
+    this.emit();
+  };
 
   getUserShares = (
     userAddress: Hex | undefined,

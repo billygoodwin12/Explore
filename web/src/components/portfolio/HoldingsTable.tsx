@@ -3,10 +3,12 @@
 import { EyeOff, ExternalLink, MoreHorizontal, Wallet } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 import { Avatar } from "@/components/primitives/Avatar";
 import { NumCell } from "@/components/primitives/NumCell";
 import { SkinInGamePill } from "@/components/primitives/SkinInGamePill";
+import { WithdrawModal } from "@/components/transactions/WithdrawModal";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -26,6 +28,7 @@ import {
 import type { Holding } from "@/lib/hooks/useUserHoldings";
 import { useHydrated } from "@/lib/hooks/useHydrated";
 import { usePreferencesStore } from "@/lib/store/preferences";
+import type { MockCreator } from "@/lib/mock/types";
 
 type HoldingsTableProps = {
   holdings: Holding[];
@@ -37,6 +40,8 @@ export function HoldingsTable({ holdings }: HoldingsTableProps) {
   const hiddenIds = usePreferencesStore((s) => s.hiddenHoldings);
   const hideHolding = usePreferencesStore((s) => s.hideHolding);
   const unhideHolding = usePreferencesStore((s) => s.unhideHolding);
+
+  const [withdrawingFor, setWithdrawingFor] = useState<MockCreator | null>(null);
 
   const hidden = hydrated ? new Set(hiddenIds) : new Set<string>();
   const visible = holdings.filter((h) => !hidden.has(h.creator.id));
@@ -163,9 +168,7 @@ export function HoldingsTable({ holdings }: HoldingsTableProps) {
                           View profile
                         </DropdownMenuItem>
                         <DropdownMenuItem
-                          onClick={() =>
-                            router.push(`/${h.creator.handle}#withdraw`)
-                          }
+                          onClick={() => setWithdrawingFor(h.creator)}
                         >
                           <Wallet />
                           Withdraw shares
@@ -186,6 +189,16 @@ export function HoldingsTable({ holdings }: HoldingsTableProps) {
           </TableBody>
         </Table>
       </div>
+
+      {withdrawingFor ? (
+        <WithdrawModal
+          open={Boolean(withdrawingFor)}
+          onOpenChange={(v) => {
+            if (!v) setWithdrawingFor(null);
+          }}
+          creator={withdrawingFor}
+        />
+      ) : null}
     </section>
   );
 }
