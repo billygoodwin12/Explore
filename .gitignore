@@ -1,2 +1,8 @@
 .next/
 node_modules/
+
+# Foundry build artifacts (contracts/)
+contracts/cache/
+contracts/out/
+contracts/lib/
+contracts/broadcast/
