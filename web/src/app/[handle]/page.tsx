@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { CreatorStub } from "@/components/creator/CreatorStub";
+import { CreatorProfile } from "@/components/creator/CreatorProfile";
 
 type Params = { handle: string };
 
@@ -21,7 +21,7 @@ export default async function CreatorPage({
     notFound();
   }
 
-  return <CreatorStub handle={handle} />;
+  return <CreatorProfile handle={handle} />;
 }
 
 export function generateMetadata({
