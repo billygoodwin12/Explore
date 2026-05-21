@@ -2,6 +2,30 @@ export type Hex = `0x${string}`;
 
 export type AssetClass = "perps" | "commodities" | "equities";
 
+export type PositionSide = "long" | "short";
+
+export type MockPosition = {
+  id: string;
+  asset: string;
+  side: PositionSide;
+  coins: number;
+  entryPrice: number;
+  markPrice: number;
+  leverage: number;
+  openedAt: number;
+};
+
+export type MockFill = {
+  id: string;
+  asset: string;
+  side: PositionSide;
+  coins: number;
+  price: number;
+  feeUsdc: number;
+  txHash: Hex;
+  filledAt: number;
+};
+
 export type MockCreator = {
   id: Hex;
   creatorAddress: Hex;
@@ -35,6 +59,8 @@ export type MockCreator = {
   lossStreakWeeks: number;
 
   navHistory: number[];
+  openPositions: MockPosition[];
+  recentFills: MockFill[];
 
   isActive: boolean;
 };

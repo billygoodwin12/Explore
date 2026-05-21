@@ -1,5 +1,12 @@
-import { addrFromSeed, pickFloat, pickInt, seededRng } from "@/lib/mock/prng";
-import type { AssetClass, Hex, MockCreator } from "@/lib/mock/types";
+import { addrFromSeed, pickFloat, pickInt, seededRng, strHash } from "@/lib/mock/prng";
+import type {
+  AssetClass,
+  Hex,
+  MockCreator,
+  MockFill,
+  MockPosition,
+  PositionSide,
+} from "@/lib/mock/types";
 
 const STAKE_FLOOR_BPS = 500;
 const ONE_DAY = 86_400_000;
@@ -126,6 +133,107 @@ const SEEDS: Seed[] = [
     edgeCase: "balanced",
   },
 ];
+
+type AssetSpec = { ticker: string; price: number };
+
+const PERPS: AssetSpec[] = [
+  { ticker: "BTC-PERP", price: 63250 },
+  { ticker: "ETH-PERP", price: 3180 },
+  { ticker: "SOL-PERP", price: 142 },
+  { ticker: "HYPE-PERP", price: 14.2 },
+  { ticker: "ARB-PERP", price: 0.86 },
+  { ticker: "AVAX-PERP", price: 28.4 },
+];
+
+const COMMODITIES: AssetSpec[] = [
+  { ticker: "XAU-PERP", price: 2398 },
+  { ticker: "XAG-PERP", price: 31.4 },
+  { ticker: "OIL-PERP", price: 72.5 },
+  { ticker: "CU-PERP", price: 4.18 },
+];
+
+const EQUITIES: AssetSpec[] = [
+  { ticker: "xyz-NVDA", price: 142.6 },
+  { ticker: "xyz-TSLA", price: 254.1 },
+  { ticker: "xyz-AAPL", price: 232.5 },
+  { ticker: "xyz-COIN", price: 286.4 },
+];
+
+function universeFor(klass: AssetClass): AssetSpec[] {
+  if (klass === "commodities") return COMMODITIES;
+  if (klass === "equities") return EQUITIES;
+  return PERPS;
+}
+
+function buildPositions(
+  handle: string,
+  klass: AssetClass,
+  nav: number,
+): MockPosition[] {
+  const rng = seededRng(`${handle}:positions`);
+  const universe = universeFor(klass);
+  const count = 3 + Math.floor(rng() * 3);
+  const picks = new Set<number>();
+  while (picks.size < Math.min(count, universe.length)) {
+    picks.add(Math.floor(rng() * universe.length));
+  }
+  const targets = Array.from(picks).map((i) => universe[i]!);
+
+  const out: MockPosition[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    const spec = targets[i]!;
+    const side: PositionSide = rng() > 0.32 ? "long" : "short";
+    const leverage = 1 + Math.floor(rng() * 4);
+    const notional = nav * pickFloat(rng, 0.08, 0.22);
+    const drift = pickFloat(rng, -0.07, 0.09);
+    const entryPrice = spec.price * (1 - drift);
+    const markPrice = spec.price * (1 + pickFloat(rng, -0.02, 0.025));
+    const coins = notional / spec.price;
+    const openedAt =
+      Date.now() - (1 + Math.floor(rng() * 22)) * 60 * 60 * 1000;
+    out.push({
+      id: `${handle}:pos:${i}`,
+      asset: spec.ticker,
+      side,
+      coins,
+      entryPrice,
+      markPrice,
+      leverage,
+      openedAt,
+    });
+  }
+  return out;
+}
+
+function buildFills(handle: string, klass: AssetClass): MockFill[] {
+  const rng = seededRng(`${handle}:fills`);
+  const universe = universeFor(klass);
+  const out: MockFill[] = [];
+  for (let i = 0; i < 12; i++) {
+    const spec = universe[Math.floor(rng() * universe.length)]!;
+    const side: PositionSide = rng() > 0.5 ? "long" : "short";
+    const price = spec.price * (1 + pickFloat(rng, -0.015, 0.015));
+    const coins =
+      (spec.ticker.startsWith("xyz") ? 100 : 1) * pickFloat(rng, 0.4, 6);
+    const feeUsdc = price * coins * 0.0006;
+    const minutesAgo = (i + 1) * (5 + Math.floor(rng() * 11));
+    const filledAt = Date.now() - minutesAgo * 60 * 1000;
+    const hashSeed = strHash(`${handle}:fill:${i}`).toString(16);
+    const txHash =
+      (`0x${hashSeed.padStart(8, "0").repeat(8).slice(0, 64)}`) as Hex;
+    out.push({
+      id: `${handle}:fill:${i}`,
+      asset: spec.ticker,
+      side,
+      coins,
+      price,
+      feeUsdc,
+      txHash,
+      filledAt,
+    });
+  }
+  return out.sort((a, b) => b.filledAt - a.filledAt);
+}
 
 function buildHistory(rng: () => number, base: number, drift: number, points = 24): number[] {
   const out: number[] = [];
@@ -332,6 +440,8 @@ function build(seed: Seed): MockCreator {
     lossStreakWeeks,
 
     navHistory,
+    openPositions: buildPositions(seed.handle, seed.assetClass, nav),
+    recentFills: buildFills(seed.handle, seed.assetClass),
 
     isActive: true,
   };

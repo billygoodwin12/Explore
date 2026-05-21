@@ -1,5 +1,10 @@
 import { buildMockCreators } from "@/lib/seed/mockCreators";
-import type { Hex, MockCreator, MockUserShare } from "@/lib/mock/types";
+import type {
+  Hex,
+  MockCreator,
+  MockPosition,
+  MockUserShare,
+} from "@/lib/mock/types";
 
 type Listener = () => void;
 
@@ -62,17 +67,43 @@ class MockStore {
       const drift = (Math.random() - 0.5) * 0.003;
       const nav = Math.max(c.nav * (1 + drift), 1);
       const pricePerShare = c.shareSupply > 0 ? nav / c.shareSupply : 1;
+      const openPositions: MockPosition[] = c.openPositions.map((p) => {
+        const pd = (Math.random() - 0.5) * 0.0035;
+        const markPrice = Math.max(p.markPrice * (1 + pd), 0.0001);
+        return { ...p, markPrice };
+      });
       const next: MockCreator = {
         ...c,
         nav,
         tvl: nav,
         pricePerShare,
         navHistory: [...c.navHistory.slice(1), nav],
+        openPositions,
       };
       this.creators.set(id, next);
     }
     this.emit();
   }
+
+  setDepositFee = (id: Hex, bps: number) => {
+    const c = this.creators.get(id);
+    if (!c) return;
+    this.creators.set(id, { ...c, depositFeeBps: Math.max(0, Math.min(100, bps)) });
+    this.emit();
+  };
+
+  setPerformanceFee = (id: Hex, bps: number) => {
+    const c = this.creators.get(id);
+    if (!c) return;
+    this.creators.set(id, { ...c, perfFeeBps: Math.max(0, Math.min(2000, bps)) });
+    this.emit();
+  };
+
+  getUserUsdcBalance = (userAddress: Hex | undefined): number => {
+    if (!userAddress) return 0;
+    const seed = parseInt(userAddress.slice(2, 10), 16);
+    return 800 + (seed % 1600) + ((seed >> 8) % 100) / 100;
+  };
 
   getCreator = (id: Hex): MockCreator | undefined => {
     return this.creators.get(id);
