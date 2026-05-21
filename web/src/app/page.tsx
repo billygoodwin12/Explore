@@ -27,7 +27,7 @@ export default function HomePage() {
             <div className="flex gap-6">
               <span className="num text-heading-lg text-positive">+12.34%</span>
               <span className="num text-heading-lg text-negative">-5.67%</span>
-              <span className="num text-heading-lg text-accent">$1,234.56</span>
+              <span className="num text-heading-lg text-brand">$1,234.56</span>
             </div>
           </div>
 

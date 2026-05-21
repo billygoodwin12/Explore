@@ -12,9 +12,9 @@
   /* Borders */
   --line: 230 230 226;
 
-  /* Bloomberg amber accent */
-  --accent: 243 159 65;
-  --accent-soft: 252 232 209;
+  /* Bloomberg amber brand */
+  --brand: 243 159 65;
+  --brand-soft: 252 232 209;
 
   /* CVD-validated sentiment */
   --positive: 0 122 255;

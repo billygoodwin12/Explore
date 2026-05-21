@@ -7,6 +7,8 @@ import { WagmiProvider } from "wagmi";
 
 import "@rainbow-me/rainbowkit/styles.css";
 
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { wagmiConfig } from "@/lib/wallet/config";
 import { theoriseRainbowTheme } from "@/lib/wallet/theme";
 
@@ -32,7 +34,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
           modalSize="compact"
           appInfo={{ appName: "Theorise" }}
         >
-          {children}
+          <TooltipProvider delayDuration={150}>{children}</TooltipProvider>
+          <Toaster />
         </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
