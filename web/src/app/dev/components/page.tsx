@@ -11,7 +11,6 @@ import { Pill } from "@/components/primitives/Pill";
 import { Skeleton } from "@/components/primitives/Skeleton";
 import { SkinInGamePill } from "@/components/primitives/SkinInGamePill";
 import { Sparkline } from "@/components/primitives/Sparkline";
-import { Wordmark } from "@/components/primitives/Wordmark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -86,12 +85,7 @@ export default function DevComponentsPage() {
   const [switchOn, setSwitchOn] = useState(false);
 
   return (
-    <main className="min-h-screen bg-bg text-ink">
-      <nav className="border-b border-line px-6 py-4 flex items-center justify-between">
-        <Wordmark as="a" size="nav" />
-        <span className="text-label">/dev/components</span>
-      </nav>
-
+    <main className="min-h-[calc(100vh-3.5rem)] bg-bg text-ink">
       <div className="max-w-5xl mx-auto px-6 py-12 space-y-10">
         <header className="space-y-2">
           <h1 className="text-display-md">Component test bed</h1>
