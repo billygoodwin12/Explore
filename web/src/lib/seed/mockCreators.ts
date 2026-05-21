@@ -321,9 +321,8 @@ function build(seed: Seed): MockCreator {
     followCount,
     depositorCount,
 
-    mgmtFeeBps: pickInt(rng, 100, 200),
     perfFeeBps: pickInt(rng, 1000, 2000),
-    depositFeeBps: pickInt(rng, 0, 50),
+    depositFeeBps: pickInt(rng, 0, 100),
 
     pnl7dBps,
     pnl30dBps,

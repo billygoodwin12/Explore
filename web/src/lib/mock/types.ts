@@ -24,7 +24,6 @@ export type MockCreator = {
   followCount: number;
   depositorCount: number;
 
-  mgmtFeeBps: number;
   perfFeeBps: number;
   depositFeeBps: number;
 

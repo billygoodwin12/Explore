@@ -163,14 +163,15 @@ function DepositDialog({
               • Deposit fee ·{" "}
               <span className="num text-ink">
                 {formatBps(creator.depositFeeBps)}
-              </span>
+              </span>{" "}
+              (80% creator, 20% Theorise)
             </li>
             <li>
-              • Management fee ·{" "}
+              • Performance fee ·{" "}
               <span className="num text-ink">
-                {formatBps(creator.mgmtFeeBps)}
+                {formatBps(creator.perfFeeBps)}
               </span>{" "}
-              annualized
+              on realized gains
             </li>
           </ul>
         </div>

@@ -10,19 +10,16 @@ type FeeRow = {
 export function CreatorFees({ creator }: { creator: MockCreator }) {
   const rows: FeeRow[] = [
     {
-      label: "Management",
-      bps: creator.mgmtFeeBps,
-      description: "Annualized fee on NAV, accrued continuously.",
+      label: "Deposit",
+      bps: creator.depositFeeBps,
+      description:
+        "Creator-set 0–100 bps, charged at deposit. 80% to creator, 20% to Theorise.",
     },
     {
       label: "Performance",
       bps: creator.perfFeeBps,
-      description: "Charged on realized gains, hybrid high-water mark.",
-    },
-    {
-      label: "Deposit",
-      bps: creator.depositFeeBps,
-      description: "One-time fee on each deposit. Cap enforced by factory.",
+      description:
+        "Creator-set 0–2000 bps (max 20%), charged on realized gains at withdrawal. 90% to creator, 10% to Theorise. Hybrid rate locking.",
     },
   ];
 
