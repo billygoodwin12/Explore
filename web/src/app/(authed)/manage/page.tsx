@@ -9,7 +9,10 @@ export const metadata: Metadata = {
 
 export default function ManagePage() {
   return (
-    <ConnectedWalletGuard>
+    <ConnectedWalletGuard
+      title="Connect your wallet"
+      description="This page is for creators. Connect the wallet that controls your vault to manage stake, fees, and view your open positions."
+    >
       <ManageDashboard />
     </ConnectedWalletGuard>
   );

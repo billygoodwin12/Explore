@@ -4,11 +4,17 @@ import { ConnectButton as RKConnectButton } from "@rainbow-me/rainbowkit";
 
 import { Button } from "@/components/ui/button";
 
+type ConnectedWalletGuardProps = {
+  children: React.ReactNode;
+  title?: string;
+  description?: string;
+};
+
 export function ConnectedWalletGuard({
   children,
-}: {
-  children: React.ReactNode;
-}) {
+  title = "Connect your wallet",
+  description = "Connect a wallet to view this page.",
+}: ConnectedWalletGuardProps) {
   return (
     <RKConnectButton.Custom>
       {({ account, chain, openConnectModal, mounted, authenticationStatus }) => {
@@ -19,11 +25,9 @@ export function ConnectedWalletGuard({
           return (
             <div className="max-w-[640px] mx-auto px-6 py-16">
               <div className="rounded-lg border border-line bg-surface p-8 text-center space-y-4">
-                <h2 className="text-heading-lg">Connect your wallet</h2>
+                <h2 className="text-heading-lg">{title}</h2>
                 <p className="text-[14px] text-ink-2 leading-relaxed max-w-md mx-auto">
-                  This page is for creators. Connect the wallet that controls
-                  your vault to manage stake, fees, and view your open
-                  positions.
+                  {description}
                 </p>
                 <Button
                   variant="primary-dark"

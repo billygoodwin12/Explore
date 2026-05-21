@@ -105,6 +105,16 @@ class MockStore {
     return 800 + (seed % 1600) + ((seed >> 8) % 100) / 100;
   };
 
+  getUserHyperliquidBalances = (
+    userAddress: Hex | undefined,
+  ): { spot: number; perp: number; totalAvailable: number } => {
+    if (!userAddress) return { spot: 0, perp: 0, totalAvailable: 0 };
+    const seed = parseInt(userAddress.slice(2, 10), 16);
+    const spot = 150 + (seed % 320) + ((seed >> 4) % 100) / 100;
+    const perp = 200 + ((seed >> 8) % 480) + ((seed >> 12) % 100) / 100;
+    return { spot, perp, totalAvailable: spot + perp };
+  };
+
   getCreator = (id: Hex): MockCreator | undefined => {
     return this.creators.get(id);
   };
