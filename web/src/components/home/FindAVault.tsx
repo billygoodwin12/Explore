@@ -29,7 +29,7 @@ export function FindAVault() {
           c.creatorAddress.toLowerCase() === needle,
       );
       if (match) {
-        router.push(`/@${match.handle}`);
+        router.push(`/${match.handle}`);
         return;
       }
       toast.error(`No vault found at ${shortenAddress(v)}`, {
@@ -40,7 +40,7 @@ export function FindAVault() {
 
     const handle = v.startsWith("@") ? v.slice(1) : v;
     if (handle.length === 0) return;
-    router.push(`/@${handle}`);
+    router.push(`/${handle}`);
   }
 
   return (
