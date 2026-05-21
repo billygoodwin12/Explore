@@ -28,12 +28,11 @@ export default function HomePage() {
       <section className="max-w-[640px] mx-auto px-6 pt-24 pb-16 space-y-8">
         <h1 className="text-display-lg">Trade like the people you trust.</h1>
         <p className="text-ink-2 text-[16px] leading-relaxed">
-          Theorise turns conviction in a creator into a tradable position. Every
-          vault on Hyperliquid carries a{" "}
-          <span className="font-medium text-ink">5% creator stake floor</span> —
-          if a creator drops below it, a 48-hour cure window starts and the
-          vault auto-dissolves at the end if they don’t top up. Every fill,
-          every fee, every share is on-chain.
+          Theorise is a creator-vault platform on Hyperliquid. Every trade is
+          verifiable on-chain. Every creator must keep at least{" "}
+          <span className="font-medium text-ink">5% of their vault’s value</span>{" "}
+          as their own stake. We show you everything. You decide who’s worth
+          following.
         </p>
         <ConnectCta />
       </section>
