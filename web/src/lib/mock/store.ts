@@ -1,0 +1,159 @@
+import { buildMockCreators } from "@/lib/seed/mockCreators";
+import type { Hex, MockCreator, MockUserShare } from "@/lib/mock/types";
+
+type Listener = () => void;
+
+const TICK_MS = 5_000;
+
+class MockStore {
+  private creators = new Map<Hex, MockCreator>();
+  private order: Hex[] = [];
+  private follows = new Set<Hex>();
+  private userShares = new Map<Hex, MockUserShare>();
+  private listeners = new Set<Listener>();
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private hasUserShares = false;
+  private version = 0;
+
+  getVersion = (): number => this.version;
+  getServerVersion = (): number => 0;
+
+  constructor() {
+    const initial = buildMockCreators();
+    for (const c of initial) {
+      this.creators.set(c.id, c);
+      this.order.push(c.id);
+    }
+    this.follows.add(initial[0]!.id);
+    this.follows.add(initial[7]!.id);
+    this.follows.add(initial[10]!.id);
+  }
+
+  private startIfNeeded() {
+    if (this.timer || typeof window === "undefined") return;
+    this.timer = setInterval(() => this.tick(), TICK_MS);
+  }
+
+  private stopIfIdle() {
+    if (this.listeners.size === 0 && this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  subscribe = (listener: Listener): (() => void) => {
+    this.listeners.add(listener);
+    this.startIfNeeded();
+    return () => {
+      this.listeners.delete(listener);
+      this.stopIfIdle();
+    };
+  };
+
+  private emit() {
+    this.version++;
+    for (const l of this.listeners) l();
+  }
+
+  private tick() {
+    for (const id of this.order) {
+      const c = this.creators.get(id);
+      if (!c) continue;
+      const drift = (Math.random() - 0.5) * 0.003;
+      const nav = Math.max(c.nav * (1 + drift), 1);
+      const pricePerShare = c.shareSupply > 0 ? nav / c.shareSupply : 1;
+      const next: MockCreator = {
+        ...c,
+        nav,
+        tvl: nav,
+        pricePerShare,
+        navHistory: [...c.navHistory.slice(1), nav],
+      };
+      this.creators.set(id, next);
+    }
+    this.emit();
+  }
+
+  getCreator = (id: Hex): MockCreator | undefined => {
+    return this.creators.get(id);
+  };
+
+  getCreatorByHandle = (handle: string): MockCreator | undefined => {
+    for (const id of this.order) {
+      const c = this.creators.get(id);
+      if (c && c.handle === handle) return c;
+    }
+    return undefined;
+  };
+
+  getAllCreators = (): MockCreator[] => {
+    return this.order
+      .map((id) => this.creators.get(id))
+      .filter((c): c is MockCreator => Boolean(c));
+  };
+
+  getFollowedIds = (): Hex[] => {
+    return Array.from(this.follows);
+  };
+
+  follow = (id: Hex) => {
+    if (!this.creators.has(id)) return;
+    this.follows.add(id);
+    this.emit();
+  };
+
+  unfollow = (id: Hex) => {
+    this.follows.delete(id);
+    this.emit();
+  };
+
+  private seedUserSharesIfNeeded(userAddress: Hex) {
+    if (this.hasUserShares) return;
+    this.hasUserShares = true;
+    const all = this.getAllCreators();
+    const targets = [all[0], all[7], all[10]].filter(
+      (c): c is MockCreator => Boolean(c),
+    );
+    let salt = 0;
+    for (const c of targets) {
+      const shares = 1000 + ((salt * 137 + userAddress.length * 13) % 4200);
+      const costBasis = shares * (c.pricePerShare * 0.985);
+      this.userShares.set(c.id, {
+        creatorId: c.id,
+        shares,
+        costBasis,
+        acquiredAt: Date.now() - (30 + salt * 12) * 86_400_000,
+      });
+      salt++;
+    }
+    this.emit();
+  }
+
+  getUserShares = (
+    userAddress: Hex | undefined,
+    creatorId: Hex,
+  ): MockUserShare | undefined => {
+    if (!userAddress) return undefined;
+    this.seedUserSharesIfNeeded(userAddress);
+    return this.userShares.get(creatorId);
+  };
+
+  getAllUserShares = (userAddress: Hex | undefined): MockUserShare[] => {
+    if (!userAddress) return [];
+    this.seedUserSharesIfNeeded(userAddress);
+    return Array.from(this.userShares.values());
+  };
+
+  getUserOwnVault = (_userAddress: Hex | undefined): MockCreator | null => {
+    return null;
+  };
+}
+
+let _singleton: MockStore | null = null;
+
+export function getMockStore(): MockStore {
+  if (!_singleton) _singleton = new MockStore();
+  return _singleton;
+}
+
+export type { MockStore };
