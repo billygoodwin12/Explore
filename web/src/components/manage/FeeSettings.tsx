@@ -127,7 +127,7 @@ function FeeRow({
               value={draft}
               onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
               inputMode="numeric"
-              className="font-mono text-[15px] h-10 pr-12"
+              className="num text-[15px] h-10 pr-12"
               aria-invalid={!valid && draft.length > 0}
             />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-ink-3 num">

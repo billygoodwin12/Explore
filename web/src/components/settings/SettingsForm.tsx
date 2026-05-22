@@ -287,7 +287,7 @@ function GuardrailsSection() {
               }}
               disabled={!hydrated || !enabled}
               inputMode="numeric"
-              className="font-mono text-[14px] h-8 w-24 pr-8 text-right"
+              className="num text-[14px] h-8 w-24 pr-8 text-right"
               aria-label="Daily loss threshold percent"
             />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-ink-3 num pointer-events-none">
@@ -334,7 +334,7 @@ function WalletSection() {
         control={
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="num text-[13px] text-ink bg-surface-2 rounded-full border border-line px-3 py-1 cursor-default">
+              <span className="font-mono text-[13px] text-ink bg-surface-2 rounded-full border border-line px-3 py-1 cursor-default">
                 {shortenAddress(address, 6)}
               </span>
             </TooltipTrigger>
@@ -395,7 +395,7 @@ function AccountSection() {
                 href={`${explorer}/address/${vault.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="num text-[13px] text-ink bg-surface-2 rounded-full border border-line px-3 py-1 inline-flex items-center gap-1.5 hover:text-brand transition-colors"
+                className="font-mono text-[13px] text-ink bg-surface-2 rounded-full border border-line px-3 py-1 inline-flex items-center gap-1.5 hover:text-brand transition-colors"
               >
                 {shortenAddress(vault.id, 6)}
                 <ExternalLink className="size-3" strokeWidth={2} />

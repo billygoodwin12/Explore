@@ -45,7 +45,7 @@ function AddressRow({
             href={`${explorer}/address/${address}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="num text-ink hover:text-brand transition-colors"
+            className="font-mono text-ink hover:text-brand transition-colors"
           >
             {shortenAddress(address, 4)}
           </Link>

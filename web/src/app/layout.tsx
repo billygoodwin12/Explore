@@ -1,12 +1,19 @@
 import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Footer } from "@/components/nav/Footer";
 import { TopNav } from "@/components/nav/TopNav";
 import { WrongChainBanner } from "@/components/primitives/WrongChainBanner";
 import { cn } from "@/lib/utils";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Theorise",
@@ -21,7 +28,12 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={cn(GeistSans.variable, GeistMono.variable, "font-sans")}
+      className={cn(
+        GeistSans.variable,
+        GeistMono.variable,
+        inter.variable,
+        "font-sans",
+      )}
     >
       <body>
         <Providers>

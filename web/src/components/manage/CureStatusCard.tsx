@@ -120,7 +120,7 @@ export function CureStatusCard({ creator }: { creator: MockCreator }) {
               id="topup-amount"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="font-mono text-[15px] h-11"
+              className="num text-[15px] h-11"
               inputMode="decimal"
             />
             <div className="text-[11px] text-ink-3">

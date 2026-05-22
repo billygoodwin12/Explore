@@ -15,7 +15,11 @@ const config: Config = {
         brand: "rgb(var(--brand) / <alpha-value>)",
         "brand-soft": "rgb(var(--brand-soft) / <alpha-value>)",
         positive: "rgb(var(--positive) / <alpha-value>)",
+        "positive-soft-bg": "rgb(var(--positive-soft-bg) / <alpha-value>)",
+        "positive-soft-text": "rgb(var(--positive-soft-text) / <alpha-value>)",
         negative: "rgb(var(--negative) / <alpha-value>)",
+        "negative-soft-bg": "rgb(var(--negative-soft-bg) / <alpha-value>)",
+        "negative-soft-text": "rgb(var(--negative-soft-text) / <alpha-value>)",
         warning: "rgb(var(--warning) / <alpha-value>)",
       },
       fontFamily: {

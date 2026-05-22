@@ -132,7 +132,6 @@ export function CreatorProfile({ handle }: { handle: string }) {
         <SmallStat
           label="Loss streak"
           value={`${creator.lossStreakWeeks}w`}
-          sentiment={creator.lossStreakWeeks > 0 ? "negative" : "neutral"}
         />
       </section>
 

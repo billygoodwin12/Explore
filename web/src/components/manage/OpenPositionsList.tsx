@@ -47,16 +47,16 @@ export function OpenPositionsList({ creator }: { creator: MockCreator }) {
                   <div className="flex items-center gap-2">
                     <span
                       className={cn(
-                        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.04em] border",
+                        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.04em] border font-mono",
                         p.side === "long"
-                          ? "bg-positive/10 text-positive border-positive/20"
-                          : "bg-negative/10 text-negative border-negative/20",
+                          ? "bg-positive-soft-bg text-positive-soft-text border-positive/25"
+                          : "bg-negative-soft-bg text-negative-soft-text border-negative/25",
                       )}
                     >
                       <SideIcon className="size-3" strokeWidth={2.5} />
                       {p.side}
                     </span>
-                    <span className="text-[13px] font-medium text-ink num">
+                    <span className="text-[13px] font-medium text-ink font-mono">
                       {p.asset}
                     </span>
                     <span className="num text-[11px] text-ink-3">

@@ -62,12 +62,12 @@ export function ConnectButton() {
                 style={{
                   background: `conic-gradient(from ${
                     (parseInt(account.address.slice(2, 8), 16) % 360)
-                  }deg, rgb(243,159,65), rgb(0,122,255), rgb(243,159,65))`,
+                  }deg, rgb(243,159,65), rgb(72,207,174), rgb(243,159,65))`,
                 }}
                 aria-hidden
               />
             )}
-            <span className="num">@{label}</span>
+            <span className="font-mono">@{label}</span>
           </button>
         );
       }}

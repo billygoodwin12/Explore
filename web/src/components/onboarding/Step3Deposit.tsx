@@ -81,7 +81,7 @@ export function Step3Deposit({ username, onBack, onDeployed }: Step3Props) {
           onChange={(e) => setAmount(e.target.value)}
           inputMode="decimal"
           placeholder="100.00"
-          className="font-mono text-[15px] h-11"
+          className="num text-[15px] h-11"
           disabled={approveStatus !== "idle"}
         />
         <p className="text-[11px] text-ink-3">

@@ -31,7 +31,7 @@ function formatCompactUsd(n: number): string {
 export function CreatorChart({ creator }: { creator: MockCreator }) {
   const points = buildPoints(creator.navHistory);
   const positive = creator.pnl30dBps >= 0;
-  const stroke = positive ? "rgb(0,122,255)" : "rgb(244,33,46)";
+  const stroke = positive ? "rgb(72,207,174)" : "rgb(244,88,88)";
   const fillId = `chart-${positive ? "p" : "n"}-${creator.id.slice(2, 8)}`;
 
   const min = Math.min(...creator.navHistory);
@@ -82,7 +82,7 @@ export function CreatorChart({ creator }: { creator: MockCreator }) {
               dataKey="i"
               tickLine={false}
               axisLine={false}
-              tick={{ fill: "rgb(140,140,140)", fontSize: 11 }}
+              tick={{ fill: "rgb(110,110,110)", fontSize: 11 }}
               tickFormatter={(i) =>
                 i === 0
                   ? "−24h"
@@ -99,17 +99,17 @@ export function CreatorChart({ creator }: { creator: MockCreator }) {
               axisLine={false}
               width={56}
               domain={[min - pad, max + pad]}
-              tick={{ fill: "rgb(140,140,140)", fontSize: 11 }}
+              tick={{ fill: "rgb(110,110,110)", fontSize: 11 }}
               tickFormatter={(v: number) => formatCompactUsd(v)}
             />
             <Tooltip
-              cursor={{ stroke: "rgb(140,140,140)", strokeDasharray: "3 3" }}
+              cursor={{ stroke: "rgb(110,110,110)", strokeDasharray: "3 3" }}
               contentStyle={{
                 background: "rgb(255,255,255)",
                 border: "1px solid rgb(230,230,226)",
                 borderRadius: 6,
                 fontSize: 12,
-                fontFamily: "var(--font-geist-mono)",
+                fontFamily: "var(--font-inter)",
                 padding: "6px 10px",
               }}
               labelFormatter={(label: number) =>

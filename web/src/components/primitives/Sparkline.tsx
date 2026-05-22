@@ -13,9 +13,9 @@ type SparklineProps = {
 };
 
 const colorByName = {
-  positive: "rgb(0,122,255)",
-  negative: "rgb(244,33,46)",
-  neutral: "rgb(140,140,140)",
+  positive: "rgb(72,207,174)",
+  negative: "rgb(244,88,88)",
+  neutral: "rgb(110,110,110)",
 };
 
 export function Sparkline({

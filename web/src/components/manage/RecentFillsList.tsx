@@ -65,14 +65,16 @@ export function RecentFillsList({ creator }: { creator: MockCreator }) {
                     <TableCell className="text-[12px] text-ink-2">
                       {formatRelative(f.filledAt)}
                     </TableCell>
-                    <TableCell className="num text-[13px]">{f.asset}</TableCell>
+                    <TableCell className="font-mono text-[13px]">
+                      {f.asset}
+                    </TableCell>
                     <TableCell>
                       <span
                         className={cn(
-                          "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.04em] border",
+                          "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.04em] border font-mono",
                           f.side === "long"
-                            ? "bg-positive/10 text-positive border-positive/20"
-                            : "bg-negative/10 text-negative border-negative/20",
+                            ? "bg-positive-soft-bg text-positive-soft-text border-positive/25"
+                            : "bg-negative-soft-bg text-negative-soft-text border-negative/25",
                         )}
                       >
                         <SideIcon className="size-3" strokeWidth={2.5} />
@@ -93,7 +95,7 @@ export function RecentFillsList({ creator }: { creator: MockCreator }) {
                         href={`${explorer}/tx/${f.txHash}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="num text-[12px] text-ink-2 hover:text-brand inline-flex items-center gap-1"
+                        className="font-mono text-[12px] text-ink-2 hover:text-brand inline-flex items-center gap-1"
                       >
                         {shortenHash(f.txHash, 4)}
                         <ExternalLink className="size-3" strokeWidth={2} />

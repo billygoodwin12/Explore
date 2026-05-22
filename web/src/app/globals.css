@@ -19,7 +19,11 @@
   --color-brand: rgb(var(--brand));
   --color-brand-soft: rgb(var(--brand-soft));
   --color-positive: rgb(var(--positive));
+  --color-positive-soft-bg: rgb(var(--positive-soft-bg));
+  --color-positive-soft-text: rgb(var(--positive-soft-text));
   --color-negative: rgb(var(--negative));
+  --color-negative-soft-bg: rgb(var(--negative-soft-bg));
+  --color-negative-soft-text: rgb(var(--negative-soft-text));
   --color-warning: rgb(var(--warning));
 }
 
@@ -36,9 +40,11 @@ body {
 
 @layer utilities {
   .num {
-    font-family: var(--font-geist-mono), ui-monospace, monospace;
+    font-family: var(--font-inter), system-ui, sans-serif;
+    font-weight: 500;
     font-feature-settings: "tnum" 1, "zero" 1;
     font-variant-numeric: tabular-nums slashed-zero;
+    letter-spacing: -0.01em;
   }
 
   .text-display-lg {

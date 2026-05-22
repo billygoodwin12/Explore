@@ -5,7 +5,7 @@
   --surface-2: 245 245 242;
 
   /* Ink (text) */
-  --ink: 17 17 17;
+  --ink: 15 20 25;
   --ink-2: 82 82 82;
   --ink-3: 110 110 110;
 
@@ -16,9 +16,13 @@
   --brand: 243 159 65;
   --brand-soft: 252 232 209;
 
-  /* CVD-validated sentiment */
-  --positive: 0 122 255;
-  --negative: 244 33 46;
+  /* Hyperliquid-style sentiment */
+  --positive: 72 207 174;
+  --positive-soft-bg: 218 244 235;
+  --positive-soft-text: 33 130 105;
+  --negative: 244 88 88;
+  --negative-soft-bg: 254 226 226;
+  --negative-soft-text: 153 27 27;
   --warning: 245 158 11;
 
   /* Radii */

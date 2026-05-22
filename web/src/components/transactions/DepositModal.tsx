@@ -381,7 +381,7 @@ function AmountStep(props: {
             onChange={(e) => setAmount(e.target.value)}
             placeholder="0.00"
             inputMode="decimal"
-            className="font-mono text-[22px] h-14 text-center"
+            className="num text-[22px] h-14 text-center"
             autoFocus
           />
           <div className="grid grid-cols-4 gap-2">
@@ -655,7 +655,7 @@ function SuccessStep(props: {
           href={`${explorer}/tx/${depositTxHash}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center justify-center gap-1 text-[12px] text-ink-2 hover:text-brand num"
+          className="flex items-center justify-center gap-1 text-[12px] text-ink-2 hover:text-brand font-mono"
         >
           {shortenHash(depositTxHash, 6)}
           <ExternalLink className="size-3" />
@@ -744,7 +744,7 @@ function TxRow({
             href={`${explorer}/tx/${hash}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="num text-[11px] text-ink-3 hover:text-brand inline-flex items-center gap-1 mt-0.5"
+            className="font-mono text-[11px] text-ink-3 hover:text-brand inline-flex items-center gap-1 mt-0.5"
           >
             {shortenHash(hash, 4)}
             <ExternalLink className="size-2.5" />

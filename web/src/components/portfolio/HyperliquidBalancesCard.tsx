@@ -81,11 +81,7 @@ function Cell({
   return (
     <div className="space-y-1">
       <div className="text-label">{label}</div>
-      <NumCell
-        value={value}
-        size={emphasis ? "lg" : "md"}
-        sentiment={emphasis ? "brand" : "neutral"}
-      />
+      <NumCell value={value} size={emphasis ? "lg" : "md"} />
     </div>
   );
 }

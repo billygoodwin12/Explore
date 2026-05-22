@@ -1,21 +1,44 @@
 import { cn } from "@/lib/utils";
 
-export type NumCellSentiment = "neutral" | "positive" | "negative" | "brand";
+export type NumCellSentiment =
+  | "neutral"
+  | "positive"
+  | "negative"
+  | "brand"
+  | "auto";
 export type NumCellSize = "sm" | "md" | "lg" | "xl";
 
 const sizeClasses: Record<NumCellSize, string> = {
   sm: "text-[12px] leading-4",
   md: "text-[14px] leading-5",
-  lg: "text-[20px] leading-6 font-medium",
-  xl: "text-[28px] leading-7 font-semibold tracking-[-0.01em]",
+  lg: "text-[20px] leading-6",
+  xl: "text-[28px] leading-7",
 };
 
-const sentimentClasses: Record<NumCellSentiment, string> = {
+type ResolvedSentiment = "neutral" | "positive" | "negative" | "brand";
+
+const sentimentClasses: Record<ResolvedSentiment, string> = {
   neutral: "text-ink",
   positive: "text-positive",
   negative: "text-negative",
   brand: "text-brand",
 };
+
+/**
+ * "auto" derives positive/negative from the value's sign — use it only for
+ * gain/loss numbers. Non-performance values (counts, balances) stay neutral.
+ */
+function resolveAuto(value: string | number): ResolvedSentiment {
+  if (typeof value === "number") {
+    if (value > 0) return "positive";
+    if (value < 0) return "negative";
+    return "neutral";
+  }
+  const trimmed = value.trim();
+  if (trimmed.startsWith("+")) return "positive";
+  if (trimmed.startsWith("-") || trimmed.startsWith("−")) return "negative";
+  return "neutral";
+}
 
 type NumCellProps = {
   value: string | number;
@@ -38,13 +61,16 @@ export function NumCell({
   className,
   title,
 }: NumCellProps) {
+  const resolved: ResolvedSentiment =
+    sentiment === "auto" ? resolveAuto(value) : sentiment;
+
   return (
     <span
       className={cn(
         "num inline-flex items-baseline",
         align === "right" && "justify-end",
         sizeClasses[size],
-        sentimentClasses[sentiment],
+        sentimentClasses[resolved],
         className,
       )}
       title={title}

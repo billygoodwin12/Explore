@@ -46,7 +46,7 @@ export function CreatorWeeklyReturns({ weekly }: WeeklyReturnsProps) {
                   />
                 </div>
               </TooltipTrigger>
-              <TooltipContent side="top" className="font-mono text-[11px]">
+              <TooltipContent side="top" className="num text-[11px]">
                 Week −{12 - i} · {bps > 0 ? "+" : ""}
                 {(bps / 100).toFixed(2)}%
               </TooltipContent>

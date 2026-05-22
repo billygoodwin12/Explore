@@ -48,13 +48,11 @@ export function AccountSummaryCard({ creator }: { creator: MockCreator }) {
         <Cell
           label="Available USDC"
           value={`$${usdcBalance.toFixed(2)}`}
-          subTone="neutral"
           sub="In your wallet"
         />
         <Cell
           label="Floor status"
           value={`${formatBps(FLOOR_BPS)} required`}
-          sentiment={aboveFloor && !inCure ? "positive" : inCure ? "negative" : "warning"}
           sub={aboveFloor ? "Above floor" : "Top up to clear cure"}
         />
       </div>
@@ -66,40 +64,16 @@ function Cell({
   label,
   value,
   sub,
-  sentiment = "neutral",
-  subTone,
 }: {
   label: string;
   value: string;
   sub?: string;
-  sentiment?: "neutral" | "positive" | "negative" | "brand" | "warning";
-  subTone?: "neutral";
 }) {
-  const cellSentiment =
-    sentiment === "warning"
-      ? "neutral"
-      : (sentiment as "neutral" | "positive" | "negative" | "brand");
   return (
     <div className="space-y-1">
       <div className="text-label">{label}</div>
-      <NumCell
-        value={value}
-        size="lg"
-        sentiment={cellSentiment}
-        className={
-          sentiment === "warning" ? "text-warning" : undefined
-        }
-      />
-      {sub ? (
-        <div
-          className={
-            "text-[11px] " +
-            (subTone === "neutral" ? "text-ink-3" : "text-ink-3")
-          }
-        >
-          {sub}
-        </div>
-      ) : null}
+      <NumCell value={value} size="lg" />
+      {sub ? <div className="text-[11px] text-ink-3">{sub}</div> : null}
     </div>
   );
 }
