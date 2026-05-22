@@ -80,7 +80,7 @@ const SEEDS: Seed[] = [
     handle: "fenton.eth",
     displayName: "Fenton Cho",
     bio: "Brand new vault. Building track record.",
-    joinedDaysAgo: 8,
+    joinedDaysAgo: 5,
     assetClass: "perps",
     edgeCase: "brand-new",
   },

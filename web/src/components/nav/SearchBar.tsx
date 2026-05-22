@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Avatar } from "@/components/primitives/Avatar";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { NumCell } from "@/components/primitives/NumCell";
 import { Pill } from "@/components/primitives/Pill";
 import { SkinInGamePill } from "@/components/primitives/SkinInGamePill";
@@ -87,8 +88,12 @@ export function SearchBar() {
 
           <div className="max-h-[60vh] overflow-y-auto">
             {results.length === 0 ? (
-              <div className="px-4 py-12 text-center text-[13px] text-ink-3">
-                No creators match &ldquo;{query}&rdquo;.
+              <div className="p-4">
+                <EmptyState
+                  icon={Search}
+                  title="No creators match"
+                  description={`Nothing found for “${query}”. Try a different handle, name, or strategy keyword.`}
+                />
               </div>
             ) : (
               <ul>

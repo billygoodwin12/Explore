@@ -1,19 +1,33 @@
 "use client";
 
+import { Clock } from "lucide-react";
+import dynamic from "next/dynamic";
 import { notFound } from "next/navigation";
 
 import { CreatorActions } from "@/components/creator/CreatorActions";
-import { CreatorChart } from "@/components/creator/CreatorChart";
 import { CreatorFees } from "@/components/creator/CreatorFees";
 import { CreatorStakePanel } from "@/components/creator/CreatorStakePanel";
 import { CreatorWeeklyReturns } from "@/components/creator/CreatorWeeklyReturns";
 import { CreatorYourPosition } from "@/components/creator/CreatorYourPosition";
 import { Avatar } from "@/components/primitives/Avatar";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { NumCell } from "@/components/primitives/NumCell";
 import { Pill } from "@/components/primitives/Pill";
 import { SkinInGamePill } from "@/components/primitives/SkinInGamePill";
+import { ChartSkeleton } from "@/components/skeletons/DataSkeletons";
 import { useCreatorVault } from "@/lib/hooks/useCreatorVault";
 import { formatRelative } from "@/lib/formatting/time";
+
+const ONE_DAY = 86_400_000;
+const NEW_VAULT_DAYS = 7;
+
+const CreatorChart = dynamic(
+  () =>
+    import("@/components/creator/CreatorChart").then((m) => ({
+      default: m.CreatorChart,
+    })),
+  { ssr: false, loading: () => <ChartSkeleton /> },
+);
 
 export function CreatorProfile({ handle }: { handle: string }) {
   const { data: creator } = useCreatorVault(handle);
@@ -25,14 +39,21 @@ export function CreatorProfile({ handle }: { handle: string }) {
   const positive30d = creator.pnl30dBps >= 0;
   const positive7d = creator.pnl7dBps >= 0;
   const positiveAll = creator.pnlInceptionBps >= 0;
+  const daysOld = Math.max(
+    0,
+    Math.floor((Date.now() - creator.joinedAt) / ONE_DAY),
+  );
+  const isNewVault = daysOld < NEW_VAULT_DAYS;
 
   return (
-    <main className="max-w-[1100px] mx-auto px-6 py-10 space-y-8">
+    <main className="max-w-[1100px] mx-auto px-6 pt-10 pb-28 sm:pb-10 space-y-8">
       <header className="flex flex-col sm:flex-row gap-6 sm:items-start">
         <Avatar name={creator.displayName} size="xl" />
         <div className="space-y-3 flex-1 min-w-0">
           <div className="flex items-baseline gap-3 flex-wrap">
-            <h1 className="text-display-md">{creator.displayName}</h1>
+            <h1 className="text-display-md break-words">
+              {creator.displayName}
+            </h1>
             <span className="num text-ink-3 text-[16px]">
               @{creator.handle}
             </span>
@@ -58,15 +79,22 @@ export function CreatorProfile({ handle }: { handle: string }) {
         </div>
       </header>
 
+      {isNewVault ? (
+        <EmptyState
+          icon={Clock}
+          title="Less than a week of track record"
+          description={`@${creator.handle} deployed this vault ${
+            daysOld === 0 ? "today" : `${daysOld} day${daysOld === 1 ? "" : "s"} ago`
+          }. A few days of performance says almost nothing about a strategy. Wait for a longer history before sizing a position.`}
+        />
+      ) : null}
+
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <Stat
           label="NAV"
           value={`$${Math.round(creator.nav).toLocaleString()}`}
         />
-        <Stat
-          label="Price / share"
-          value={creator.pricePerShare.toFixed(4)}
-        />
+        <Stat label="Price / share" value={creator.pricePerShare.toFixed(4)} />
         <Stat
           label="7d"
           value={`${positive7d ? "+" : ""}${(creator.pnl7dBps / 100).toFixed(2)}%`}

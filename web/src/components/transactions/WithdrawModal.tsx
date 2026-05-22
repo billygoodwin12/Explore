@@ -35,8 +35,13 @@ const WITHDRAW_MS = 1800;
 const QUICK_PERCENTS = [25, 50, 75, 100] as const;
 const PERF_TREASURY_SHARE = 0.1;
 
-type Phase = "amount" | "confirm" | "inflight" | "success";
+type Phase = "amount" | "confirm" | "inflight" | "success" | "error";
 type TxStatus = "idle" | "pending" | "done";
+
+/** Resolves after `ms`. A real on-chain call can reject; this is the seam. */
+function mockTx(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 type WithdrawModalProps = {
   open: boolean;
@@ -73,6 +78,7 @@ export function WithdrawModal({ open, onOpenChange, creator }: WithdrawModalProp
   const [acknowledgedGuard, setAcknowledgedGuard] = useState(false);
   const [withdrawStatus, setWithdrawStatus] = useState<TxStatus>("idle");
   const [withdrawTxHash, setWithdrawTxHash] = useState<Hex | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>("");
 
   useEffect(() => {
     if (!open) {
@@ -81,6 +87,7 @@ export function WithdrawModal({ open, onOpenChange, creator }: WithdrawModalProp
       setAcknowledgedGuard(false);
       setWithdrawStatus("idle");
       setWithdrawTxHash(null);
+      setErrorMessage("");
     }
   }, [open]);
 
@@ -117,19 +124,36 @@ export function WithdrawModal({ open, onOpenChange, creator }: WithdrawModalProp
   }
 
   function startTransactions() {
+    setErrorMessage("");
     setPhase("inflight");
-    runWithdraw();
+    void runWithdraw();
   }
 
   async function runWithdraw() {
     setWithdrawStatus("pending");
     const id = toast.loading(`Withdrawing from @${creator.handle}…`);
-    await new Promise((r) => setTimeout(r, WITHDRAW_MS));
-    getMockStore().removeUserShares(creator.id, sharesNum);
-    setWithdrawTxHash(mockTxHash());
-    setWithdrawStatus("done");
-    toast.success(`Received $${net.toFixed(2)} USDC`, { id });
-    setPhase("success");
+    try {
+      await mockTx(WITHDRAW_MS);
+      getMockStore().removeUserShares(creator.id, sharesNum);
+      setWithdrawTxHash(mockTxHash());
+      setWithdrawStatus("done");
+      toast.success(`Received $${net.toFixed(2)} USDC`, { id });
+      setPhase("success");
+    } catch {
+      setWithdrawStatus("idle");
+      toast.error("Withdrawal failed", { id });
+      setErrorMessage(
+        "The withdrawal transaction didn't go through. Your shares are untouched — nothing was burned.",
+      );
+      setPhase("error");
+    }
+  }
+
+  function retry() {
+    setWithdrawStatus("idle");
+    setWithdrawTxHash(null);
+    setErrorMessage("");
+    setPhase("confirm");
   }
 
   function tryClose(v: boolean) {
@@ -226,8 +250,52 @@ export function WithdrawModal({ open, onOpenChange, creator }: WithdrawModalProp
             onClose={() => onOpenChange(false)}
           />
         ) : null}
+
+        {phase === "error" ? (
+          <ErrorStep
+            message={errorMessage}
+            onRetry={retry}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ErrorStep({
+  message,
+  onRetry,
+  onClose,
+}: {
+  message: string;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="text-center space-y-4 pt-2">
+        <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-negative/10">
+          <AlertTriangle className="size-6 text-negative" strokeWidth={1.75} />
+        </div>
+        <div className="space-y-1">
+          <DialogTitle className="text-heading-lg">
+            Transaction failed
+          </DialogTitle>
+          <p className="text-[13px] text-ink-2 leading-relaxed max-w-sm mx-auto">
+            {message}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-2">
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+        <Button variant="primary-dark" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
+    </>
   );
 }
 

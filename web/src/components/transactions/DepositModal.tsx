@@ -40,7 +40,7 @@ const APPROVE_MS = 1600;
 const DEPOSIT_MS = 2200;
 const FRICTION_SECONDS = 5;
 
-type Phase = "amount" | "confirm" | "inflight" | "success";
+type Phase = "amount" | "confirm" | "inflight" | "success" | "error";
 type TxStatus = "idle" | "pending" | "done";
 
 type DepositModalProps = {
@@ -48,6 +48,11 @@ type DepositModalProps = {
   onOpenChange: (v: boolean) => void;
   creator: MockCreator;
 };
+
+/** Resolves after `ms`. A real on-chain call can reject; this is the seam. */
+function mockTx(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function mockTxHash(): Hex {
   const chars = "0123456789abcdef";
@@ -77,6 +82,7 @@ export function DepositModal({ open, onOpenChange, creator }: DepositModalProps)
   const [approveTxHash, setApproveTxHash] = useState<Hex | null>(null);
   const [depositTxHash, setDepositTxHash] = useState<Hex | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>("");
 
   const recentDepositor = useMemo(
     () => (open ? hasRecentDeposit(creator.id) : false),
@@ -92,6 +98,7 @@ export function DepositModal({ open, onOpenChange, creator }: DepositModalProps)
       setApproveTxHash(null);
       setDepositTxHash(null);
       setCountdown(null);
+      setErrorMessage("");
       return;
     }
     if (recentDepositor) setCountdown(FRICTION_SECONDS);
@@ -124,37 +131,67 @@ export function DepositModal({ open, onOpenChange, creator }: DepositModalProps)
   const canContinue = amountValid && !countdownActive;
 
   function startTransactions() {
+    setErrorMessage("");
     setPhase("inflight");
-    runApprove();
+    void runApprove();
+  }
+
+  function fail(message: string) {
+    setErrorMessage(message);
+    setPhase("error");
   }
 
   async function runApprove() {
     setApproveStatus("pending");
     const id = toast.loading("Approving USDC spend…");
-    await new Promise((r) => setTimeout(r, APPROVE_MS));
-    setApproveTxHash(mockTxHash());
-    setApproveStatus("done");
-    toast.success("USDC approved", { id });
-    runDeposit();
+    try {
+      await mockTx(APPROVE_MS);
+      setApproveTxHash(mockTxHash());
+      setApproveStatus("done");
+      toast.success("USDC approved", { id });
+      await runDeposit();
+    } catch {
+      setApproveStatus("idle");
+      toast.error("Approval failed", { id });
+      fail("The USDC approval transaction didn't go through. No funds moved.");
+    }
   }
 
   async function runDeposit() {
     setDepositStatus("pending");
     const id = toast.loading(`Depositing into @${creator.handle}…`);
-    await new Promise((r) => setTimeout(r, DEPOSIT_MS));
-    getMockStore().addUserShares(
-      creator.id,
-      sharesReceived,
-      numeric,
-      address as Hex | undefined,
-    );
-    recordDeposit(creator.id);
-    setDepositTxHash(mockTxHash());
-    setDepositStatus("done");
-    toast.success(`Deposited $${numeric.toFixed(2)} into @${creator.handle}`, {
-      id,
-    });
-    setPhase("success");
+    try {
+      await mockTx(DEPOSIT_MS);
+      getMockStore().addUserShares(
+        creator.id,
+        sharesReceived,
+        numeric,
+        address as Hex | undefined,
+      );
+      recordDeposit(creator.id);
+      setDepositTxHash(mockTxHash());
+      setDepositStatus("done");
+      toast.success(
+        `Deposited $${numeric.toFixed(2)} into @${creator.handle}`,
+        { id },
+      );
+      setPhase("success");
+    } catch {
+      setDepositStatus("idle");
+      toast.error("Deposit failed", { id });
+      fail(
+        "USDC was approved, but the deposit transaction didn't go through. Your approval still stands — retry the deposit.",
+      );
+    }
+  }
+
+  function retry() {
+    setApproveStatus("idle");
+    setDepositStatus("idle");
+    setApproveTxHash(null);
+    setDepositTxHash(null);
+    setErrorMessage("");
+    setPhase("confirm");
   }
 
   function tryClose(v: boolean) {
@@ -229,8 +266,52 @@ export function DepositModal({ open, onOpenChange, creator }: DepositModalProps)
             onClose={() => onOpenChange(false)}
           />
         ) : null}
+
+        {phase === "error" ? (
+          <ErrorStep
+            message={errorMessage}
+            onRetry={retry}
+            onClose={() => onOpenChange(false)}
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function ErrorStep({
+  message,
+  onRetry,
+  onClose,
+}: {
+  message: string;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="text-center space-y-4 pt-2">
+        <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-negative/10">
+          <AlertTriangle className="size-6 text-negative" strokeWidth={1.75} />
+        </div>
+        <div className="space-y-1">
+          <DialogTitle className="text-heading-lg">
+            Transaction failed
+          </DialogTitle>
+          <p className="text-[13px] text-ink-2 leading-relaxed max-w-sm mx-auto">
+            {message}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-2">
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+        <Button variant="primary-dark" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
+    </>
   );
 }
 

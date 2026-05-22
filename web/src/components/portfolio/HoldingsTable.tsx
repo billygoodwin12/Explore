@@ -1,14 +1,16 @@
 "use client";
 
 import { EyeOff, ExternalLink, MoreHorizontal, Wallet } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Avatar } from "@/components/primitives/Avatar";
+import { EmptyState } from "@/components/primitives/EmptyState";
 import { NumCell } from "@/components/primitives/NumCell";
 import { SkinInGamePill } from "@/components/primitives/SkinInGamePill";
-import { WithdrawModal } from "@/components/transactions/WithdrawModal";
+import { TableRowsSkeleton } from "@/components/skeletons/DataSkeletons";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -30,11 +32,18 @@ import { useHydrated } from "@/lib/hooks/useHydrated";
 import { usePreferencesStore } from "@/lib/store/preferences";
 import type { MockCreator } from "@/lib/mock/types";
 
+const WithdrawModal = dynamic(() =>
+  import("@/components/transactions/WithdrawModal").then((m) => ({
+    default: m.WithdrawModal,
+  })),
+);
+
 type HoldingsTableProps = {
   holdings: Holding[];
+  isLoading?: boolean;
 };
 
-export function HoldingsTable({ holdings }: HoldingsTableProps) {
+export function HoldingsTable({ holdings, isLoading = false }: HoldingsTableProps) {
   const router = useRouter();
   const hydrated = useHydrated();
   const hiddenIds = usePreferencesStore((s) => s.hiddenHoldings);
@@ -47,25 +56,27 @@ export function HoldingsTable({ holdings }: HoldingsTableProps) {
   const visible = holdings.filter((h) => !hidden.has(h.creator.id));
   const hiddenCount = holdings.length - visible.length;
 
+  if (isLoading) {
+    return (
+      <section className="space-y-3">
+        <h2 className="text-label">Your holdings</h2>
+        <TableRowsSkeleton rows={3} />
+      </section>
+    );
+  }
+
   if (holdings.length === 0) {
     return (
-      <section className="rounded-lg border border-dashed border-line bg-surface p-10 text-center space-y-3">
-        <span className="mx-auto flex size-10 items-center justify-center rounded-full bg-surface-2 text-ink-3">
-          <Wallet className="size-4" strokeWidth={1.75} />
-        </span>
-        <div className="text-[15px] font-medium text-ink">
-          You’re not following anyone yet
-        </div>
-        <p className="text-[13px] text-ink-2 max-w-sm mx-auto">
-          Browse creators, pick one with conviction, and deposit USDC to start
-          building a position.
-        </p>
-        <div className="pt-1">
+      <EmptyState
+        icon={Wallet}
+        title="You’re not following anyone yet"
+        description="Browse creators, pick one with conviction, and deposit USDC to start building a position."
+        action={
           <Button asChild variant="primary" size="default">
             <Link href="/">Browse creators</Link>
           </Button>
-        </div>
-      </section>
+        }
+      />
     );
   }
 
