@@ -440,7 +440,7 @@ function AmountStep(props: {
         ) : null}
 
         <article className="rounded-md border border-line bg-surface p-3 flex items-baseline justify-between">
-          <span className="text-[13px] font-medium text-ink">Net to wallet</span>
+          <span className="text-[13px] font-medium text-ink">Net to Core</span>
           <span className="num text-heading-md text-ink">
             ${sharesValid ? net.toFixed(2) : "—"}
           </span>
@@ -516,7 +516,7 @@ function ConfirmStep(props: {
             />
           ) : null}
           <div className="border-t border-line pt-2">
-            <Line label="Net to wallet" value={`$${net.toFixed(2)}`} emphasis />
+            <Line label="Net to Core" value={`$${net.toFixed(2)}`} emphasis />
           </div>
         </article>
 
@@ -653,12 +653,26 @@ function SuccessStep(props: {
         <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-positive/10">
           <CheckCircle2 className="size-6 text-positive" strokeWidth={1.75} />
         </div>
-        <div className="space-y-1">
+        <div className="space-y-2">
           <DialogTitle className="text-heading-lg">
             Withdrawal confirmed
           </DialogTitle>
-          <p className="text-[13px] text-ink-2">
-            USDC has been sent to your wallet.
+          <p className="text-[13px] text-ink-2 leading-relaxed max-w-sm mx-auto">
+            Withdrawn USDC goes to your{" "}
+            <span className="font-medium text-ink">
+              Hyperliquid Core account
+            </span>
+            , not your wallet. You can bridge it back to your wallet using{" "}
+            <Link
+              href="https://app.hyperliquid.xyz/portfolio"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-brand hover:underline inline-flex items-center gap-0.5"
+            >
+              Hyperliquid&rsquo;s interface
+              <ExternalLink className="size-3" strokeWidth={2} />
+            </Link>
+            .
           </p>
         </div>
       </div>
@@ -668,7 +682,7 @@ function SuccessStep(props: {
           label="Shares burned"
           value={shares.toFixed(shares < 1 ? 4 : 2)}
         />
-        <Line label="USDC received" value={`$${net.toFixed(2)}`} emphasis />
+        <Line label="USDC received on Core" value={`$${net.toFixed(2)}`} emphasis />
       </article>
 
       {withdrawTxHash ? (

@@ -444,6 +444,9 @@ function AmountStep(props: {
                 ${protocolFeeShare.toFixed(2)}
               </span>
             </div>
+            <div className="pt-1 text-[10px] text-ink-3">
+              Protocol-capped at <span className="num">1%</span> (100 bps).
+            </div>
           </div>
         </article>
 

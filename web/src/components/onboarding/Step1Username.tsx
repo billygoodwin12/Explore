@@ -96,7 +96,7 @@ export function Step1Username({ value, onChange, onNext }: Step1Props) {
         </div>
         <StatusMessage status={status} />
         <p className="text-[11px] text-ink-3 leading-relaxed">
-          3–15 characters. Lowercase letters, digits, and underscore. Must
+          4–15 characters. Lowercase letters, digits, and underscore. Must
           start with a letter.
         </p>
       </div>

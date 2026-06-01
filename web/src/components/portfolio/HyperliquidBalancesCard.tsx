@@ -36,11 +36,18 @@ export function HyperliquidBalancesCard() {
   return (
     <section className="rounded-lg border border-line bg-surface p-5 sm:p-6 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
+        <div className="space-y-1.5">
           <h2 className="text-label">Your USDC on Hyperliquid</h2>
-          <p className="text-[12px] text-ink-3 mt-1">
-            Funds outside any vault. Move into Theorise to allocate, or
-            withdraw to your wallet.
+          <p className="text-[12px] text-ink-2 leading-relaxed max-w-prose">
+            Your USDC lives on Hyperliquid&rsquo;s Core account, not in your
+            wallet directly.{" "}
+            <span className="text-ink">Spot</span> is liquid USDC ready to
+            trade; <span className="text-ink">Perp</span> is USDC committed as
+            margin in open positions.
+          </p>
+          <p className="text-[12px] text-ink-3 leading-relaxed">
+            Move into Theorise to allocate to a vault, or withdraw back to your
+            wallet.
           </p>
         </div>
       </div>
