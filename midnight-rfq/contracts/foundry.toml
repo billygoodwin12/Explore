@@ -1,0 +1,17 @@
+[profile.default]
+solc = "0.8.34"
+via_ir = true
+optimizer = true
+optimizer_runs = 466
+evm_version = "osaka"
+bytecode_hash = "none"
+src = "src"
+libs = ["lib", "lib/midnight/lib"]
+fs_permissions = [{ access = "write", path = "deployments" }]
+remappings = [
+  "midnight/=lib/midnight/src/",
+  "forge-std/=lib/forge-std/src/",
+]
+
+[rpc_endpoints]
+base_sepolia = "https://sepolia.base.org"

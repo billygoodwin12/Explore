@@ -1,0 +1,19 @@
+{
+  "name": "midnight-rfq",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "gen": "tsx shared/gen.ts",
+    "test:shared": "vitest run --root shared",
+    "test:server": "vitest run --root server",
+    "dev:server": "pnpm --dir server dev",
+    "dev:web": "pnpm --dir web dev"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0",
+    "viem": "^2.21.0"
+  }
+}
