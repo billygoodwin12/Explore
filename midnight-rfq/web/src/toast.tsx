@@ -4,9 +4,10 @@ interface Toast {
   id: number;
   text: string;
   error?: boolean;
+  link?: string;
 }
 
-const ToastCtx = createContext<(text: string, error?: boolean) => void>(() => {});
+const ToastCtx = createContext<(text: string, error?: boolean, link?: string) => void>(() => {});
 
 export function useToast() {
   return useContext(ToastCtx);
@@ -16,10 +17,10 @@ let nextId = 1;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = useCallback((text: string, error = false) => {
+  const push = useCallback((text: string, error = false, link?: string) => {
     const id = nextId++;
-    setToasts((t) => [...t, { id, text, error }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), error ? 12000 : 7000);
+    setToasts((t) => [...t, { id, text, error, link }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), error ? 12000 : 10000);
   }, []);
   return (
     <ToastCtx.Provider value={push}>
@@ -28,6 +29,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div key={t.id} className={`toast${t.error ? " error" : ""}`}>
             {t.text}
+            {t.link && (
+              <>
+                {" "}
+                <a href={t.link} target="_blank" rel="noreferrer">
+                  view tx ↗
+                </a>
+              </>
+            )}
           </div>
         ))}
       </div>

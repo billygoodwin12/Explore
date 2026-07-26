@@ -20,4 +20,4 @@ export const config = createConfig({
   transports: { [chain.id]: http(RPC_URL) },
 });
 
-export const EXPLORER = "https://sepolia.basescan.org";
+export const EXPLORER: string = import.meta.env.VITE_EXPLORER_URL ?? "https://sepolia.basescan.org";

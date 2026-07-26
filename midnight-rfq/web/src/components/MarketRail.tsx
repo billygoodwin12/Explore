@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useReadContract, useReadContracts } from "wagmi";
 import { MIDNIGHT_ABI, ORACLE_ABI, ADDRESSES, type MarketInfo } from "@shared/deployments";
-import { countdown, formatUnits, formatWad } from "../lib/format";
+import { countdown, formatUnits, formatWad, truncAddr } from "../lib/format";
+import { EXPLORER } from "../wagmi";
 
 const COLLATERALS = ["mWETH", "mWBTC"];
 const LOANS = ["mUSDC", "mDAI"];
@@ -97,6 +98,18 @@ export function MarketRail(props: {
             <dd>{withdrawable !== undefined ? formatUnits(withdrawable, market.loanDecimals) : "—"}</dd>
             <dt>Total units</dt>
             <dd>{totalUnits !== undefined ? formatUnits(totalUnits, market.loanDecimals) : "—"}</dd>
+            <dt>Midnight</dt>
+            <dd>
+              <a href={`${EXPLORER}/address/${ADDRESSES.midnight}`} target="_blank" rel="noreferrer" title={ADDRESSES.midnight}>
+                {truncAddr(ADDRESSES.midnight)} ↗
+              </a>
+            </dd>
+            <dt>Ratifier</dt>
+            <dd>
+              <a href={`${EXPLORER}/address/${ADDRESSES.ratifier}`} target="_blank" rel="noreferrer" title={ADDRESSES.ratifier}>
+                {truncAddr(ADDRESSES.ratifier)} ↗
+              </a>
+            </dd>
           </dl>
         </div>
       )}

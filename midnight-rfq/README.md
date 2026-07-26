@@ -5,7 +5,8 @@ Proof-of-concept RFQ platform for [Morpho Midnight](https://github.com/morpho-or
 small RFQ server, and settled on-chain through the canonical `EcrecoverRatifier` at take time —
 maker capital is never locked.
 
-See **[RUNBOOK.md](./RUNBOOK.md)** for the full operator guide and 10-minute demo script.
+See **[RUNBOOK.md](./RUNBOOK.md)** for the full operator guide and 10-minute demo script, and
+**[PILOT.md](./PILOT.md)** for the two-screen / two-wallet pilot with block-explorer verification.
 
 ## Layout
 

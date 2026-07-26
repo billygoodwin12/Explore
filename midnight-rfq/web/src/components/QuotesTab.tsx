@@ -143,7 +143,9 @@ function OfferTable(props: {
               <td className="small-print">{formatWad(BigInt(o.priceWad))}</td>
               <td className="small-print">{o.offer.tick}</td>
               <td className="addr" title={o.offer.maker}>
-                {truncAddr(o.offer.maker)}
+                <a href={`${EXPLORER}/address/${o.offer.maker}`} target="_blank" rel="noreferrer">
+                  {truncAddr(o.offer.maker)}
+                </a>
               </td>
               <td className="small-print">{countdown(Number(o.offer.expiry))}</td>
               <td className="small-print" style={{ color: flags.length ? "var(--red)" : undefined }}>
@@ -222,6 +224,7 @@ function TakeModal(props: { offer: EnrichedOffer; market: MarketInfo; onClose: (
       const r = await fn();
       if (r?.hash) setTxLinks((t) => ({ ...t, [step]: `${EXPLORER}/tx/${r.hash}` }));
       setSteps((s) => ({ ...s, [step]: "done" }));
+      return r;
     } catch (e) {
       setSteps((s) => ({ ...s, [step]: "error" }));
       setError((e as Error).message);
@@ -280,7 +283,7 @@ function TakeModal(props: { offer: EnrichedOffer; market: MarketInfo; onClose: (
 
     const struct = offerJsonToStruct(offer.offer);
     const ratifierData = encodeRatifierData(offer.signature as never, offer.root as `0x${string}`);
-    await run("take", () =>
+    const r = await run("take", () =>
       runTx(config, {
         address: ADDRESSES.midnight as Address,
         abi: MIDNIGHT_ABI as never,
@@ -293,6 +296,8 @@ function TakeModal(props: { offer: EnrichedOffer; market: MarketInfo; onClose: (
       `Filled ${formatUnits(units, market.loanDecimals)} units at ${formatWad(priceWad)} — ${
         isBuy ? "you received" : "you paid"
       } ${formatUnits(buyerAssets, market.loanDecimals)} ${market.loanSymbol}`,
+      false,
+      r?.hash ? `${EXPLORER}/tx/${r.hash}` : undefined,
     );
     queryClient.invalidateQueries({ queryKey: ["offers"] });
   }

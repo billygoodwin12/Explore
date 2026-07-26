@@ -5,6 +5,7 @@ import { ADDRESSES, ERC20_ABI, MIDNIGHT_ABI, ORACLE_ABI, type MarketInfo } from 
 import { formatUnits, parseAmount } from "../lib/format";
 import { ZERO_ADDRESS, marketStructOf, maxDebtOf } from "../lib/midnight";
 import { runTx } from "../lib/tx";
+import { EXPLORER } from "../wagmi";
 import { useToast } from "../toast";
 
 export function PositionTab({ market }: { market: MarketInfo }) {
@@ -116,14 +117,14 @@ export function PositionTab({ market }: { market: MarketInfo }) {
           onClick={() =>
             act("repay", async () => {
               await approveIfNeeded(market.market.loanToken as Address, loanAllowance, repayUnits);
-              await runTx(config, {
+              const { hash } = await runTx(config, {
                 address: ADDRESSES.midnight as Address,
                 abi: MIDNIGHT_ABI as never,
                 functionName: "repay",
                 args: [marketStruct, repayUnits, me, ZERO_ADDRESS, "0x"],
                 account: me!,
               });
-              toast(`Repaid ${formatUnits(repayUnits, market.loanDecimals)} ${market.loanSymbol}.`);
+              toast(`Repaid ${formatUnits(repayUnits, market.loanDecimals)} ${market.loanSymbol}.`, false, `${EXPLORER}/tx/${hash}`);
             })
           }
         >
@@ -142,14 +143,14 @@ export function PositionTab({ market }: { market: MarketInfo }) {
           disabled={busy !== null || withdrawUnits === 0n || withdrawUnits > maxWithdraw}
           onClick={() =>
             act("withdraw", async () => {
-              await runTx(config, {
+              const { hash } = await runTx(config, {
                 address: ADDRESSES.midnight as Address,
                 abi: MIDNIGHT_ABI as never,
                 functionName: "withdraw",
                 args: [marketStruct, withdrawUnits, me, me],
                 account: me!,
               });
-              toast(`Withdrew ${formatUnits(withdrawUnits, market.loanDecimals)} ${market.loanSymbol}.`);
+              toast(`Withdrew ${formatUnits(withdrawUnits, market.loanDecimals)} ${market.loanSymbol}.`, false, `${EXPLORER}/tx/${hash}`);
             })
           }
         >
@@ -165,14 +166,14 @@ export function PositionTab({ market }: { market: MarketInfo }) {
           onClick={() =>
             act("supplyColl", async () => {
               await approveIfNeeded(market.market.collateralParams[0].token as Address, collAllowance, collAmount);
-              await runTx(config, {
+              const { hash } = await runTx(config, {
                 address: ADDRESSES.midnight as Address,
                 abi: MIDNIGHT_ABI as never,
                 functionName: "supplyCollateral",
                 args: [marketStruct, 0n, collAmount, me],
                 account: me!,
               });
-              toast("Collateral supplied.");
+              toast("Collateral supplied.", false, `${EXPLORER}/tx/${hash}`);
             })
           }
         >
@@ -182,14 +183,14 @@ export function PositionTab({ market }: { market: MarketInfo }) {
           disabled={busy !== null || collAmount === 0n || collAmount > collateral}
           onClick={() =>
             act("withdrawColl", async () => {
-              await runTx(config, {
+              const { hash } = await runTx(config, {
                 address: ADDRESSES.midnight as Address,
                 abi: MIDNIGHT_ABI as never,
                 functionName: "withdrawCollateral",
                 args: [marketStruct, 0n, collAmount, me, me],
                 account: me!,
               });
-              toast("Collateral withdrawn.");
+              toast("Collateral withdrawn.", false, `${EXPLORER}/tx/${hash}`);
             })
           }
         >
